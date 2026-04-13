@@ -1,6 +1,11 @@
 import asyncio
 import os
+import sys
+from pathlib import Path
 from logging.config import fileConfig
+
+# Ensure the project root is on sys.path so `api` is importable
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from alembic import context
 from sqlalchemy.ext.asyncio import async_engine_from_config
