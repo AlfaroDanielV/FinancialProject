@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
-from .routers import agent, events, goals, reports, transactions
+from .routers import accounts, agent, events, goals, reports, transactions
 
 app = FastAPI(
     title="Finance Assistant API",
@@ -19,6 +19,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(accounts.router)
 app.include_router(transactions.router)
 app.include_router(reports.router)
 app.include_router(goals.router)
