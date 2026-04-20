@@ -8,9 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..database import get_db
+from ..dependencies import current_user
 from ..models.bill_occurrence import BillOccurrence
 from ..models.enums import BillCategory, BillOccurrenceStatus
 from ..models.recurring_bill import RecurringBill
+from ..models.user import User
 from ..schemas.recurring_bills import (
     BillOccurrenceResponse,
     MarkPaidRequest,
@@ -30,8 +32,9 @@ async def list_bill_occurrences(
     recurring_bill_id: Optional[uuid.UUID] = Query(default=None),
     category: Optional[BillCategory] = Query(default=None),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    stmt = select(BillOccurrence)
+    stmt = select(BillOccurrence).where(BillOccurrence.user_id == user.id)
     if category is not None:
         stmt = stmt.join(RecurringBill).where(
             RecurringBill.category == category.value
@@ -53,11 +56,15 @@ async def list_bill_occurrences(
 async def get_bill_occurrence(
     occurrence_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     result = await db.execute(
         select(BillOccurrence)
         .options(selectinload(BillOccurrence.recurring_bill))
-        .where(BillOccurrence.id == occurrence_id)
+        .where(
+            BillOccurrence.id == occurrence_id,
+            BillOccurrence.user_id == user.id,
+        )
     )
     occ = result.scalar_one_or_none()
     if occ is None:
@@ -70,12 +77,14 @@ async def mark_paid(
     occurrence_id: uuid.UUID,
     payload: MarkPaidRequest,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     try:
         result = await recurrence.link_transaction_to_occurrence(
             occurrence_id,
             payload.transaction_id,
             db,
+            user.id,
             amount_paid=payload.amount_paid,
             paid_at=payload.paid_at,
             notes=payload.notes,
@@ -97,9 +106,13 @@ async def skip_occurrence(
     occurrence_id: uuid.UUID,
     payload: SkipRequest,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     result = await db.execute(
-        select(BillOccurrence).where(BillOccurrence.id == occurrence_id)
+        select(BillOccurrence).where(
+            BillOccurrence.id == occurrence_id,
+            BillOccurrence.user_id == user.id,
+        )
     )
     occ = result.scalar_one_or_none()
     if occ is None:

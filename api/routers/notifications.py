@@ -8,8 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
+from ..dependencies import current_user
 from ..models.enums import NotificationChannel, NotificationStatus
 from ..models.notification_event import NotificationEvent
+from ..models.user import User
 from ..schemas.notifications import NotificationEventResponse
 from ..services.recurrence import today_cr
 
@@ -22,11 +24,13 @@ CR_TZ = ZoneInfo("America/Costa_Rica")
 async def list_pending(
     channel: Optional[NotificationChannel] = Query(default=None),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     today = today_cr()
     stmt = (
         select(NotificationEvent)
         .where(
+            NotificationEvent.user_id == user.id,
             NotificationEvent.status == NotificationStatus.PENDING.value,
             NotificationEvent.trigger_date <= today,
         )
@@ -42,9 +46,13 @@ async def list_pending(
 async def acknowledge_notification(
     notification_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     result = await db.execute(
-        select(NotificationEvent).where(NotificationEvent.id == notification_id)
+        select(NotificationEvent).where(
+            NotificationEvent.id == notification_id,
+            NotificationEvent.user_id == user.id,
+        )
     )
     event = result.scalar_one_or_none()
     if event is None:
@@ -61,9 +69,13 @@ async def acknowledge_notification(
 async def dismiss_notification(
     notification_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     result = await db.execute(
-        select(NotificationEvent).where(NotificationEvent.id == notification_id)
+        select(NotificationEvent).where(
+            NotificationEvent.id == notification_id,
+            NotificationEvent.user_id == user.id,
+        )
     )
     event = result.scalar_one_or_none()
     if event is None:

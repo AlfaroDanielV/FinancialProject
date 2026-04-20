@@ -6,9 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..config import settings
 from ..database import get_db
+from ..dependencies import current_user
 from ..models.goal import Goal
+from ..models.user import User
 from ..schemas.goals import (
     ContributeRequest,
     GoalCreate,
@@ -20,23 +21,14 @@ from ..schemas.goals import (
 router = APIRouter(prefix="/api/v1/goals", tags=["goals"])
 
 
-def _get_default_user_id() -> uuid.UUID:
-    if not settings.default_user_id:
-        raise HTTPException(
-            status_code=503,
-            detail="DEFAULT_USER_ID not configured. Run scripts/create_user.py first.",
-        )
-    return uuid.UUID(settings.default_user_id)
-
-
 @router.post("", response_model=GoalResponse, status_code=201)
 async def create_goal(
     payload: GoalCreate,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     goal = Goal(
-        user_id=user_id,
+        user_id=user.id,
         name=payload.name,
         target_amount=payload.target_amount,
         deadline=payload.deadline,
@@ -53,9 +45,9 @@ async def create_goal(
 async def list_goals(
     status: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
-    stmt = select(Goal).where(Goal.user_id == user_id)
+    stmt = select(Goal).where(Goal.user_id == user.id)
     if status:
         stmt = stmt.where(Goal.status == status)
     stmt = stmt.order_by(Goal.priority.asc(), Goal.created_at.desc())
@@ -67,10 +59,10 @@ async def list_goals(
 @router.get("/progress", response_model=list[GoalProgress])
 async def goals_progress(
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
-        select(Goal).where(Goal.user_id == user_id, Goal.status == "active")
+        select(Goal).where(Goal.user_id == user.id, Goal.status == "active")
     )
     goals = list(result.scalars().all())
     today = date.today()
@@ -117,10 +109,10 @@ async def goals_progress(
 async def get_goal(
     goal_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
-        select(Goal).where(Goal.id == goal_id, Goal.user_id == user_id)
+        select(Goal).where(Goal.id == goal_id, Goal.user_id == user.id)
     )
     goal = result.scalar_one_or_none()
     if not goal:
@@ -133,10 +125,10 @@ async def update_goal(
     goal_id: uuid.UUID,
     payload: GoalUpdate,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
-        select(Goal).where(Goal.id == goal_id, Goal.user_id == user_id)
+        select(Goal).where(Goal.id == goal_id, Goal.user_id == user.id)
     )
     goal = result.scalar_one_or_none()
     if not goal:
@@ -156,10 +148,10 @@ async def contribute_to_goal(
     goal_id: uuid.UUID,
     payload: ContributeRequest,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
-        select(Goal).where(Goal.id == goal_id, Goal.user_id == user_id)
+        select(Goal).where(Goal.id == goal_id, Goal.user_id == user.id)
     )
     goal = result.scalar_one_or_none()
     if not goal:
@@ -182,10 +174,10 @@ async def contribute_to_goal(
 async def delete_goal(
     goal_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
-        select(Goal).where(Goal.id == goal_id, Goal.user_id == user_id)
+        select(Goal).where(Goal.id == goal_id, Goal.user_id == user.id)
     )
     goal = result.scalar_one_or_none()
     if not goal:

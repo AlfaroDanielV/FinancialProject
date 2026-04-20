@@ -6,8 +6,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
+from ..dependencies import current_user
 from ..models.custom_event import CustomEvent
 from ..models.enums import CustomEventType
+from ..models.user import User
 from ..schemas.custom_events import (
     CustomEventCreate,
     CustomEventResponse,
@@ -21,8 +23,10 @@ router = APIRouter(prefix="/api/v1/custom-events", tags=["custom-events"])
 async def create_custom_event(
     payload: CustomEventCreate,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     event = CustomEvent(
+        user_id=user.id,
         title=payload.title,
         description=payload.description,
         event_type=payload.event_type.value,
@@ -44,8 +48,9 @@ async def list_custom_events(
     event_type: Optional[CustomEventType] = Query(default=None),
     is_active: Optional[bool] = Query(default=None),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    stmt = select(CustomEvent)
+    stmt = select(CustomEvent).where(CustomEvent.user_id == user.id)
     if event_type is not None:
         stmt = stmt.where(CustomEvent.event_type == event_type.value)
     if is_active is not None:
@@ -59,9 +64,13 @@ async def list_custom_events(
 async def get_custom_event(
     event_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     result = await db.execute(
-        select(CustomEvent).where(CustomEvent.id == event_id)
+        select(CustomEvent).where(
+            CustomEvent.id == event_id,
+            CustomEvent.user_id == user.id,
+        )
     )
     event = result.scalar_one_or_none()
     if event is None:
@@ -74,9 +83,13 @@ async def update_custom_event(
     event_id: uuid.UUID,
     payload: CustomEventUpdate,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     result = await db.execute(
-        select(CustomEvent).where(CustomEvent.id == event_id)
+        select(CustomEvent).where(
+            CustomEvent.id == event_id,
+            CustomEvent.user_id == user.id,
+        )
     )
     event = result.scalar_one_or_none()
     if event is None:
@@ -98,9 +111,13 @@ async def update_custom_event(
 async def soft_delete_custom_event(
     event_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     result = await db.execute(
-        select(CustomEvent).where(CustomEvent.id == event_id)
+        select(CustomEvent).where(
+            CustomEvent.id == event_id,
+            CustomEvent.user_id == user.id,
+        )
     )
     event = result.scalar_one_or_none()
     if event is None:

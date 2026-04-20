@@ -194,6 +194,7 @@ async def generate_occurrences(
     rows = [
         {
             "id": uuid.uuid4(),
+            "user_id": bill.user_id,
             "recurring_bill_id": bill.id,
             "due_date": d,
             "amount_expected": bill.amount_expected,
@@ -221,12 +222,16 @@ async def generate_occurrences(
 
 async def generate_occurrences_all(
     session: AsyncSession,
+    user_id: uuid.UUID,
     *,
     horizon_months: int = DEFAULT_HORIZON_MONTHS,
 ) -> int:
-    """Run generate_occurrences for every active bill. Returns total created."""
+    """Run generate_occurrences for every active bill of the given user."""
     result = await session.execute(
-        select(RecurringBill).where(RecurringBill.is_active.is_(True))
+        select(RecurringBill).where(
+            RecurringBill.user_id == user_id,
+            RecurringBill.is_active.is_(True),
+        )
     )
     bills = list(result.scalars().all())
     total = 0
@@ -243,8 +248,9 @@ async def generate_occurrences_all(
 async def cancel_future_pending(bill_id: uuid.UUID, session: AsyncSession) -> int:
     """Mark every future PENDING occurrence of a bill as CANCELLED.
 
-    Used when a recurring_bill is soft-deleted. Past or paid occurrences are
-    untouched.
+    Caller is responsible for having already verified the bill belongs to
+    the current user (typically via `fetch_bill(bill_id, user_id, session)`).
+    Past or paid occurrences are untouched.
     """
     today = today_cr()
     result = await session.execute(
@@ -265,8 +271,7 @@ async def delete_future_pending(
 ) -> int:
     """Physically delete future PENDING occurrences of a bill.
 
-    Used when the bill's schedule (frequency / day_of_month / start / end /
-    recurrence_rule) changes and we need to regenerate. Past or paid
+    Caller must have authorized access to the bill first. Past or paid
     occurrences are left alone.
     """
     today = today_cr()
@@ -283,11 +288,12 @@ async def delete_future_pending(
     return len(occurrences)
 
 
-async def mark_overdue(session: AsyncSession) -> int:
-    """Flip PENDING occurrences with due_date < today to OVERDUE. Returns count."""
+async def mark_overdue(session: AsyncSession, user_id: uuid.UUID) -> int:
+    """Flip PENDING occurrences with due_date < today to OVERDUE for one user."""
     today = today_cr()
     result = await session.execute(
         select(BillOccurrence).where(
+            BillOccurrence.user_id == user_id,
             BillOccurrence.status == BillOccurrenceStatus.PENDING.value,
             BillOccurrence.due_date < today,
         )
@@ -295,7 +301,12 @@ async def mark_overdue(session: AsyncSession) -> int:
     occurrences = list(result.scalars().all())
     for occ in occurrences:
         occ.status = BillOccurrenceStatus.OVERDUE.value
-    logger.info("mark_overdue: flipped=%d (today=%s)", len(occurrences), today)
+    logger.info(
+        "mark_overdue: user=%s flipped=%d (today=%s)",
+        user_id,
+        len(occurrences),
+        today,
+    )
     return len(occurrences)
 
 
@@ -311,10 +322,12 @@ class _ResolvedRule:
 async def _resolve_rule_for_bill(
     bill: RecurringBill, session: AsyncSession
 ) -> _ResolvedRule | None:
-    """Specific rule > category default > global default."""
+    """Specific rule > category default > global default. Per user."""
+    user_id = bill.user_id
     # bill-specific
     result = await session.execute(
         select(NotificationRule).where(
+            NotificationRule.user_id == user_id,
             NotificationRule.scope == NotificationScope.BILL.value,
             NotificationRule.recurring_bill_id == bill.id,
             NotificationRule.is_active.is_(True),
@@ -327,6 +340,7 @@ async def _resolve_rule_for_bill(
     # category default
     result = await session.execute(
         select(NotificationRule).where(
+            NotificationRule.user_id == user_id,
             NotificationRule.scope == NotificationScope.CATEGORY_DEFAULT.value,
             NotificationRule.category == bill.category,
             NotificationRule.is_active.is_(True),
@@ -336,14 +350,16 @@ async def _resolve_rule_for_bill(
     if rule:
         return _ResolvedRule(rule.advance_days, NotificationScope.CATEGORY_DEFAULT)
 
-    return await _resolve_global_default(session)
+    return await _resolve_global_default(session, user_id)
 
 
 async def _resolve_rule_for_event(
     event: CustomEvent, session: AsyncSession
 ) -> _ResolvedRule | None:
+    user_id = event.user_id
     result = await session.execute(
         select(NotificationRule).where(
+            NotificationRule.user_id == user_id,
             NotificationRule.scope == NotificationScope.EVENT.value,
             NotificationRule.custom_event_id == event.id,
             NotificationRule.is_active.is_(True),
@@ -353,14 +369,16 @@ async def _resolve_rule_for_event(
     if rule:
         return _ResolvedRule(rule.advance_days, NotificationScope.EVENT)
 
-    return await _resolve_global_default(session)
+    return await _resolve_global_default(session, user_id)
 
 
 async def _resolve_global_default(
     session: AsyncSession,
+    user_id: uuid.UUID,
 ) -> _ResolvedRule | None:
     result = await session.execute(
         select(NotificationRule).where(
+            NotificationRule.user_id == user_id,
             NotificationRule.scope == NotificationScope.GLOBAL_DEFAULT.value,
             NotificationRule.is_active.is_(True),
         )
@@ -430,9 +448,11 @@ async def _existing_notification_keys(
     return keys
 
 
-async def compute_pending_notifications(session: AsyncSession) -> int:
+async def compute_pending_notifications(
+    session: AsyncSession, user_id: uuid.UUID
+) -> int:
     """Create notification_events for every pending/overdue occurrence and
-    every active custom_event, using the resolved rule. Idempotent.
+    every active custom_event for the given user. Idempotent.
 
     Returns the number of new notification rows created.
     """
@@ -441,18 +461,22 @@ async def compute_pending_notifications(session: AsyncSession) -> int:
         select(BillOccurrence)
         .options(selectinload(BillOccurrence.recurring_bill))
         .where(
+            BillOccurrence.user_id == user_id,
             BillOccurrence.status.in_(
                 [
                     BillOccurrenceStatus.PENDING.value,
                     BillOccurrenceStatus.OVERDUE.value,
                 ]
-            )
+            ),
         )
     )
     occurrences = list(occ_result.scalars().all())
 
     ev_result = await session.execute(
-        select(CustomEvent).where(CustomEvent.is_active.is_(True))
+        select(CustomEvent).where(
+            CustomEvent.user_id == user_id,
+            CustomEvent.is_active.is_(True),
+        )
     )
     events = list(ev_result.scalars().all())
 
@@ -476,6 +500,7 @@ async def compute_pending_notifications(session: AsyncSession) -> int:
                 continue
             created_rows.append(
                 NotificationEvent(
+                    user_id=user_id,
                     bill_occurrence_id=occ.id,
                     trigger_date=occ.due_date - timedelta(days=int(adv)),
                     advance_days=int(adv),
@@ -497,6 +522,7 @@ async def compute_pending_notifications(session: AsyncSession) -> int:
                 continue
             created_rows.append(
                 NotificationEvent(
+                    user_id=user_id,
                     custom_event_id=event.id,
                     trigger_date=event.event_date - timedelta(days=int(adv)),
                     advance_days=int(adv),
@@ -511,7 +537,8 @@ async def compute_pending_notifications(session: AsyncSession) -> int:
         session.add(row)
 
     logger.info(
-        "compute_pending_notifications: bills=%d events=%d created=%d",
+        "compute_pending_notifications: user=%s bills=%d events=%d created=%d",
+        user_id,
         len(occurrences),
         len(events),
         len(created_rows),
@@ -539,15 +566,13 @@ class FeedEntry:
 
 async def get_upcoming_feed(
     session: AsyncSession,
+    user_id: uuid.UUID,
     *,
     from_date: date,
     to_date: date,
     include_overdue: bool = True,
 ) -> list[FeedEntry]:
-    """Combine bill_occurrences (joined with their bill) and custom_events,
-    sorted by date ascending. Overdue occurrences are returned first if
-    include_overdue=True.
-    """
+    """Combine bill_occurrences and custom_events for one user."""
     today = today_cr()
 
     occ_q = (
@@ -555,6 +580,7 @@ async def get_upcoming_feed(
         .options(selectinload(BillOccurrence.recurring_bill))
         .where(
             and_(
+                BillOccurrence.user_id == user_id,
                 BillOccurrence.due_date >= from_date,
                 BillOccurrence.due_date <= to_date,
                 BillOccurrence.status.in_(
@@ -575,6 +601,7 @@ async def get_upcoming_feed(
             .options(selectinload(BillOccurrence.recurring_bill))
             .where(
                 and_(
+                    BillOccurrence.user_id == user_id,
                     BillOccurrence.due_date < from_date,
                     BillOccurrence.status == BillOccurrenceStatus.OVERDUE.value,
                 )
@@ -590,6 +617,7 @@ async def get_upcoming_feed(
 
     ev_result = await session.execute(
         select(CustomEvent).where(
+            CustomEvent.user_id == user_id,
             CustomEvent.is_active.is_(True),
             CustomEvent.event_date >= from_date,
             CustomEvent.event_date <= to_date,
@@ -656,19 +684,23 @@ async def link_transaction_to_occurrence(
     occurrence_id: uuid.UUID,
     transaction_id: Optional[uuid.UUID],
     session: AsyncSession,
+    user_id: uuid.UUID,
     *,
     amount_paid: Optional[float] = None,
     paid_at: Optional[datetime] = None,
     notes: Optional[str] = None,
 ) -> MarkPaidResult:
-    """Mark a bill_occurrence paid. If transaction_id is provided, validate it
-    exists and use its amount/occurred_at as defaults.
+    """Mark a bill_occurrence paid, scoped to one user.
 
-    Sets status = PAID if amount_paid >= amount_expected, else PARTIALLY_PAID.
-    Warns (non-blocking) when the paid amount diverges >20% from expected.
+    Both the occurrence and (if provided) the transaction must belong to the
+    given user. Sets status = PAID when amount_paid >= amount_expected, else
+    PARTIALLY_PAID. Warns (non-blocking) when the paid amount diverges >20%.
     """
     occ_result = await session.execute(
-        select(BillOccurrence).where(BillOccurrence.id == occurrence_id)
+        select(BillOccurrence).where(
+            BillOccurrence.id == occurrence_id,
+            BillOccurrence.user_id == user_id,
+        )
     )
     occ = occ_result.scalar_one_or_none()
     if occ is None:
@@ -687,7 +719,10 @@ async def link_transaction_to_occurrence(
 
     if transaction_id is not None:
         txn_result = await session.execute(
-            select(Transaction).where(Transaction.id == transaction_id)
+            select(Transaction).where(
+                Transaction.id == transaction_id,
+                Transaction.user_id == user_id,
+            )
         )
         txn = txn_result.scalar_one_or_none()
         if txn is None:
@@ -738,19 +773,25 @@ async def link_transaction_to_occurrence(
 
 
 async def fetch_bill(
-    bill_id: uuid.UUID, session: AsyncSession
+    bill_id: uuid.UUID, user_id: uuid.UUID, session: AsyncSession
 ) -> RecurringBill | None:
     result = await session.execute(
-        select(RecurringBill).where(RecurringBill.id == bill_id)
+        select(RecurringBill).where(
+            RecurringBill.id == bill_id,
+            RecurringBill.user_id == user_id,
+        )
     )
     return result.scalar_one_or_none()
 
 
 async def fetch_occurrence(
-    occurrence_id: uuid.UUID, session: AsyncSession
+    occurrence_id: uuid.UUID, user_id: uuid.UUID, session: AsyncSession
 ) -> BillOccurrence | None:
     result = await session.execute(
-        select(BillOccurrence).where(BillOccurrence.id == occurrence_id)
+        select(BillOccurrence).where(
+            BillOccurrence.id == occurrence_id,
+            BillOccurrence.user_id == user_id,
+        )
     )
     return result.scalar_one_or_none()
 

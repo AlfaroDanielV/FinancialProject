@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
+from ..dependencies import current_user
+from ..models.user import User
 from ..schemas.notifications import UpcomingFeedItem, UpcomingFeedResponse
 from ..services import recurrence
 
@@ -16,9 +18,14 @@ async def upcoming_feed(
     to_date: date = Query(..., alias="to"),
     include_overdue: bool = Query(default=True),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     entries = await recurrence.get_upcoming_feed(
-        db, from_date=from_date, to_date=to_date, include_overdue=include_overdue
+        db,
+        user.id,
+        from_date=from_date,
+        to_date=to_date,
+        include_overdue=include_overdue,
     )
     items = [
         UpcomingFeedItem(

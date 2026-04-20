@@ -6,9 +6,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from ..config import settings
 from ..database import get_db
+from ..dependencies import current_user
 from ..models.debt import Debt, DebtPayment
+from ..models.user import User
 from ..schemas.debts import (
     AmortizationRow,
     AmortizationSchedule,
@@ -47,23 +48,14 @@ VARIABLE_RATE_NOTICE = (
 )
 
 
-def _get_default_user_id() -> uuid.UUID:
-    if not settings.default_user_id:
-        raise HTTPException(
-            status_code=503,
-            detail="DEFAULT_USER_ID not configured. Run scripts/create_user.py first.",
-        )
-    return uuid.UUID(settings.default_user_id)
-
-
 @router.post("", response_model=DebtResponse, status_code=201)
 async def create_debt(
     payload: DebtCreate,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     debt = Debt(
-        user_id=user_id,
+        user_id=user.id,
         account_id=payload.account_id,
         name=payload.name,
         debt_type=payload.debt_type,
@@ -95,11 +87,11 @@ async def create_debt(
 @router.get("", response_model=list[DebtSummary])
 async def list_debts(
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
         select(Debt)
-        .where(Debt.user_id == user_id, Debt.is_active == True)  # noqa: E712
+        .where(Debt.user_id == user.id, Debt.is_active == True)  # noqa: E712
         .order_by(Debt.created_at.desc())
     )
     return list(result.scalars().all())
@@ -108,10 +100,10 @@ async def list_debts(
 @router.get("/overview", response_model=DebtOverview)
 async def debt_overview(
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
-        select(Debt).where(Debt.user_id == user_id, Debt.is_active == True)  # noqa: E712
+        select(Debt).where(Debt.user_id == user.id, Debt.is_active == True)  # noqa: E712
     )
     debts = list(result.scalars().all())
 
@@ -167,10 +159,10 @@ async def debt_overview(
 async def payoff_strategies(
     extra_monthly: float = Query(default=0),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
-        select(Debt).where(Debt.user_id == user_id, Debt.is_active == True)  # noqa: E712
+        select(Debt).where(Debt.user_id == user.id, Debt.is_active == True)  # noqa: E712
     )
     debts = list(result.scalars().all())
 
@@ -252,11 +244,11 @@ async def payoff_strategies(
 async def get_debt(
     debt_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
         select(Debt)
-        .where(Debt.id == debt_id, Debt.user_id == user_id)
+        .where(Debt.id == debt_id, Debt.user_id == user.id)
         .options(selectinload(Debt.payments))
     )
     debt = result.scalar_one_or_none()
@@ -270,10 +262,10 @@ async def update_debt(
     debt_id: uuid.UUID,
     payload: DebtUpdate,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
-        select(Debt).where(Debt.id == debt_id, Debt.user_id == user_id)
+        select(Debt).where(Debt.id == debt_id, Debt.user_id == user.id)
     )
     debt = result.scalar_one_or_none()
     if not debt:
@@ -292,10 +284,10 @@ async def update_debt(
 async def delete_debt(
     debt_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
-        select(Debt).where(Debt.id == debt_id, Debt.user_id == user_id)
+        select(Debt).where(Debt.id == debt_id, Debt.user_id == user.id)
     )
     debt = result.scalar_one_or_none()
     if not debt:
@@ -312,10 +304,10 @@ async def record_payment(
     debt_id: uuid.UUID,
     payload: DebtPaymentCreate,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
-        select(Debt).where(Debt.id == debt_id, Debt.user_id == user_id)
+        select(Debt).where(Debt.id == debt_id, Debt.user_id == user.id)
     )
     debt = result.scalar_one_or_none()
     if not debt:
@@ -351,10 +343,10 @@ async def record_payment(
 async def list_payments(
     debt_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     debt_result = await db.execute(
-        select(Debt).where(Debt.id == debt_id, Debt.user_id == user_id)
+        select(Debt).where(Debt.id == debt_id, Debt.user_id == user.id)
     )
     if not debt_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Deuda no encontrada.")
@@ -372,10 +364,10 @@ async def amortization_schedule(
     debt_id: uuid.UUID,
     projected_rate: float | None = Query(default=None, ge=0, le=1),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
-        select(Debt).where(Debt.id == debt_id, Debt.user_id == user_id)
+        select(Debt).where(Debt.id == debt_id, Debt.user_id == user.id)
     )
     debt = result.scalar_one_or_none()
     if not debt:
@@ -454,10 +446,10 @@ async def early_payoff(
     debt_id: uuid.UUID,
     payload: EarlyPayoffRequest,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
-        select(Debt).where(Debt.id == debt_id, Debt.user_id == user_id)
+        select(Debt).where(Debt.id == debt_id, Debt.user_id == user.id)
     )
     debt = result.scalar_one_or_none()
     if not debt:

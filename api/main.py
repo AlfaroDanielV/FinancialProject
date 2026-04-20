@@ -17,6 +17,7 @@ from .routers import (
     recurring_bills,
     reports,
     transactions,
+    users,
 )
 
 app = FastAPI(
@@ -34,6 +35,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(users.router)
 app.include_router(accounts.router)
 app.include_router(transactions.router)
 app.include_router(budgets.router)

@@ -17,12 +17,6 @@ class Settings(BaseSettings):
     environment: str = "development"
     secret_key: str = "change-me"
 
-    # Single-user MVP
-    default_user_id: str = ""
-
-    # iPhone Shortcut auth
-    shortcut_token: str = "change-me"
-
     @property
     def is_dev(self) -> bool:
         return self.environment == "development"

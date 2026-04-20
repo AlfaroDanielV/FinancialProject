@@ -144,6 +144,7 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 | **2** | Wk 2–3 | Gmail sync + bank parsers + dedup | Emails auto-parsed, no duplicates, `parse_status` tracked |
 | **3** | Wk 3–4 | Budgets, goals, weekly report | Weekly report sent via Telegram with spend-by-category, budget remaining, goal progress |
 | **4** ✅ | Wk 4 | Recurring bills + calendar alerts | API returns upcoming feed, pending alerts, `POST /jobs/*` materialize occurrences / mark overdue / compute notifications |
+| **5a** ✅ | Wk 4–5 | Users table + multi-user foundation | `scripts/phase5a_smoke.sh` passes: register → token returned once → cross-user data isolation → token rotation invalidates old |
 | **5** | Wk 5 | Telegram integration via OpenClaw | Can query balance, log transactions, and receive reports in Telegram |
 | **6** | Wk 5–6 | Conversational agent + pushback engine | Ask "can I afford X?" and get a real answer from real data |
 | **7** | Wk 6–10 | **Stabilize. Use it. Fix bugs.** | 4+ weeks of reliable use. Trust it more than your bank app. |
@@ -159,9 +160,9 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 
 ## Phase 4 Endpoints (reference)
 
-All under the `/api/v1` prefix. Auth:
-- Read/write on resources: no extra auth (single-user MVP; `DEFAULT_USER_ID` enforced where applicable).
-- `/jobs/*`: `X-Shortcut-Token` header, same value as the iPhone Shortcut.
+All under the `/api/v1` prefix. Auth (post-Phase-5a):
+- Resource read/write: `X-Shortcut-Token` (real) or `X-User-Id` (dev shim). See the Phase 5a section below.
+- `/jobs/*` and `POST /transactions/shortcut`: `X-Shortcut-Token` only — the dev shim is rejected. The job runs only against the resolved user's data.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -226,7 +227,7 @@ The LLM's system prompt enforces this separation:
 - **Models**: SQLAlchemy 2.x `Mapped` + `mapped_column` syntax (not legacy `Column()`)
 - **Schemas**: Pydantic v2 with `model_validate`, not v1 `.from_orm()`
 - **Routes**: All under `/api/v1/` prefix. Use `APIRouter` with `prefix` and `tags`.
-- **Auth**: iPhone Shortcut uses `X-Webhook-Secret` header checked against `WEBHOOK_SECRET` env var. Gmail uses OAuth2. Future: magic link auth for product users.
+- **Auth**: iPhone Shortcut uses `X-Shortcut-Token` resolved against `users.shortcut_token` (Phase 5a). The pre-5a `X-Webhook-Secret`/`SHORTCUT_TOKEN` env-var pattern was removed in 0006. The dev `X-User-Id` shim covers everything else until magic-link auth lands in Phase 6.
 - **Errors**: Raise `HTTPException` with appropriate status codes. Don't return error dicts.
 - **Database**: Always use `get_db` dependency. Never create sessions manually in routes.
 - **Migrations**: Hand-written Alembic. Every schema change gets a migration file. No raw SQL against production.
@@ -260,11 +261,18 @@ REDIS_URL=redis://localhost:6379/0
 GMAIL_CLIENT_ID=...
 GMAIL_CLIENT_SECRET=...
 ANTHROPIC_API_KEY=...           # or OPENAI_API_KEY
-WEBHOOK_SECRET=...              # iPhone Shortcut auth
-TELEGRAM_BOT_TOKEN=...         # Phase 5+
-OPENCLAW_API_URL=...           # Phase 5+
-ENVIRONMENT=development        # development | production
+TELEGRAM_BOT_TOKEN=...          # Phase 5+
+OPENCLAW_API_URL=...            # Phase 5+
+ENVIRONMENT=development         # development | production
+
+# Migration 0006 only — read by Alembic, NOT by the running app:
+LEGACY_USER_EMAIL=...
+LEGACY_USER_NAME=...
+LEGACY_SHORTCUT_TOKEN=...
+DEFAULT_USER_ID=...             # optional, only to preserve a pre-5a row
 ```
+
+Pre-Phase-5a vars `WEBHOOK_SECRET` and `SHORTCUT_TOKEN` were removed; tokens now live on `users.shortcut_token`.
 
 ---
 
@@ -275,7 +283,54 @@ ENVIRONMENT=development        # development | production
 - **Legacy `events` table removed in migration 0005** (was a Phase 1 stub that was never wired up). The new Phase 4 entity is `custom_events`.
 - **`recurring_bills.linked_loan_id` FKs to `debts.id`** (there is no separate `loans` table; `debts` holds installment loans). Mortgages and personal loans should reuse this column.
 - **RRULE validation.** We accept any iCalendar RRULE string via `recurrence_rule` but don't validate it until generation time. A bad rule will surface as an exception during `generate_occurrences`, not at write time.
-- **No per-user scoping on Phase 4 tables.** Single-user MVP. Multi-tenant Phase 8 will need a `user_id` column on `recurring_bills`, `custom_events`, `notification_rules`, and `notification_events`.
+- ~~**No per-user scoping on Phase 4 tables.**~~ Resolved in Phase 5a — every Phase 4 table now carries a `user_id` FK with `ON DELETE RESTRICT` and per-user composite indexes (see migration 0006).
+- **`X-User-Id` dev shim is shipped to production code.** Tracked here so we don't forget to remove it. See the Phase 5a section below for details.
+
+---
+
+## Phase 5a — Users & multi-user foundation
+
+The persistence layer is now multi-tenant; auth is the next phase.
+
+### Schema
+
+- **users** — `id`, `email` (UNIQUE NOT NULL), `full_name`, `phone_number` (E.164, nullable), `country` (default `CR`), `timezone`, `currency`, `locale`, `shortcut_token` (UNIQUE NOT NULL, opaque), `telegram_user_id` (UNIQUE, BIGINT, reserved for 5b), `whatsapp_phone` (UNIQUE, reserved for 5c), `status` (`active|suspended`, CHECK), `created_at`, `updated_at`. The pre-Phase-5a `name` column was renamed to `full_name`.
+- **`user_id` FK** added to every domain table that lacked one (recurring_bills, bill_occurrences, custom_events, notification_rules, notification_events). All FKs are `ON DELETE RESTRICT`. `debt_payments` inherits scoping through its parent `debts.user_id` and intentionally has no `user_id` column of its own.
+- **Per-user UNIQUE constraints** added by 0006:
+  - `transactions(user_id, source_ref) WHERE source_ref IS NOT NULL` — Gmail Message-ID dedup, scoped per user.
+  - `accounts(user_id, name) WHERE is_active` — a user cannot have two active accounts with the same name; two different users can.
+- **Composite indexes** added for hot paths: `(user_id, is_active)` on recurring_bills; `(user_id, due_date)` and `(user_id, status, due_date)` on bill_occurrences; `(user_id, event_date)` on custom_events; `(user_id, scope)` on notification_rules; `(user_id, status, trigger_date)` on notification_events. Pre-existing indexes (e.g. `ix_transactions_user_date`) were kept.
+
+### Auth model
+
+- **`X-Shortcut-Token`** (real, server-resolved): identifies the caller via `users.shortcut_token`. Required by `POST /transactions/shortcut` and every `POST /jobs/*`.
+- **`X-User-Id`** (DEV SHIM, will die in Phase 6 / 5c): well-formed UUID matching a `users.id`. Lets curl, the auto-generated docs, and any tooling we throw together hit the API while real auth (magic link / OAuth) is still pending. Implemented in `api/dependencies.py::current_user` and clearly comment-flagged. Do not build features that depend on it — when it goes away no migration will cover for you.
+- Resolution order in `current_user`: `X-Shortcut-Token` first; falls back to `X-User-Id`; otherwise 401. The strict `current_user_via_token` (used by Shortcut + jobs) ignores the shim entirely.
+- `users.status = 'suspended'` returns 403, not 401, on every authenticated route.
+
+### `shortcut_token` model
+
+- One opaque token per user. ≥48 bytes of `secrets.token_urlsafe` entropy.
+- Returned **only once**: in the body of `POST /users/register` and `POST /users/me/rotate-shortcut-token`. `GET /users/me` and every other endpoint never echo it back.
+- Rotation invalidates the previous token instantly (next request with the old value gets 401).
+- Used as the iPhone Shortcut auth header. Will also be the bootstrap secret when wiring Telegram (5b) and WhatsApp (5c) — those columns (`telegram_user_id`, `whatsapp_phone`) are reserved on the table.
+
+### Endpoints (all under `/api/v1`)
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| POST | `/users/register` | none | Body `{email, full_name, phone_number?, country?, timezone?, currency?, locale?}`. Returns the user + a fresh `shortcut_token` (one-shot). 409 on duplicate email. Also seeds a `scope=global_default` notification rule. |
+| GET | `/users/me` | shim or token | Returns the resolved caller. |
+| POST | `/users/me/rotate-shortcut-token` | shim or token | Issues a new token, invalidates the old. |
+
+The Phase 4 endpoint table above still applies; every row is now scoped by the resolved user.
+
+### Onboarding the first real user post-migration
+
+1. Set `LEGACY_USER_EMAIL`, `LEGACY_USER_NAME`, `LEGACY_SHORTCUT_TOKEN` (and optionally `DEFAULT_USER_ID` for an existing row) in `.env`.
+2. `alembic upgrade head` — migration 0006 either updates the existing row or inserts the legacy user, then backfills `user_id` everywhere.
+3. To onboard a second person: `POST /api/v1/users/register` → save the returned `shortcut_token` → paste it into their iPhone Shortcut as the `X-Shortcut-Token` header. No env changes, no DB writes from your side.
+4. After 0006 is applied, the three `LEGACY_*` env vars are unread by the running app and can be removed from `.env` (the runtime no longer references `DEFAULT_USER_ID` or `SHORTCUT_TOKEN` either; both were removed from `api/config.py`).
 
 ---
 

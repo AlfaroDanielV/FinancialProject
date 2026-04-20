@@ -16,6 +16,11 @@ class NotificationRule(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
     scope: Mapped[str] = mapped_column(String(30), nullable=False)
     recurring_bill_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),

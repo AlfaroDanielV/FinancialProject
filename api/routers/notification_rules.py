@@ -6,8 +6,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
+from ..dependencies import current_user
 from ..models.enums import NotificationScope
 from ..models.notification_rule import NotificationRule
+from ..models.user import User
 from ..schemas.notifications import (
     NotificationRuleCreate,
     NotificationRuleResponse,
@@ -21,8 +23,10 @@ router = APIRouter(prefix="/api/v1/notification-rules", tags=["notification-rule
 async def create_notification_rule(
     payload: NotificationRuleCreate,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     rule = NotificationRule(
+        user_id=user.id,
         scope=payload.scope.value,
         recurring_bill_id=payload.recurring_bill_id,
         custom_event_id=payload.custom_event_id,
@@ -44,8 +48,9 @@ async def list_notification_rules(
     scope: Optional[NotificationScope] = Query(default=None),
     is_active: Optional[bool] = Query(default=None),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    stmt = select(NotificationRule)
+    stmt = select(NotificationRule).where(NotificationRule.user_id == user.id)
     if scope is not None:
         stmt = stmt.where(NotificationRule.scope == scope.value)
     if is_active is not None:
@@ -59,9 +64,13 @@ async def list_notification_rules(
 async def get_notification_rule(
     rule_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     result = await db.execute(
-        select(NotificationRule).where(NotificationRule.id == rule_id)
+        select(NotificationRule).where(
+            NotificationRule.id == rule_id,
+            NotificationRule.user_id == user.id,
+        )
     )
     rule = result.scalar_one_or_none()
     if rule is None:
@@ -74,9 +83,13 @@ async def update_notification_rule(
     rule_id: uuid.UUID,
     payload: NotificationRuleUpdate,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     result = await db.execute(
-        select(NotificationRule).where(NotificationRule.id == rule_id)
+        select(NotificationRule).where(
+            NotificationRule.id == rule_id,
+            NotificationRule.user_id == user.id,
+        )
     )
     rule = result.scalar_one_or_none()
     if rule is None:
@@ -95,9 +108,13 @@ async def update_notification_rule(
 async def soft_delete_notification_rule(
     rule_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     result = await db.execute(
-        select(NotificationRule).where(NotificationRule.id == rule_id)
+        select(NotificationRule).where(
+            NotificationRule.id == rule_id,
+            NotificationRule.user_id == user.id,
+        )
     )
     rule = result.scalar_one_or_none()
     if rule is None:

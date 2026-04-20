@@ -6,10 +6,11 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from zoneinfo import ZoneInfo
 
-from ..config import settings
 from ..database import get_db
+from ..dependencies import current_user
 from ..models.budget import Budget
 from ..models.transaction import Transaction
+from ..models.user import User
 from ..schemas.budgets import (
     BudgetCreate,
     BudgetResponse,
@@ -20,15 +21,6 @@ from ..schemas.budgets import (
 router = APIRouter(prefix="/api/v1/budgets", tags=["budgets"])
 
 TZ = ZoneInfo("America/Costa_Rica")
-
-
-def _get_default_user_id() -> uuid.UUID:
-    if not settings.default_user_id:
-        raise HTTPException(
-            status_code=503,
-            detail="DEFAULT_USER_ID not configured. Run scripts/create_user.py first.",
-        )
-    return uuid.UUID(settings.default_user_id)
 
 
 def _current_period_window(period: str, today: date) -> tuple[date, date]:
@@ -51,10 +43,10 @@ def _current_period_window(period: str, today: date) -> tuple[date, date]:
 async def create_budget(
     payload: BudgetCreate,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     budget = Budget(
-        user_id=user_id,
+        user_id=user.id,
         category=payload.category,
         amount_limit=payload.amount_limit,
         period=payload.period,
@@ -69,11 +61,11 @@ async def create_budget(
 @router.get("", response_model=list[BudgetResponse])
 async def list_budgets(
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
         select(Budget)
-        .where(Budget.user_id == user_id, Budget.is_active == True)  # noqa: E712
+        .where(Budget.user_id == user.id, Budget.is_active == True)  # noqa: E712
         .order_by(Budget.created_at.desc())
     )
     return list(result.scalars().all())
@@ -82,13 +74,13 @@ async def list_budgets(
 @router.get("/status", response_model=list[BudgetStatus])
 async def budget_status(
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     today = date.today()
 
     result = await db.execute(
         select(Budget).where(
-            Budget.user_id == user_id, Budget.is_active == True  # noqa: E712
+            Budget.user_id == user.id, Budget.is_active == True  # noqa: E712
         )
     )
     budgets = list(result.scalars().all())
@@ -100,7 +92,7 @@ async def budget_status(
         # Sum absolute value of expenses in this category during the period
         spent_result = await db.execute(
             select(func.coalesce(func.sum(func.abs(Transaction.amount)), 0)).where(
-                Transaction.user_id == user_id,
+                Transaction.user_id == user.id,
                 Transaction.category == b.category,
                 Transaction.transaction_date >= period_start,
                 Transaction.transaction_date <= period_end,
@@ -130,10 +122,10 @@ async def budget_status(
 async def get_budget(
     budget_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
-        select(Budget).where(Budget.id == budget_id, Budget.user_id == user_id)
+        select(Budget).where(Budget.id == budget_id, Budget.user_id == user.id)
     )
     budget = result.scalar_one_or_none()
     if not budget:
@@ -146,10 +138,10 @@ async def update_budget(
     budget_id: uuid.UUID,
     payload: BudgetUpdate,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
-        select(Budget).where(Budget.id == budget_id, Budget.user_id == user_id)
+        select(Budget).where(Budget.id == budget_id, Budget.user_id == user.id)
     )
     budget = result.scalar_one_or_none()
     if not budget:
@@ -168,10 +160,10 @@ async def update_budget(
 async def delete_budget(
     budget_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
-        select(Budget).where(Budget.id == budget_id, Budget.user_id == user_id)
+        select(Budget).where(Budget.id == budget_id, Budget.user_id == user.id)
     )
     budget = result.scalar_one_or_none()
     if not budget:

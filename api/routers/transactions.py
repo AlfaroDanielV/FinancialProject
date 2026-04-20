@@ -1,14 +1,14 @@
 import uuid
 from datetime import date
-from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..config import settings
 from ..database import get_db
+from ..dependencies import current_user, current_user_via_token
 from ..models.transaction import Transaction
+from ..models.user import User
 from ..schemas.transaction import (
     ShortcutTransactionCreate,
     TransactionCreate,
@@ -19,47 +19,37 @@ from ..schemas.transaction import (
 router = APIRouter(prefix="/api/v1/transactions", tags=["transactions"])
 
 
-def _get_default_user_id() -> uuid.UUID:
-    if not settings.default_user_id:
-        raise HTTPException(
-            status_code=503,
-            detail="DEFAULT_USER_ID not configured. Run scripts/create_user.py first.",
-        )
-    return uuid.UUID(settings.default_user_id)
-
-
 # ── iPhone Shortcut endpoint ────────────────────────────────────────────────
 
 @router.post("/shortcut", response_model=TransactionResponse, status_code=201)
 async def shortcut_transaction(
     payload: ShortcutTransactionCreate,
-    x_shortcut_token: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user_via_token),
 ):
     """
     Webhook for the iPhone Shortcut.
 
     Headers:
-        X-Shortcut-Token: <value of SHORTCUT_TOKEN in .env>
+        X-Shortcut-Token: <user.shortcut_token returned at registration>
 
     Body:
         {
           "amount": 5000,
           "merchant": "Supermercado Buen Precio",
           "category": "supermercado",
-          "is_expense": true,         // optional, defaults true
-          "description": "compras semana",  // optional
-          "transaction_date": "2026-04-12"  // optional, defaults today
+          "is_expense": true,
+          "description": "compras semana",
+          "transaction_date": "2026-04-12"
         }
-    """
-    if x_shortcut_token != settings.shortcut_token:
-        raise HTTPException(status_code=401, detail="Token inválido.")
 
-    user_id = _get_default_user_id()
+    user_id is attached server-side from the resolved token; the Shortcut
+    must NOT send it in the body.
+    """
     signed_amount = -abs(payload.amount) if payload.is_expense else abs(payload.amount)
 
     txn = Transaction(
-        user_id=user_id,
+        user_id=user.id,
         amount=signed_amount,
         currency="CRC",
         merchant=payload.merchant,
@@ -80,10 +70,10 @@ async def shortcut_transaction(
 async def create_transaction(
     payload: TransactionCreate,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     txn = Transaction(
-        user_id=user_id,
+        user_id=user.id,
         account_id=payload.account_id,
         amount=payload.amount,
         currency=payload.currency,
@@ -105,17 +95,16 @@ async def list_transactions(
     limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
-
     count_result = await db.execute(
-        select(func.count()).where(Transaction.user_id == user_id)
+        select(func.count()).where(Transaction.user_id == user.id)
     )
     total = count_result.scalar_one()
 
     result = await db.execute(
         select(Transaction)
-        .where(Transaction.user_id == user_id)
+        .where(Transaction.user_id == user.id)
         .order_by(Transaction.transaction_date.desc(), Transaction.created_at.desc())
         .limit(limit)
         .offset(offset)
@@ -129,12 +118,12 @@ async def list_transactions(
 async def get_transaction(
     transaction_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
         select(Transaction).where(
             Transaction.id == transaction_id,
-            Transaction.user_id == user_id,
+            Transaction.user_id == user.id,
         )
     )
     txn = result.scalar_one_or_none()
@@ -147,12 +136,12 @@ async def get_transaction(
 async def flag_transaction(
     transaction_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
         select(Transaction).where(
             Transaction.id == transaction_id,
-            Transaction.user_id == user_id,
+            Transaction.user_id == user.id,
         )
     )
     txn = result.scalar_one_or_none()

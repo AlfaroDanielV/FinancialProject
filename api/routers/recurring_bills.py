@@ -6,8 +6,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
+from ..dependencies import current_user
 from ..models.enums import BillCategory
 from ..models.recurring_bill import RecurringBill
+from ..models.user import User
 from ..schemas.recurring_bills import (
     RecurringBillCreate,
     RecurringBillResponse,
@@ -31,8 +33,10 @@ _SCHEDULE_FIELDS = {
 async def create_recurring_bill(
     payload: RecurringBillCreate,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     bill = RecurringBill(
+        user_id=user.id,
         name=payload.name,
         provider=payload.provider,
         category=payload.category.value,
@@ -64,8 +68,9 @@ async def list_recurring_bills(
     account_id: Optional[uuid.UUID] = Query(default=None),
     provider: Optional[str] = Query(default=None),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    stmt = select(RecurringBill)
+    stmt = select(RecurringBill).where(RecurringBill.user_id == user.id)
     if category is not None:
         stmt = stmt.where(RecurringBill.category == category.value)
     if is_active is not None:
@@ -83,8 +88,9 @@ async def list_recurring_bills(
 async def get_recurring_bill(
     bill_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    bill = await recurrence.fetch_bill(bill_id, db)
+    bill = await recurrence.fetch_bill(bill_id, user.id, db)
     if bill is None:
         raise HTTPException(status_code=404, detail="Factura recurrente no encontrada.")
     return bill
@@ -95,8 +101,9 @@ async def update_recurring_bill(
     bill_id: uuid.UUID,
     payload: RecurringBillUpdate,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    bill = await recurrence.fetch_bill(bill_id, db)
+    bill = await recurrence.fetch_bill(bill_id, user.id, db)
     if bill is None:
         raise HTTPException(status_code=404, detail="Factura recurrente no encontrada.")
 
@@ -124,8 +131,9 @@ async def update_recurring_bill(
 async def soft_delete_recurring_bill(
     bill_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    bill = await recurrence.fetch_bill(bill_id, db)
+    bill = await recurrence.fetch_bill(bill_id, user.id, db)
     if bill is None:
         raise HTTPException(status_code=404, detail="Factura recurrente no encontrada.")
 

@@ -6,12 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..config import settings
 from ..database import get_db
+from ..dependencies import current_user
 from ..models.budget import Budget
 from ..models.debt import Debt, DebtPayment
 from ..models.goal import Goal
 from ..models.transaction import Transaction
+from ..models.user import User
 from ..models.weekly_report import WeeklyReport
 from ..schemas.reports import (
     BudgetSummary,
@@ -29,15 +30,6 @@ from ..services.amortization import generate_schedule
 router = APIRouter(prefix="/api/v1/reports", tags=["reports"])
 
 
-def _get_default_user_id() -> uuid.UUID:
-    if not settings.default_user_id:
-        raise HTTPException(
-            status_code=503,
-            detail="DEFAULT_USER_ID not configured. Run scripts/create_user.py first.",
-        )
-    return uuid.UUID(settings.default_user_id)
-
-
 def _week_bounds(ref: date) -> tuple[date, date]:
     """Return Monday–Sunday window containing `ref`."""
     start = ref - timedelta(days=ref.weekday())
@@ -49,8 +41,9 @@ def _week_bounds(ref: date) -> tuple[date, date]:
 async def generate_weekly_report(
     payload: GenerateReportRequest | None = None,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
+    user_id = user.id
 
     ref_date = (payload.week_start if payload and payload.week_start else date.today())
     week_start, week_end = _week_bounds(ref_date)
@@ -307,11 +300,11 @@ async def generate_weekly_report(
 async def list_reports(
     limit: int = Query(default=10, ge=1, le=52),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
         select(WeeklyReport)
-        .where(WeeklyReport.user_id == user_id)
+        .where(WeeklyReport.user_id == user.id)
         .order_by(WeeklyReport.week_start.desc())
         .limit(limit)
     )
@@ -321,11 +314,11 @@ async def list_reports(
 @router.get("/latest", response_model=WeeklyReportResponse)
 async def latest_report(
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
         select(WeeklyReport)
-        .where(WeeklyReport.user_id == user_id)
+        .where(WeeklyReport.user_id == user.id)
         .order_by(WeeklyReport.week_start.desc())
         .limit(1)
     )
@@ -339,11 +332,11 @@ async def latest_report(
 async def get_report(
     report_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
 ):
-    user_id = _get_default_user_id()
     result = await db.execute(
         select(WeeklyReport).where(
-            WeeklyReport.id == report_id, WeeklyReport.user_id == user_id
+            WeeklyReport.id == report_id, WeeklyReport.user_id == user.id
         )
     )
     report = result.scalar_one_or_none()
