@@ -2,7 +2,22 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
-from .routers import accounts, agent, events, goals, reports, transactions
+from .routers import (
+    accounts,
+    agent,
+    bill_occurrences,
+    budgets,
+    calendar,
+    custom_events,
+    debts,
+    goals,
+    jobs,
+    notification_rules,
+    notifications,
+    recurring_bills,
+    reports,
+    transactions,
+)
 
 app = FastAPI(
     title="Finance Assistant API",
@@ -21,9 +36,17 @@ app.add_middleware(
 
 app.include_router(accounts.router)
 app.include_router(transactions.router)
+app.include_router(budgets.router)
+app.include_router(debts.router)
 app.include_router(reports.router)
 app.include_router(goals.router)
-app.include_router(events.router)
+app.include_router(recurring_bills.router)
+app.include_router(bill_occurrences.router)
+app.include_router(custom_events.router)
+app.include_router(notification_rules.router)
+app.include_router(notifications.router)
+app.include_router(calendar.router)
+app.include_router(jobs.router)
 app.include_router(agent.router)
 
 

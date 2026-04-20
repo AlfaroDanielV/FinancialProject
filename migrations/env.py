@@ -13,7 +13,21 @@ from sqlalchemy import pool
 
 # make sure all models are imported so Alembic can detect them
 from api.models.base import Base
-from api.models import User, Account, Transaction, Budget, Goal, Event, WeeklyReport  # noqa: F401
+from api.models import (  # noqa: F401
+    User,
+    Account,
+    Transaction,
+    Budget,
+    Goal,
+    WeeklyReport,
+    Debt,
+    DebtPayment,
+    RecurringBill,
+    BillOccurrence,
+    CustomEvent,
+    NotificationRule,
+    NotificationEvent,
+)
 
 config = context.config
 

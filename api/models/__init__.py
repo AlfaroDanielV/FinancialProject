@@ -3,8 +3,13 @@ from .account import Account
 from .transaction import Transaction
 from .budget import Budget
 from .goal import Goal
-from .event import Event
 from .weekly_report import WeeklyReport
+from .debt import Debt, DebtPayment
+from .recurring_bill import RecurringBill
+from .bill_occurrence import BillOccurrence
+from .custom_event import CustomEvent
+from .notification_rule import NotificationRule
+from .notification_event import NotificationEvent
 
 __all__ = [
     "User",
@@ -12,6 +17,12 @@ __all__ = [
     "Transaction",
     "Budget",
     "Goal",
-    "Event",
     "WeeklyReport",
+    "Debt",
+    "DebtPayment",
+    "RecurringBill",
+    "BillOccurrence",
+    "CustomEvent",
+    "NotificationRule",
+    "NotificationEvent",
 ]

@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import String, Boolean, Numeric, Date, ForeignKey
+from sqlalchemy import String, Integer, Numeric, Date, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import TIMESTAMP
@@ -22,11 +22,13 @@ class Goal(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     target_amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
     current_amount: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
-    target_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    deadline: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     monthly_contribution: Mapped[Optional[float]] = mapped_column(
         Numeric(12, 2), nullable=True
     )
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    # active | paused | completed | abandoned
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), default=datetime.utcnow
     )
