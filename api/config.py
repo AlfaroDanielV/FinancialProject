@@ -12,6 +12,14 @@ class Settings(BaseSettings):
 
     # Anthropic
     anthropic_api_key: str = ""
+    llm_extraction_model: str = "claude-haiku-4-5"
+    llm_daily_token_budget_per_user: int = 100_000
+
+    # Telegram (Phase 5b)
+    telegram_bot_token: str = ""
+    telegram_mode: str = "disabled"  # disabled | polling | webhook
+    telegram_webhook_secret: str = ""
+    telegram_webhook_url: str = ""
 
     # App
     environment: str = "development"

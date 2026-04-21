@@ -135,7 +135,7 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 
 ## Implementation Roadmap
 
-### Current Status: Phase 1 — Database & Manual Capture
+### Current Status: Phase 5b — Telegram bot + LLM extraction
 
 | Phase | Weeks | Focus | Done When |
 |---|---|---|---|
@@ -145,7 +145,8 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 | **3** | Wk 3–4 | Budgets, goals, weekly report | Weekly report sent via Telegram with spend-by-category, budget remaining, goal progress |
 | **4** ✅ | Wk 4 | Recurring bills + calendar alerts | API returns upcoming feed, pending alerts, `POST /jobs/*` materialize occurrences / mark overdue / compute notifications |
 | **5a** ✅ | Wk 4–5 | Users table + multi-user foundation | `scripts/phase5a_smoke.sh` passes: register → token returned once → cross-user data isolation → token rotation invalidates old |
-| **5** | Wk 5 | Telegram integration via OpenClaw | Can query balance, log transactions, and receive reports in Telegram |
+| **5b** 🔄 | Wk 5 | Telegram bot + LLM extraction (Spanish) | `scripts/phase5b_smoke.sh` passes against `_simulate`: pair → propose → confirm → undo → balance query → unknown-help |
+| **5** | Wk 5 | Telegram integration via OpenClaw (legacy row — see 5b) | Superseded by 5b for chat; OpenClaw row kept for future gateway review |
 | **6** | Wk 5–6 | Conversational agent + pushback engine | Ask "can I afford X?" and get a real answer from real data |
 | **7** | Wk 6–10 | **Stabilize. Use it. Fix bugs.** | 4+ weeks of reliable use. Trust it more than your bank app. |
 | **8** | Wk 11–16 | Multi-tenant, auth, onboarding, billing | Can onboard a second person via Telegram and they get accurate reports within a week |
@@ -155,6 +156,112 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 **Do not advance to the next phase until the current phase's "done when" is met.** Skipping ahead creates compounding correctness problems — especially for the AI layer, which is downstream of reliable data pipelines.
 
 **Phase 4 gate (current):** the 10-scenario smoke script `docs/curl/phase-4.sh` must pass end-to-end against a clean DB. Do not start Phase 5 (Telegram delivery of the notifications this phase produces) until that script is green, alembic `upgrade head` then `downgrade -1` both run clean, and the app boots with no SQLAlchemy 2.0 / Pydantic v2 warnings.
+
+---
+
+## Phase 5b — Telegram bot + LLM extraction
+
+The bot lives in `bot/` (sibling of `api/`). The pipeline is strictly:
+
+```
+Telegram update
+  → resolve user (telegram_user_id → users.id)
+  → [rate limit gate + daily token budget gate]
+  → command / confirmation short-circuit (no LLM if /help, /undo, /cancel, "sí", "no")
+  → LLM extractor (Anthropic, tool use) → ExtractionResult (Pydantic)
+  → deterministic Dispatcher → ProposeAction | AskClarification | RunQuery
+                            | ConfirmResponse | UndoRequest | ShowHelp | Reject
+  → if ProposeAction: stage PendingAction in Redis, send Sí/No/Editar keyboard
+  → if AskClarification: ask question, store partial in Redis
+  → if RunQuery: execute via services, format reply
+```
+
+**Hard rule (do not relax):** the LLM extracts, the dispatcher decides. No branch of the pipeline calls the LLM to choose what to do. If you find yourself wanting to "just ask Claude to decide", that's a signal the dispatcher is missing a rule.
+
+### Library + model choices
+
+- **aiogram v3** (not python-telegram-bot). Native asyncio, cleanest FastAPI integration, webhook is a one-liner (`dp.feed_update(bot, update)`). Built-in FSM is NOT used for durable state — see below.
+- **Claude Haiku 4.5** for extraction (`LLM_EXTRACTION_MODEL` env var). ~$0.40 / 1000 messages with prompt caching on. Sonnet swap is one env-var change if CR-slang fixtures reveal accuracy gaps.
+- **Prompt caching on from day 1.** `cache_control=ephemeral` on both the system prompt and tool schema blocks. Uncached runs burn input tokens fast during fixture-test dev — do not ship uncached.
+
+### State storage
+
+Redis is the source of truth for durable bot state. aiogram's FSM is permitted ONLY for transient in-handler dialog bookkeeping; anything that must survive a restart or a webhook-mode deploy goes in Redis. Key conventions in `bot/redis_keys.py`:
+
+| Key | Purpose | TTL |
+|---|---|---|
+| `telegram:pairing:{code}` | Pairing code → user_id | 300s |
+| `telegram:pending:{user_id}` | Staged proposal awaiting Sí/No/Editar | 300s |
+| `telegram:last_action:{user_id}` | Last committed action id for /undo | 24h |
+| `telegram:rate:{user_id}:{minute}` | Fixed-window rate counter (30/min) | 65s |
+| `telegram:tokens:{user_id}:{yyyymmdd}` | Daily LLM token spend | 36h |
+
+### Endpoints
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| POST | `/api/v1/users/me/telegram/pairing-code` | current_user | Mint a 6-char code (Redis, 5-min TTL). |
+| POST | `/api/v1/users/me/telegram/unpair` | current_user | Clear `users.telegram_user_id`. |
+| POST | `/api/v1/telegram/webhook` | `X-Telegram-Bot-Api-Secret-Token` | Receives updates in webhook mode; validates secret; feeds `aiogram.Dispatcher`. Returns 404 if `TELEGRAM_MODE != webhook`. |
+| POST | `/api/v1/telegram/_simulate` | none (dev only) | Drives `bot.pipeline` directly. **Rejected unless `ENV=development`.** Accepts `pairing_code` (runs pairing flow) or `mock_extraction` (skips LLM — used by smoke). |
+
+### Env vars (Phase 5b)
+
+```
+TELEGRAM_MODE=disabled          # disabled | polling | webhook
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_WEBHOOK_SECRET=        # required when mode=webhook
+TELEGRAM_WEBHOOK_URL=           # required when mode=webhook
+LLM_EXTRACTION_MODEL=claude-haiku-4-5
+LLM_DAILY_TOKEN_BUDGET_PER_USER=100000
+```
+
+`TELEGRAM_MODE=disabled` is the default so CI, fresh dev envs, and the Phase 1–4 smoke scripts all continue to boot without a bot token. Polling mode starts the bot as a background task on FastAPI's lifespan. Webhook mode calls `set_webhook()` on startup.
+
+### `llm_extractions` table (migration 0007)
+
+Every LLM call writes one row: `user_id`, SHA-256 `message_hash` (not raw text — personal finance stays out of INFO logs), `intent`, `confidence`, the full ExtractionResult JSON, latency, and token counts (including cache read / creation split). Purpose is evaluation (debugging "the bot misunderstood me" reports), not analytics. Indexed by `(user_id, created_at DESC)`.
+
+### Extraction contract
+
+`ExtractionResult` (Pydantic v2, `extra="forbid"`) fields: `intent`, `amount`, `currency`, `merchant`, `category_hint`, `account_hint`, `occurred_at_hint`, `query_window`, `confidence`, `raw_notes`. Validators:
+- `currency` normalized to `CRC|USD` or dropped to `None` (dispatcher then defaults to user.currency).
+- `query_window` validates the enum + `last_n_days:<N>` shape.
+- `amount` must be strictly positive (sign applied by dispatcher).
+- Unknown / malformed values fall to `None` rather than raising — the dispatcher prefers partial honesty to full hallucinations.
+
+### Dispatcher pass-through rules
+
+- `category_hint` → `transactions.category` verbatim (whitespace-normalized). **No synonym map** — the schema is free-form and premature normalization would hide real drift. Add mapping later with evidence from actual usage.
+- `account_hint` → rapidfuzz WRatio against `accounts.name`. Single active account auto-selects regardless of hint. Multiple + no clear match → clarify.
+- `occurred_at_hint` → small Spanish table (hoy, ayer, anteayer). Anything else falls back to today; summary surfaces the resolved date so the user can correct via Editar.
+- `confidence < 0.6` → always clarify for log/query intents (confirm_yes/no/undo/help/unknown short-circuit confidence).
+
+### `/undo` semantics
+
+Hard delete of the last committed transaction, guarded by three checks:
+
+1. Row must exist and belong to the caller.
+2. `transactions.source == 'telegram'` — we refuse to delete rows created via manual REST, email parse, or iPhone Shortcut.
+3. No `bill_occurrences.transaction_id` references it — if the user already marked a bill paid with this transaction, /undo refuses and points them to un-marking the bill first.
+
+Only the last action is undoable; deeper history requires the REST API.
+
+### `_simulate` endpoint (dev only)
+
+Two modes of the same endpoint:
+- Real LLM path: POST `{telegram_user_id, text}` — runs extractor + dispatcher + commit.
+- Zero-cost mock path: POST `{telegram_user_id, text, mock_extraction: {...}}` — skips the LLM and feeds the dict through `ExtractionResult.model_validate`. Used by `scripts/phase5b_smoke.sh` so CI doesn't burn Anthropic tokens.
+
+Also accepts `pairing_code` to drive the /start pairing flow from curl without a real Telegram client.
+
+### Testing
+
+- `tests/test_llm_extractor.py` — fixture tests with `FixtureLLMClient`. Deterministic, offline, pin the ExtractionResult schema.
+- `tests/test_telegram_dispatcher.py` — pure unit tests for every dispatcher branch. No LLM, no DB.
+- `scripts/phase5b_smoke.sh` — end-to-end against `_simulate` (pair → propose → confirm → undo → balance → help).
+
+Re-record extractor fixtures against the real API when the prompt or model changes. Drift is a signal prompt-engineering needs attention; don't loosen the assertions.
 
 ---
 
@@ -250,6 +357,9 @@ The LLM's system prompt enforces this separation:
 - ❌ Mobile app
 - ❌ Multi-currency support
 - ❌ Self-hosted LLM infrastructure
+- ❌ LLM in the bot dispatcher — dispatcher stays deterministic forever. Extraction is the only LLM call on the hot path.
+- ❌ Synonym/normalization maps for `category_hint`, `merchant`, etc. Pass LLM output through; address drift with real examples, not preemptive maps.
+- ❌ aiogram FSM for durable state. Redis is the source of truth — FSM is transient in-handler only.
 
 ---
 
@@ -273,6 +383,8 @@ DEFAULT_USER_ID=...             # optional, only to preserve a pre-5a row
 ```
 
 Pre-Phase-5a vars `WEBHOOK_SECRET` and `SHORTCUT_TOKEN` were removed; tokens now live on `users.shortcut_token`.
+
+Phase 5b adds `TELEGRAM_MODE`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_WEBHOOK_URL`, `LLM_EXTRACTION_MODEL`, `LLM_DAILY_TOKEN_BUDGET_PER_USER`. All optional — `TELEGRAM_MODE=disabled` is the default and lets the rest of the API boot without a bot.
 
 ---
 

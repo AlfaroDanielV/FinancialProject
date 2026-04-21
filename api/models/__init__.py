@@ -10,6 +10,7 @@ from .bill_occurrence import BillOccurrence
 from .custom_event import CustomEvent
 from .notification_rule import NotificationRule
 from .notification_event import NotificationEvent
+from .llm_extraction import LLMExtraction
 
 __all__ = [
     "User",
@@ -25,4 +26,5 @@ __all__ = [
     "CustomEvent",
     "NotificationRule",
     "NotificationEvent",
+    "LLMExtraction",
 ]
