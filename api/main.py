@@ -17,6 +17,7 @@ from .routers import (
     jobs,
     notification_rules,
     notifications,
+    nudges,
     recurring_bills,
     reports,
     telegram,
@@ -75,6 +76,7 @@ app.include_router(bill_occurrences.router)
 app.include_router(custom_events.router)
 app.include_router(notification_rules.router)
 app.include_router(notifications.router)
+app.include_router(nudges.router)
 app.include_router(calendar.router)
 app.include_router(jobs.router)
 app.include_router(agent.router)

@@ -56,12 +56,23 @@ from .pending import (
     new_short_id,
     save_pending,
 )
+from .pending_db import (
+    mark_previous_superseded,
+    persist_pending_confirmation,
+    resolve_from_pending,
+)
 from .queries import run_query
 from .rate_limit import check_and_increment_rate, check_token_budget, record_token_spend
 from .undo import run_undo
 
 
 log = logging.getLogger("bot.pipeline")
+
+
+# ── nudge callback verbs ──────────────────────────────────────────────────────
+_NUDGE_VERB_ACT = "act"
+_NUDGE_VERB_DISMISS = "dismiss"
+_NUDGE_VERB_LATER = "later"
 
 
 @dataclass
@@ -158,6 +169,12 @@ async def process_message(
         _ok, msg = await run_undo(user=user, db=db, redis=redis)
         return BotReply(text=msg)
     if lowered in _COMMAND_CANCEL:
+        existing_pending = await load_pending(user_id=user.id, redis=redis)
+        if existing_pending is not None:
+            await resolve_from_pending(
+                session=db, pending=existing_pending, resolution="cancelled"
+            )
+            await db.commit()
         await clear_pending(user_id=user.id, redis=redis)
         await clear_clarification(user_id=user.id, redis=redis)
         return BotReply(text=messages_es.CANCELLED)
@@ -236,6 +253,10 @@ async def _handle_confirm(
         return BotReply(text=messages_es.PENDING_NONE_TO_CONFIRM)
 
     if not yes:
+        await resolve_from_pending(
+            session=db, pending=pending, resolution="rejected"
+        )
+        await db.commit()
         await clear_pending(user_id=user.id, redis=redis)
         return BotReply(text=messages_es.COMMITTED_DISCARDED)
 
@@ -293,12 +314,22 @@ async def _apply_decision(
 
     if isinstance(decision, ProposeAction):
         short_id = new_short_id()
+        # Mark any previously-unresolved pending_confirmations for this
+        # user as 'superseded'. Whether Redis still had the prior one or
+        # not is irrelevant — the DB is the audit source for Phase 5d's
+        # stale_pending evaluator. Do this BEFORE inserting the new row.
+        await mark_previous_superseded(session=db, user_id=user.id)
         pending = PendingAction(
             short_id=short_id,
             action_type=decision.action_type,
             payload=decision.payload,
             summary_es=decision.summary_es,
         )
+        confirmation_id = await persist_pending_confirmation(
+            session=db, user_id=user.id, pending=pending
+        )
+        pending.confirmation_id = str(confirmation_id)
+        await db.commit()
         existing = await load_pending(user_id=user.id, redis=redis)
         prefix = ""
         if existing is not None:
@@ -366,6 +397,107 @@ async def handle_pending_callback(
         # Edit flow: for now, just clear and ask the user to resend. A
         # richer field-by-field edit is a follow-up; the spec marks it
         # optional under "Editar" → "ask which field to change".
+        await resolve_from_pending(
+            session=db, pending=pending, resolution="edited"
+        )
+        await db.commit()
         await clear_pending(user_id=user.id, redis=redis)
         return BotReply(text=messages_es.EDIT_PROMPT)
     return BotReply(text=messages_es.PENDING_NONE_TO_CONFIRM)
+
+
+# ── nudge inline-keyboard callbacks ──────────────────────────────────────────
+
+
+def _nudge_act_reply(nudge_type: str) -> str:
+    if nudge_type == "missing_income":
+        return messages_es.NUDGE_ACK_ACT_MISSING_INCOME
+    if nudge_type == "stale_pending_confirmation":
+        return messages_es.NUDGE_ACK_ACT_STALE_PENDING
+    if nudge_type == "upcoming_bill":
+        return messages_es.NUDGE_ACK_ACT_UPCOMING_BILL
+    return messages_es.NUDGE_ACK_DISMISS_SOFT
+
+
+async def handle_nudge_callback(
+    *,
+    user: User,
+    callback_data: str,
+    db: AsyncSession,
+    redis: Redis,  # noqa: ARG001 — kept for symmetry + future use
+) -> BotReply:
+    """`nudge:<nudge_id>:<verb>`. `act` flips the nudge to acted_on and
+    replies with a type-specific CTA (missing_income prompts for income,
+    stale_pending arms the proposal for re-confirmation via /sí, etc.).
+    `dismiss` / `later` both flip to dismissed (with silence counting);
+    the user-facing text differs but the state transition is the same.
+
+    For stale_pending_confirmation specifically: `dismiss` ALSO closes
+    the linked pending_confirmations row as 'rejected' so the next
+    evaluator pass doesn't re-nudge on the same proposal.
+    """
+    # Imports local to avoid widening the bot module's import surface —
+    # the dispatcher tests imported bot.pipeline before Phase 5d existed.
+    from api.services.nudges.actions import mark_acted_on, mark_dismissed
+    from api.models.user_nudge import UserNudge
+    from sqlalchemy import select
+
+    parts = callback_data.split(":")
+    if len(parts) != 3 or parts[0] != "nudge":
+        return BotReply(text=messages_es.NUDGE_EXPIRED)
+    _, raw_id, verb = parts
+    try:
+        nudge_id = uuid.UUID(raw_id)
+    except ValueError:
+        return BotReply(text=messages_es.NUDGE_EXPIRED)
+
+    # Pre-check existence + ownership so we can give NUDGE_EXPIRED (soft)
+    # rather than a 404 path. mark_* raises HTTPException on missing; we
+    # translate it here.
+    result = await db.execute(
+        select(UserNudge).where(
+            UserNudge.id == nudge_id, UserNudge.user_id == user.id
+        )
+    )
+    nudge = result.scalar_one_or_none()
+    if nudge is None:
+        return BotReply(text=messages_es.NUDGE_EXPIRED)
+    nudge_type = nudge.nudge_type
+
+    if verb == _NUDGE_VERB_ACT:
+        await mark_acted_on(db, user_id=user.id, nudge_id=nudge_id)
+        # Type-specific side-effect for stale_pending: if the user chooses
+        # to act on the stale reminder, we do NOT auto-resurrect the old
+        # proposal — they'll retype if they still want it. That keeps the
+        # transaction trail honest (the LLM re-extracts from the fresh
+        # message) and avoids reviving a proposal whose context is 48h+
+        # stale. The reply text nudges them to retype.
+        await db.commit()
+        return BotReply(text=_nudge_act_reply(nudge_type))
+
+    if verb in (_NUDGE_VERB_DISMISS, _NUDGE_VERB_LATER):
+        outcome = await mark_dismissed(db, user_id=user.id, nudge_id=nudge_id)
+        # stale_pending + hard dismiss → close the linked proposal too.
+        if (
+            verb == _NUDGE_VERB_DISMISS
+            and nudge_type == "stale_pending_confirmation"
+        ):
+            pending_cid = (nudge.payload or {}).get("pending_confirmation_id")
+            if pending_cid:
+                from .pending_db import mark_confirmation_resolved
+                try:
+                    cid = uuid.UUID(pending_cid)
+                except (TypeError, ValueError):
+                    cid = None
+                if cid is not None:
+                    await mark_confirmation_resolved(
+                        session=db, confirmation_id=cid, resolution="rejected"
+                    )
+        await db.commit()
+        if verb == _NUDGE_VERB_LATER:
+            return BotReply(text=messages_es.NUDGE_ACK_LATER)
+        if outcome.silence_created:
+            return BotReply(text=messages_es.NUDGE_ACK_DISMISS_HARD)
+        return BotReply(text=messages_es.NUDGE_ACK_DISMISS_SOFT)
+
+    return BotReply(text=messages_es.NUDGE_EXPIRED)

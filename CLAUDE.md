@@ -135,7 +135,7 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 
 ## Implementation Roadmap
 
-### Current Status: Phase 5b — Telegram bot + LLM extraction
+### Current Status: Phase 5d — Engagement nudges
 
 | Phase | Weeks | Focus | Done When |
 |---|---|---|---|
@@ -145,9 +145,10 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 | **3** | Wk 3–4 | Budgets, goals, weekly report | Weekly report sent via Telegram with spend-by-category, budget remaining, goal progress |
 | **4** ✅ | Wk 4 | Recurring bills + calendar alerts | API returns upcoming feed, pending alerts, `POST /jobs/*` materialize occurrences / mark overdue / compute notifications |
 | **5a** ✅ | Wk 4–5 | Users table + multi-user foundation | `scripts/phase5a_smoke.sh` passes: register → token returned once → cross-user data isolation → token rotation invalidates old |
-| **5b** 🔄 | Wk 5 | Telegram bot + LLM extraction (Spanish) | `scripts/phase5b_smoke.sh` passes against `_simulate`: pair → propose → confirm → undo → balance query → unknown-help |
-| **5** | Wk 5 | Telegram integration via OpenClaw (legacy row — see 5b) | Superseded by 5b for chat; OpenClaw row kept for future gateway review |
-| **6** | Wk 5–6 | Conversational agent + pushback engine | Ask "can I afford X?" and get a real answer from real data |
+| **5b** ✅ | Wk 5 | Telegram bot + LLM extraction (Spanish) | `scripts/phase5b_smoke.sh` passes against `_simulate`: pair → propose → confirm → undo → balance query → unknown-help |
+| **5c** ⏸ | Wk 5–6 | WhatsApp Cloud API adapter | Deferred until Meta Business Portfolio approval. Not scoped by 5d. |
+| **5d** ✅ | Wk 5–6 | Engagement nudges (missing_income / stale_pending / upcoming_bill) | `docs/curl/phase-5d.sh` passes: evaluate → list → dismiss 1x → dismiss 2x (silence) → act → dedup re-run → quiet hours → HIGH bypasses rate limit |
+| **6** | Wk 6–7 | Conversational agent + pushback engine | Ask "can I afford X?" and get a real answer from real data |
 | **7** | Wk 6–10 | **Stabilize. Use it. Fix bugs.** | 4+ weeks of reliable use. Trust it more than your bank app. |
 | **8** | Wk 11–16 | Multi-tenant, auth, onboarding, billing | Can onboard a second person via Telegram and they get accurate reports within a week |
 
@@ -262,6 +263,176 @@ Also accepts `pairing_code` to drive the /start pairing flow from curl without a
 - `scripts/phase5b_smoke.sh` — end-to-end against `_simulate` (pair → propose → confirm → undo → balance → help).
 
 Re-record extractor fixtures against the real API when the prompt or model changes. Drift is a signal prompt-engineering needs attention; don't loosen the assertions.
+
+---
+
+## Phase 5d — Engagement nudges
+
+The bot stops being purely reactive: deterministic evaluators scan the DB
+for three specific conditions, create `user_nudges` rows, and a delivery
+worker ships them via Telegram, filtered by four hard-coded anti-saturation
+rules. The LLM writes the final Spanish text; it NEVER decides whether
+or when to nudge.
+
+### Pipeline
+
+```
+/jobs/evaluate-nudges          /jobs/deliver-nudges
+        │                              │
+        ▼                              ▼
+┌──────────────────┐           ┌──────────────────┐
+│ evaluators/      │──rows─────▶ delivery.py      │
+│  missing_income  │           │  rate limit      │
+│  stale_pending   │           │  quiet hours     │
+│  upcoming_bill   │           │  silence (live)  │
+└──────────────────┘           │  phrase (LLM)    │
+        │                      │  send (Telegram) │
+        ▼                      └──────────────────┘
+   orchestrator                         │
+  (dedup + silence filter)              ▼
+         │                        user tap (inline kb)
+         ▼                              │
+     user_nudges                        ▼
+                         POST /nudges/{id}/act|dismiss
+                                        │
+                                        ▼
+                          state transition + auto-silence
+```
+
+### The three nudge types
+
+- **missing_income** — user has ≥5 transactions in last 7d AND zero
+  `amount > 0` transactions in last 30d. Dedup key
+  `missing_income:{user_id}:{YYYY-MM}` (one per calendar month). Priority
+  always `normal`.
+- **stale_pending_confirmation** — a `pending_confirmations` row has
+  `resolved_at IS NULL AND created_at < now - 48h`. Dedup key
+  `stale_pending:{pending_confirmation_id}`. Priority `normal`. The
+  dispatcher (bot/pipeline.py) writes this table in parallel to Redis
+  at propose-time; Redis is still the 5-minute session truth, Postgres
+  is the 48h+ audit.
+- **upcoming_bill** — a `notification_events` row with `status='pending'`
+  whose `payload_snapshot.due_date` (or `event_date` for custom_events)
+  falls within the next 72h. Dedup key `upcoming_bill:{notification_event_id}`.
+  Priority `high` when due_date ≤ today+1 (inside 24h on the calendar-date
+  model); `normal` otherwise.
+
+### Four anti-saturation rules (hard-coded, not user-configurable)
+
+All constants live in `api/services/nudges/policy.py` as named module-level
+values — no magic numbers elsewhere.
+
+1. **GLOBAL RATE LIMIT** — 1 delivered nudge per user per 48h. HIGH
+   priority bypasses this rule (it also doesn't count against future
+   rate limits). Implemented as: check prior `user_nudges.status='sent'
+   AND priority='normal' AND sent_at >= now-48h`; plus a same-run flag
+   that flips after the first normal send so a single worker pass never
+   sends two normals.
+2. **PER-TYPE SILENCING** — 2 dismissals of the same nudge_type within
+   the last 30d silence that type for that user for 14d. Silence rows
+   live in `user_nudge_silences` and are inserted at the moment the
+   threshold is crossed (not computed live on every evaluator pass).
+   A duplicate silence row is NOT inserted while an earlier one is
+   still active.
+3. **QUIET HOURS** — 21:00 → 07:00 in the user's timezone
+   (`users.timezone`, default America/Costa_Rica). Nudges generated in
+   the quiet window stay `status='pending'`; the next delivery pass
+   outside the window sends them. Applies to HIGH too — no emergency
+   delivery at 3am.
+4. **DEDUP** — `UNIQUE(user_id, dedup_key)` on `user_nudges` + the
+   orchestrator's `INSERT ... ON CONFLICT DO NOTHING` make re-runs of
+   the evaluator idempotent by construction.
+
+### Schema (migration 0008)
+
+- **user_nudges** — `id`, `user_id` FK `ON DELETE CASCADE`, `nudge_type`
+  (CHECK `missing_income|stale_pending_confirmation|upcoming_bill`),
+  `priority` (CHECK `normal|high`), `dedup_key` (UNIQUE with user_id),
+  `payload` JSONB, `source_notification_event_id` FK `ON DELETE SET NULL`,
+  `status` (CHECK `pending|sent|dismissed|acted_on|expired|suppressed`),
+  `delivery_channel`, plus timestamps `created_at | sent_at | dismissed_at
+  | acted_on_at | expired_at`. Partial index on `status='pending'` drives
+  the delivery worker; `(user_id, status, created_at DESC)` drives listing.
+- **user_nudge_silences** — `id`, `user_id`, `nudge_type`, `silenced_until`,
+  `reason` (free-form: `auto_dismissed_2x`, `manual_user_request`, ...).
+- **pending_confirmations** — durable mirror of every `PendingAction`
+  staged in Redis. `id`, `user_id`, `short_id`, `channel`,
+  `channel_message_id`, `action_type`, `proposed_action` JSONB,
+  `created_at`, `resolved_at`, `resolution` (CHECK
+  `confirmed|rejected|edited|superseded|cancelled`). Partial index on
+  `resolved_at IS NULL` drives the stale_pending evaluator.
+
+### Endpoints
+
+All under `/api/v1`. Auth matches the rest of the surface.
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| POST | `/jobs/evaluate-nudges` | `X-Shortcut-Token` | Run every evaluator against the caller's data. Returns `{created, deduplicated, silenced, per_type[]}`. Idempotent. |
+| POST | `/jobs/deliver-nudges` | `X-Shortcut-Token` | Process this user's pending nudges. Returns `{processed, sent, throttled_rate_limit, throttled_quiet_hours, throttled_silenced, failed}`. |
+| GET | `/nudges[?status=&limit=]` | shim or token | Scoped list; default 50, max 200. |
+| POST | `/nudges/{id}/dismiss` | shim or token | Flip to `dismissed`. Returns `{nudge, silence_created}`. Auto-inserts a silence row when the 2x-in-30d threshold is crossed. |
+| POST | `/nudges/{id}/act` | shim or token | Flip to `acted_on`. Idempotent. |
+
+### How to run the jobs
+
+There is still NO internal scheduler in Phase 5d. A cron (or the iPhone
+Shortcut, or a systemd timer) must call the two job endpoints on a schedule.
+Recommended cadence for personal use:
+
+- `/jobs/evaluate-nudges` — hourly
+- `/jobs/deliver-nudges` — every 15 minutes
+
+Both endpoints are idempotent and safe to run back-to-back.
+
+### Telegram integration
+
+The delivery worker calls `bot/nudges_send.py::telegram_send_fn` which
+wraps `bot.app.get_bot().send_message(...)` with an inline keyboard.
+`callback_data` format: `nudge:<uuid>:<verb>` where `verb ∈ {act, dismiss, later}`.
+
+The aiogram callback handler (`bot/handlers.py::on_nudge_callback`) delegates
+to `bot/pipeline.py::handle_nudge_callback`, which:
+
+- parses the callback_data
+- pre-checks ownership (soft NUDGE_EXPIRED reply instead of 404)
+- calls `api/services/nudges/actions.py::mark_acted_on` or `mark_dismissed`
+- replies with a type-specific Spanish-voseo CR message
+
+For `stale_pending_confirmation` specifically, `dismiss` also marks the
+linked `pending_confirmations.resolution='rejected'` so the evaluator
+doesn't re-nudge the same proposal next run.
+
+### Button constraints
+
+Three buttons per nudge, max. This is **intentional**: portability to
+WhatsApp (Phase 5c) is constrained by WhatsApp Cloud API's limit of 3
+quick-reply buttons per interactive message. Labels per type:
+
+- missing_income: Agregar ahora / Más tarde / No mostrar más
+- stale_pending_confirmation: Sí, agregar / Descartar / Más tarde
+- upcoming_bill: Ya pagué / Recordame mañana / Descartar
+
+"Más tarde" and "Recordame mañana" are UX-level soft-dismiss labels;
+internally they mark the nudge `dismissed` and count toward the 2x-silence
+threshold. The reply text ("Te aviso la próxima vez que chequee, si sigue
+pendiente") is honest: we don't schedule a specific re-nudge — if the
+condition persists and the dedup_key is still blocking, the user won't
+hear about it again. Scope-creep to "specific deferrals" is out.
+
+### Testing
+
+- `tests/test_nudges_evaluators.py` — per-evaluator + orchestrator tests
+  against a real throw-away Postgres user (NullPool engine per test).
+- `tests/test_nudges_delivery.py` — delivery worker with `FixturePhrasingClient`
+  + a local fake send function. Covers the 4 filter branches + failure modes.
+- `tests/test_nudges_actions.py` — state-machine math (silence threshold,
+  lookback window, type separation, ownership 404).
+- `tests/test_nudges_callback.py` — aiogram callback path: act/dismiss/later
+  + malformed callback_data + cross-user rejection.
+- `docs/curl/phase-5d.sh` — end-to-end smoke covering the 8 phase-gate
+  scenarios. Self-contained (registers its own user); requires Postgres +
+  API running and `jq` + `python3` on the host.
 
 ---
 
@@ -397,6 +568,10 @@ Phase 5b adds `TELEGRAM_MODE`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, 
 - **RRULE validation.** We accept any iCalendar RRULE string via `recurrence_rule` but don't validate it until generation time. A bad rule will surface as an exception during `generate_occurrences`, not at write time.
 - ~~**No per-user scoping on Phase 4 tables.**~~ Resolved in Phase 5a — every Phase 4 table now carries a `user_id` FK with `ON DELETE RESTRICT` and per-user composite indexes (see migration 0006).
 - **`X-User-Id` dev shim is shipped to production code.** Tracked here so we don't forget to remove it. See the Phase 5a section below for details.
+- **Phase 5d: no `pending_confirmations` retention policy.** One row per bot proposal; ~tens of inserts/day in personal use, no pruning. At 10k rows/year this is fine for Postgres. When it crosses a threshold, add a nightly `DELETE WHERE resolved_at < now() - '1 year'::interval`.
+- **Phase 5d: "Más tarde" / "Recordame mañana" don't actually schedule a deferred re-nudge.** They mark the nudge `dismissed` and count toward silence like any other dismiss. The reply text is honest about it. A proper deferral mechanism needs a scheduler (see first bullet) — wire it when the scheduler lands.
+- **Phase 5d: `upcoming_bill` can't re-nudge while status=dismissed.** The `UNIQUE(user_id, dedup_key)` means once the user "descarta" a bill reminder, the next evaluator run won't re-generate it — even if the bill is still within 72h. By design: the user said "no" and we respect it.
+- **Phase 5d: one `upcoming_bill` candidate per pending `notification_events` row.** Phase 4's `compute_pending_notifications` creates one row per `(bill_occurrence, advance_days)` pair — so a bill with `advance_days=[7,3,1,0]` produces 4 pending rows once due_date is within 72h, and the evaluator surfaces all 4 as distinct nudges (distinct dedup_keys). The 48h rate limit caps delivery to ~1 per window in practice, but this is still more fan-out than ideal. A future fix collapses multi-tier notifications per bill into one nudge before insert.
 
 ---
 

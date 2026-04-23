@@ -69,3 +69,31 @@ class NotificationStatus(str, Enum):
     ACKNOWLEDGED = "acknowledged"
     DISMISSED = "dismissed"
     FAILED = "failed"
+
+
+class NudgeType(str, Enum):
+    MISSING_INCOME = "missing_income"
+    STALE_PENDING_CONFIRMATION = "stale_pending_confirmation"
+    UPCOMING_BILL = "upcoming_bill"
+
+
+class NudgePriority(str, Enum):
+    NORMAL = "normal"
+    HIGH = "high"
+
+
+class NudgeStatus(str, Enum):
+    PENDING = "pending"
+    SENT = "sent"
+    DISMISSED = "dismissed"
+    ACTED_ON = "acted_on"
+    EXPIRED = "expired"
+    SUPPRESSED = "suppressed"
+
+
+class PendingConfirmationResolution(str, Enum):
+    CONFIRMED = "confirmed"
+    REJECTED = "rejected"
+    EDITED = "edited"
+    SUPERSEDED = "superseded"
+    CANCELLED = "cancelled"

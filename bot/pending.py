@@ -26,19 +26,29 @@ class PendingAction:
     """Staged proposal awaiting Sí / No / Editar. `short_id` is echoed into
     the inline keyboard callback payload so a stale button press (user had
     an old message on screen and tapped after a new proposal overwrote the
-    key) is rejected instead of committing the wrong thing."""
+    key) is rejected instead of committing the wrong thing.
+
+    `confirmation_id` links the Redis session to the durable row in
+    pending_confirmations (Phase 5d). Optional because Redis entries
+    written before Phase 5d won't have it — those just can't have their
+    DB row resolved, which is harmless (stale_pending evaluator will skip
+    them until they time out of its 48h window with no audit trail)."""
 
     short_id: str
     action_type: str  # "log_expense" | "log_income"
     payload: dict[str, Any]
     summary_es: str
+    confirmation_id: Optional[str] = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
 
     @classmethod
     def from_json(cls, raw: str) -> "PendingAction":
-        return cls(**json.loads(raw))
+        data = json.loads(raw)
+        # Backwards compat: pre-5d JSON had only four keys.
+        data.setdefault("confirmation_id", None)
+        return cls(**data)
 
 
 def new_short_id() -> str:

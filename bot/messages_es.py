@@ -97,3 +97,26 @@ DAILY_BUDGET_HIT = (
 
 EXTRACTOR_FAILED = "Se me trabó el entendimiento. ¿Podés reescribir el mensaje más simple?"
 CANCELLED = "Cancelado."
+
+
+# ── nudge callbacks ───────────────────────────────────────────────────────────
+
+NUDGE_EXPIRED = "Ese recordatorio ya no está activo."
+NUDGE_ACK_ACT_MISSING_INCOME = (
+    "¡Dale! Mandame cuánto te entra al mes, por ejemplo: "
+    "«gano 500 mil al mes» o «me pagan quincenal 250 mil»."
+)
+NUDGE_ACK_ACT_STALE_PENDING = (
+    "Perfecto. Mandame «sí» o tapeá Sí ✅ cuando estés listo para confirmarla."
+)
+NUDGE_ACK_ACT_UPCOMING_BILL = (
+    "¡Genial! Si querés registrar el pago, mandame algo como "
+    "«gasté ₡35000 en ICE»."
+)
+NUDGE_ACK_DISMISS_HARD = (
+    "Entendido. Por 2 semanas no te molesto con recordatorios de este tipo."
+)
+NUDGE_ACK_DISMISS_SOFT = "Listo, descartado."
+NUDGE_ACK_LATER = (
+    "Okey. Te aviso la próxima vez que chequee, si sigue pendiente."
+)

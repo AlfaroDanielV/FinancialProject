@@ -18,6 +18,7 @@ from api.models.user import User
 from api.services.transactions import create_transaction
 
 from .pending import PendingAction, clear_pending, save_last_action
+from .pending_db import resolve_from_pending
 
 
 async def commit_pending(
@@ -55,6 +56,13 @@ async def commit_pending(
         source="telegram",
         db=db,
     )
+
+    # Phase 5d: close the durable pending_confirmations row too.
+    # create_transaction already committed; do the update + its own commit.
+    await resolve_from_pending(
+        session=db, pending=pending, resolution="confirmed"
+    )
+    await db.commit()
 
     await clear_pending(user_id=user.id, redis=redis)
     await save_last_action(
