@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -18,8 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class Intent(str, Enum):
     LOG_EXPENSE = "log_expense"
     LOG_INCOME = "log_income"
-    QUERY_RECENT = "query_recent"
-    QUERY_BALANCE = "query_balance"
+    QUERY = "query"
     CONFIRM_YES = "confirm_yes"
     CONFIRM_NO = "confirm_no"
     UNDO = "undo"
@@ -47,6 +46,7 @@ class ExtractionResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     intent: Intent
+    dispatcher: Literal["write", "query", "control"]
     amount: Optional[Decimal] = Field(default=None)
     currency: Optional[str] = Field(default=None)
     merchant: Optional[str] = Field(default=None, max_length=255)

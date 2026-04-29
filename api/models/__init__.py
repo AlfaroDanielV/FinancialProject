@@ -11,6 +11,7 @@ from .custom_event import CustomEvent
 from .notification_rule import NotificationRule
 from .notification_event import NotificationEvent
 from .llm_extraction import LLMExtraction
+from .llm_query_dispatch import LLMQueryDispatch
 from .pending_confirmation import PendingConfirmation
 from .user_nudge import UserNudge, UserNudgeSilence
 
@@ -29,6 +30,7 @@ __all__ = [
     "NotificationRule",
     "NotificationEvent",
     "LLMExtraction",
+    "LLMQueryDispatch",
     "PendingConfirmation",
     "UserNudge",
     "UserNudgeSilence",

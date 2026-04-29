@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     # Anthropic
     anthropic_api_key: str = ""
     llm_extraction_model: str = "claude-haiku-4-5"
+    llm_query_model: str = "claude-sonnet-4-5"
+    llm_query_iteration_cap: int = 4
     llm_daily_token_budget_per_user: int = 100_000
 
     # Telegram (Phase 5b)

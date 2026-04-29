@@ -53,17 +53,6 @@ class AskClarification:
 
 
 @dataclass(frozen=True)
-class RunQuery:
-    """No confirmation needed — execute and reply. Windows are pre-resolved
-    to concrete [start, end] dates so the handler never parses strings."""
-
-    query_kind: str  # "recent" | "balance"
-    window_start: date
-    window_end: date
-    limit: int = 5
-
-
-@dataclass(frozen=True)
 class ConfirmResponse:
     """User said yes/no/cancel. The handler correlates with the Redis
     pending-action key — dispatcher doesn't know if one exists."""
@@ -96,7 +85,6 @@ class Reject:
 DispatcherResult = Union[
     ProposeAction,
     AskClarification,
-    RunQuery,
     ConfirmResponse,
     UndoRequest,
     ShowHelp,
@@ -175,23 +163,11 @@ async def dispatch(
             partial=extraction.model_dump(mode="json"),
         )
 
-    if intent is Intent.QUERY_RECENT:
-        window_value = extraction.query_window or "this_week"
-        start, end = window_bounds(window_value, today)
-        return RunQuery(
-            query_kind="recent",
-            window_start=start,
-            window_end=end,
-            limit=DEFAULT_RECENT_LIMIT,
-        )
-
-    if intent is Intent.QUERY_BALANCE:
-        window_value = extraction.query_window or "this_month"
-        start, end = window_bounds(window_value, today)
-        return RunQuery(
-            query_kind="balance",
-            window_start=start,
-            window_end=end,
+    if intent is Intent.QUERY:
+        raise RuntimeError(
+            "Intent.QUERY no debe llegar al dispatcher de write. "
+            "Verificá el routing en bot/pipeline.py — el dispatcher de query "
+            "debe interceptar antes."
         )
 
     if intent in (Intent.LOG_EXPENSE, Intent.LOG_INCOME):

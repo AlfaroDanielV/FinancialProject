@@ -5,7 +5,8 @@ Each handler:
   1. Opens a DB session (AsyncSessionLocal).
   2. Resolves the user via telegram_user_id (or handles /start for pairing).
   3. Delegates to `bot.pipeline`.
-  4. Converts the returned BotReply into a Telegram message.
+  4. Converts the returned BotReply into Telegram messages (chunked +
+     sanitized via `bot.delivery_send`).
 
 Keep logic out of here. If you find yourself writing an `if` beyond
 pairing or routing, put it in pipeline.py instead — this file stays thin
@@ -13,10 +14,12 @@ so the _simulate endpoint can drive the same code path faithfully.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Optional
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, Optional
 
-from aiogram import Dispatcher, F, Router
+from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import (
     CallbackQuery,
@@ -30,8 +33,11 @@ from api.database import AsyncSessionLocal
 from api.models.user import User
 from api.redis_client import get_redis
 
+from app.queries.history import clear_history
+
 from . import messages_es
-from .app import get_llm_client
+from .app import get_bot, get_llm_client
+from .delivery_send import send_chunked
 from .pairing import consume_pairing_code, resolve_pairing_code
 from .clarification import clear_clarification
 from .pending import clear_pending, load_pending
@@ -44,6 +50,12 @@ from .pipeline import (
 )
 from .user_resolver import bind_telegram_id, user_by_telegram_id
 from api.config import settings
+
+
+# Refresh cadence for the typing indicator. Telegram expires the action
+# at 5s; 4s leaves comfortable headroom for jitter without flooding the
+# Bot API. See docs/phase-6a-decisions.md (2026-04-29 entry).
+TYPING_REFRESH_INTERVAL_S = 4.0
 
 
 log = logging.getLogger("bot.handlers")
@@ -71,7 +83,51 @@ def _kb(reply: BotReply) -> Optional[InlineKeyboardMarkup]:
 
 
 async def _send(message: Message, reply: BotReply) -> None:
-    await message.answer(reply.text, reply_markup=_kb(reply))
+    """Send `reply` to Telegram, chunked + sanitized for HTML safety.
+
+    Buttons attach to the LAST chunk. Most replies fit in a single chunk
+    (cap is 3900 chars); the splitter is a no-op there.
+    """
+    await send_chunked(message, reply.text, reply_markup=_kb(reply))
+
+
+# ── typing indicator ──────────────────────────────────────────────────────────
+
+
+async def _typing_loop(bot: Bot, chat_id: int) -> None:
+    """Send `typing` every TYPING_REFRESH_INTERVAL_S until cancelled.
+
+    Network failures are swallowed (the indicator is best-effort UX, not
+    correctness) but `CancelledError` propagates so the task exits
+    cleanly when the context manager finishes.
+    """
+    while True:
+        try:
+            await bot.send_chat_action(chat_id=chat_id, action="typing")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.debug("typing send_chat_action failed", exc_info=True)
+        await asyncio.sleep(TYPING_REFRESH_INTERVAL_S)
+
+
+@asynccontextmanager
+async def typing_action(bot: Bot, chat_id: int) -> AsyncIterator[None]:
+    """Background task that keeps the `typing` indicator alive.
+
+    Fires the first send_chat_action immediately, then refreshes every
+    TYPING_REFRESH_INTERVAL_S seconds. On exit (success or exception)
+    the task is cancelled and awaited so we don't leak.
+    """
+    task = asyncio.create_task(_typing_loop(bot, chat_id))
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 # ── /start ────────────────────────────────────────────────────────────────────
@@ -179,6 +235,26 @@ async def on_whoami(message: Message) -> None:
         )
 
 
+@router.message(Command("clear"))
+async def on_clear(message: Message) -> None:
+    """Wipe the user's query conversation history. Idempotent.
+
+    Touches NO write-state — pending proposals (telegram:pending:*) and
+    clarification round-trips (telegram:clarify:*) are owned by /cancel.
+    """
+    if message.from_user is None:
+        return
+    async with AsyncSessionLocal() as db:
+        user = await user_by_telegram_id(
+            telegram_user_id=message.from_user.id, db=db
+        )
+        if user is None:
+            await message.answer(messages_es.PAIR_PROMPT)
+            return
+        await clear_history(user.id, redis=get_redis())
+    await message.answer(messages_es.CONTEXT_CLEARED)
+
+
 @router.message(Command("undo"))
 async def on_undo(message: Message) -> None:
     if message.from_user is None:
@@ -202,22 +278,24 @@ async def on_undo(message: Message) -> None:
 async def on_text(message: Message) -> None:
     if message.from_user is None or not message.text:
         return
-    async with AsyncSessionLocal() as db:
-        user = await user_by_telegram_id(
-            telegram_user_id=message.from_user.id, db=db
-        )
-        if user is None:
-            await message.answer(messages_es.PAIR_PROMPT)
-            return
-        reply = await process_message(
-            user=user,
-            text=message.text,
-            db=db,
-            redis=get_redis(),
-            llm_client=get_llm_client(),
-            llm_model=settings.llm_extraction_model,
-        )
-    await _send(message, reply)
+    bot = get_bot()
+    async with typing_action(bot, message.chat.id):
+        async with AsyncSessionLocal() as db:
+            user = await user_by_telegram_id(
+                telegram_user_id=message.from_user.id, db=db
+            )
+            if user is None:
+                await message.answer(messages_es.PAIR_PROMPT)
+                return
+            reply = await process_message(
+                user=user,
+                text=message.text,
+                db=db,
+                redis=get_redis(),
+                llm_client=get_llm_client(),
+                llm_model=settings.llm_extraction_model,
+            )
+        await _send(message, reply)
 
 
 # ── inline-keyboard callbacks ─────────────────────────────────────────────────

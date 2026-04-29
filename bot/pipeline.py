@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.queries.dispatcher import handle as query_dispatcher_handle
 from api.models.user import User
 from api.services.llm_extractor import (
     ExtractionResult,
@@ -33,7 +34,6 @@ from api.services.telegram_dispatcher import (
     ConfirmResponse,
     ProposeAction,
     Reject,
-    RunQuery,
     ShowHelp,
     UndoRequest,
     dispatch,
@@ -61,8 +61,9 @@ from .pending_db import (
     persist_pending_confirmation,
     resolve_from_pending,
 )
-from .queries import run_query
-from .rate_limit import check_and_increment_rate, check_token_budget, record_token_spend
+from .rate_limit import check_and_increment_rate
+from app.queries.delivery import BudgetExceeded, handle_query_error
+from api.services.budget import assert_within_budget
 from .undo import run_undo
 
 
@@ -189,6 +190,20 @@ async def process_message(
         if merged is None:
             # Reply couldn't be interpreted — keep state, re-ask.
             return BotReply(text=pending_clarify.question_es)
+        if merged.dispatcher == "query":
+            log.info(
+                "clarification_abandoned reason=query_dispatcher user_id=%s",
+                user.id,
+            )
+            await clear_clarification(user_id=user.id, redis=redis)
+            return await _route_extraction(
+                user=user,
+                text=text,
+                extraction=merged,
+                today=today,
+                db=db,
+                redis=redis,
+            )
         decision = await dispatch(
             extraction=merged, user=user, today=today, db=db
         )
@@ -206,11 +221,19 @@ async def process_message(
         )
 
     # ── token budget gate ──
-    # Checked only for calls that will actually invoke the LLM. Confirmations
-    # and (shortly) /undo shouldn't burn the user's daily budget.
-    has_budget = await check_token_budget(user_id=user.id, redis=redis, today=today)
-    if not has_budget:
-        return BotReply(text=messages_es.DAILY_BUDGET_HIT)
+    # Source of truth: llm_extractions + llm_query_dispatches summed
+    # since CR midnight (api.services.budget). Both dispatchers contribute
+    # to the same daily cap. Confirmations and /undo bypass this gate
+    # because they don't invoke the LLM.
+    tz_name = getattr(user, "timezone", None) or "America/Costa_Rica"
+    try:
+        await assert_within_budget(
+            user_id=user.id, db=db, tz_name=tz_name
+        )
+    except BudgetExceeded as e:
+        # Reuse the same Spanish copy as the query dispatcher's error
+        # handler so both paths look identical to the user.
+        return BotReply(text=handle_query_error(e, user_id=user.id))
 
     # ── extract ──
     try:
@@ -225,19 +248,13 @@ async def process_message(
         log.info("extractor_failure user_id=%s err=%s", user.id, type(e).__name__)
         return BotReply(text=messages_es.EXTRACTOR_FAILED)
 
-    # Record approximate spend. The extractor logged exact token counts to
-    # llm_extractions; we re-derive from the result's side effects via a
-    # best-effort estimate here so we don't have to plumb them back up.
-    # Rough: ~500 tokens per call (input + output) — close enough for a
-    # budget guard that's not a quota.
-    await record_token_spend(user_id=user.id, redis=redis, today=today, tokens=500)
-
-    # ── dispatch ──
-    decision = await dispatch(
-        extraction=extraction, user=user, today=today, db=db
-    )
-    return await _apply_decision(
-        user=user, decision=decision, db=db, redis=redis
+    return await _route_extraction(
+        user=user,
+        text=text,
+        extraction=extraction,
+        today=today,
+        db=db,
+        redis=redis,
     )
 
 
@@ -292,6 +309,33 @@ async def process_mock_extraction(
         return BotReply(text=messages_es.EXTRACTOR_FAILED)
 
     today = _today_for(user)
+    return await _route_extraction(
+        user=user,
+        text="",
+        extraction=extraction,
+        today=today,
+        db=db,
+        redis=redis,
+    )
+
+
+async def _route_extraction(
+    *,
+    user: User,
+    text: str,
+    extraction: ExtractionResult,
+    today: date,
+    db: AsyncSession,
+    redis: Redis,
+) -> BotReply:
+    if extraction.dispatcher == "query":
+        reply = await query_dispatcher_handle(
+            user.id,
+            text,
+            user.telegram_user_id,
+        )
+        return BotReply(text=reply)
+
     decision = await dispatch(
         extraction=extraction, user=user, today=today, db=db
     )
@@ -350,9 +394,6 @@ async def _apply_decision(
             redis=redis,
         )
         return BotReply(text=decision.question_es)
-    if isinstance(decision, RunQuery):
-        reply = await run_query(user=user, query=decision, db=db)
-        return BotReply(text=reply)
     if isinstance(decision, ConfirmResponse):
         return await _handle_confirm(
             user=user, yes=decision.yes, db=db, redis=redis

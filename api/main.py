@@ -18,6 +18,7 @@ from .routers import (
     notification_rules,
     notifications,
     nudges,
+    queries,
     recurring_bills,
     reports,
     telegram,
@@ -80,6 +81,7 @@ app.include_router(nudges.router)
 app.include_router(calendar.router)
 app.include_router(jobs.router)
 app.include_router(agent.router)
+app.include_router(queries.router)
 app.include_router(telegram.users_tg_router)
 app.include_router(telegram.telegram_router)
 

@@ -44,5 +44,6 @@ def rate_key(user_id: uuid.UUID | str, minute_bucket: int) -> str:
     return f"telegram:rate:{user_id}:{minute_bucket}"
 
 
-def token_budget_key(user_id: uuid.UUID | str, yyyymmdd: str) -> str:
-    return f"telegram:tokens:{user_id}:{yyyymmdd}"
+# `token_budget_key` was removed in bloque 8.5: the daily token budget
+# moved to api.services.budget (DB-backed). See docs/phase-6a-decisions.md
+# entry 2026-04-29.

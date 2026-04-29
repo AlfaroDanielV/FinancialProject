@@ -34,6 +34,21 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+# ── Redis singleton reset ─────────────────────────────────────────────────────
+# api.redis_client.get_redis() caches a `Redis` instance bound to the event
+# loop that created it. pytest-asyncio uses a fresh loop per function by
+# default, so the cached client carries a dead loop into the next test and
+# every Redis call raises "Event loop is closed". Resetting the singleton
+# before each test forces lazy reconstruction against the live loop.
+@pytest.fixture(autouse=True)
+def _reset_redis_singleton():
+    import api.redis_client as _redis_client_module
+
+    _redis_client_module._client = None
+    yield
+    _redis_client_module._client = None
+
+
 # ── async DB fixture for Phase 5d evaluator / orchestrator tests ──────────────
 # Tables touched by evaluators + orchestrator, in deletion order (children
 # first). user_id cascades on most, but transactions / notification_events
@@ -47,6 +62,8 @@ _CLEANUP_TABLES = (
     "recurring_bills",
     "custom_events",
     "notification_rules",
+    "debt_payments",
+    "debts",
     "transactions",
     "accounts",
 )
@@ -86,6 +103,16 @@ async def db_with_user() -> AsyncGenerator[tuple[AsyncSession, uuid.UUID], None]
         finally:
             await session.rollback()
             for table in _CLEANUP_TABLES:
+                if table == "debt_payments":
+                    # debt_payments has no user_id; FK via debts.id
+                    await session.execute(
+                        text(
+                            "DELETE FROM debt_payments "
+                            "WHERE debt_id IN (SELECT id FROM debts WHERE user_id = :u)"
+                        ),
+                        {"u": user_id},
+                    )
+                    continue
                 await session.execute(
                     text(f"DELETE FROM {table} WHERE user_id = :u"),
                     {"u": user_id},

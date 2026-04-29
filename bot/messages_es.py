@@ -97,6 +97,7 @@ DAILY_BUDGET_HIT = (
 
 EXTRACTOR_FAILED = "Se me trabó el entendimiento. ¿Podés reescribir el mensaje más simple?"
 CANCELLED = "Cancelado."
+CONTEXT_CLEARED = "Listo, contexto limpio."
 
 
 # ── nudge callbacks ───────────────────────────────────────────────────────────

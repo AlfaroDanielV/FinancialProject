@@ -108,6 +108,12 @@ def merge_reply(
         # higher-confidence than whatever the original fuzzy extraction
         # was. Bump above CONFIDENCE_FLOOR so the dispatcher acts.
         merged["confidence"] = 0.8
+        if intent in (Intent.LOG_EXPENSE, Intent.LOG_INCOME):
+            merged["dispatcher"] = "write"
+        elif intent is Intent.QUERY:
+            merged["dispatcher"] = "query"
+        else:
+            merged["dispatcher"] = "control"
     else:
         return None
 
@@ -186,13 +192,11 @@ _INTENT_KEYWORDS: dict[Intent, tuple[str, ...]] = {
         "entro",
         "salario",
     ),
-    Intent.QUERY_RECENT: (
+    Intent.QUERY: (
         "últimas",
         "ultimas",
         "recientes",
         "movimientos",
-    ),
-    Intent.QUERY_BALANCE: (
         "balance",
         "total",
         "consulta",
