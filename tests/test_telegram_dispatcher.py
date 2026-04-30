@@ -54,8 +54,16 @@ def _stub_accounts(monkeypatch, accounts: list[_FakeAccount], resolved: Optional
 
 
 def _extraction(**overrides) -> ExtractionResult:
+    intent = overrides.get("intent", Intent.LOG_EXPENSE)
+    if intent in (Intent.LOG_EXPENSE, Intent.LOG_INCOME):
+        dispatcher = "write"
+    elif intent is Intent.QUERY:
+        dispatcher = "query"
+    else:
+        dispatcher = "control"
     base = {
-        "intent": Intent.LOG_EXPENSE,
+        "intent": intent,
+        "dispatcher": dispatcher,
         "amount": Decimal("5000"),
         "currency": "CRC",
         "merchant": "Super",
@@ -295,53 +303,26 @@ async def test_log_expense_unknown_hint_falls_back_to_today(monkeypatch):
     assert result.payload["transaction_date"] == "2026-04-20"
 
 
-# ── queries: window resolution ────────────────────────────────────────────────
+# ── queries: routed before write dispatcher ──────────────────────────────────
 
 
-async def test_query_balance_resolves_window(monkeypatch):
+async def test_query_intent_is_rejected_by_write_dispatcher(monkeypatch):
     _stub_accounts(monkeypatch, [], None)
-    result = await td.dispatch(
-        extraction=_extraction(
-            intent=Intent.QUERY_BALANCE,
-            amount=None,
-            currency=None,
-            merchant=None,
-            category_hint=None,
-            query_window="this_month",
-            confidence=0.9,
-        ),
-        user=_user(),
-        today=date(2026, 4, 20),
-        db=object(),
-    )
-    assert isinstance(result, td.RunQuery)
-    assert result.query_kind == "balance"
-    assert result.window_start == date(2026, 4, 1)
-    assert result.window_end == date(2026, 4, 20)
-
-
-async def test_query_recent_uses_default_window(monkeypatch):
-    _stub_accounts(monkeypatch, [], None)
-    # Extractor returns query_window=None → dispatcher should pick a default.
-    result = await td.dispatch(
-        extraction=_extraction(
-            intent=Intent.QUERY_RECENT,
-            amount=None,
-            currency=None,
-            merchant=None,
-            category_hint=None,
-            query_window=None,
-            confidence=0.9,
-        ),
-        user=_user(),
-        today=date(2026, 4, 20),
-        db=object(),
-    )
-    assert isinstance(result, td.RunQuery)
-    assert result.query_kind == "recent"
-    # this_week starts on Monday 2026-04-20 (which is a Monday itself)
-    assert result.window_start == date(2026, 4, 20)
-    assert result.limit == td.DEFAULT_RECENT_LIMIT
+    with pytest.raises(RuntimeError, match="Intent.QUERY no debe llegar"):
+        await td.dispatch(
+            extraction=_extraction(
+                intent=Intent.QUERY,
+                amount=None,
+                currency=None,
+                merchant=None,
+                category_hint=None,
+                query_window="this_month",
+                confidence=0.9,
+            ),
+            user=_user(),
+            today=date(2026, 4, 20),
+            db=object(),
+        )
 
 
 # ── clarification round-trip ──────────────────────────────────────────────────

@@ -8,8 +8,9 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
-from api.database import AsyncSessionLocal
 from api.models.pending_confirmation import PendingConfirmation
+
+from app.queries.session import AsyncSessionLocal
 
 from .base import is_tool_registered, query_tool
 

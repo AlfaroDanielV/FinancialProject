@@ -7,12 +7,16 @@ query layer without paired Telegram credentials, and so block 11's
 smoke can assert on chunking / token counters / tools_used directly.
 
 Auth: `current_user` (X-Shortcut-Token preferred, X-User-Id dev shim
-accepted). 401 with neither.
+accepted). 401 with neither. The request body still includes Telegram's
+`user_id` as a guard/debug identifier, but it never selects the tenant;
+the authenticated user does.
 
 Status codes:
 - 200: dispatcher ran (success OR Spanish-mapped error returned in
   `reply`). Inspect `error_category` to distinguish.
 - 401: missing auth.
+- 403: body `user_id` conflicts with the authenticated user's Telegram
+  pairing.
 - 429: daily token budget exhausted (pre-checked here so the cap
   shows up as a real status code rather than 200 with budget text).
 """
@@ -52,6 +56,13 @@ async def query_test(
     sending them. Same dispatcher entry, same sanitize+split helper —
     no parallel pipeline.
     """
+    authenticated_tg_id = getattr(user, "telegram_user_id", None)
+    if authenticated_tg_id is not None and payload.user_id != authenticated_tg_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="user_id no coincide con el usuario autenticado.",
+        )
+
     tz_name = getattr(user, "timezone", None) or "America/Costa_Rica"
 
     # Budget pre-check. Dispatcher does its own internal check too; the
@@ -69,7 +80,7 @@ async def query_test(
 
     outcome = await run_dispatch(
         user_id=user.id,
-        message_text=payload.message,
+        message_text=payload.query,
     )
 
     return QueryTestResponse(

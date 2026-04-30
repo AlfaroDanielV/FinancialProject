@@ -77,6 +77,7 @@ async def test_basic_crc_expense_shape():
     )
     assert isinstance(result, ExtractionResult)
     assert result.intent is Intent.LOG_EXPENSE
+    assert result.dispatcher == "write"
     assert result.amount == Decimal("5000")
     assert result.currency == "CRC"
     assert result.category_hint == "supermercado"
@@ -97,6 +98,7 @@ async def test_slang_amount_no_currency_leaves_currency_null():
         db=_StubSession(),
     )
     assert result.intent is Intent.LOG_EXPENSE
+    assert result.dispatcher == "write"
     assert result.amount == Decimal("5000")
     assert result.currency is None
     assert result.category_hint == "combustible"
@@ -115,6 +117,7 @@ async def test_usd_expense_normalizes_currency_uppercase():
         db=_StubSession(),
     )
     assert result.intent is Intent.LOG_EXPENSE
+    assert result.dispatcher == "write"
     assert result.amount == Decimal("30")
     assert result.currency == "USD"
     assert result.merchant == "Amazon"
@@ -134,6 +137,7 @@ async def test_relative_date_passes_through_unresolved():
         db=_StubSession(),
     )
     assert result.intent is Intent.LOG_EXPENSE
+    assert result.dispatcher == "write"
     assert result.occurred_at_hint == "ayer"
     assert result.amount == Decimal("2000")
 
@@ -148,7 +152,8 @@ async def test_weekly_balance_query_window():
         model="claude-haiku-4-5",
         db=_StubSession(),
     )
-    assert result.intent is Intent.QUERY_BALANCE
+    assert result.intent is Intent.QUERY
+    assert result.dispatcher == "query"
     assert result.query_window == "this_week"
     assert result.amount is None
 
@@ -168,4 +173,5 @@ async def test_low_confidence_ambiguous_preserved_for_dispatcher():
         db=_StubSession(),
     )
     assert result.intent is Intent.UNKNOWN
+    assert result.dispatcher == "control"
     assert result.confidence < 0.6

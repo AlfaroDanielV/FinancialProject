@@ -4,6 +4,8 @@ Covers:
 - 401 when no auth header is present (current_user dependency rejects).
 - 200 when the dispatcher returns a normal response (chunks + tokens
   surfaced from DispatchOutcome).
+- 403 when the body Telegram user_id conflicts with the authenticated
+  user's pairing.
 - 200 when the dispatcher returns an iteration_cap error message —
   mapped via handle_query_error, so the user-facing text lands in
   `reply` and `error_category="iteration_cap"`.
@@ -33,6 +35,7 @@ from app.queries.dispatcher import DispatchOutcome
 class _StubUser:
     def __init__(self) -> None:
         self.id = uuid.uuid4()
+        self.telegram_user_id = 123
         self.timezone = "America/Costa_Rica"
         self.currency = "CRC"
         self.status = "active"
@@ -68,9 +71,21 @@ def client_no_auth():
 async def test_queries_test_returns_401_without_auth(client_no_auth):
     async with client_no_auth as ac:
         resp = await ac.post(
-            "/api/v1/queries/test", json={"message": "cuanto gasté esta semana"}
+            "/api/v1/queries/test",
+            json={"user_id": 123, "query": "cuanto gasté esta semana"},
         )
     assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_queries_test_rejects_mismatched_body_user_id(client_with_user):
+    async with client_with_user as ac:
+        resp = await ac.post(
+            "/api/v1/queries/test",
+            json={"user_id": 999, "query": "cuanto gasté esta semana"},
+        )
+
+    assert resp.status_code == 403
 
 
 # ── success ──────────────────────────────────────────────────────────
@@ -113,7 +128,7 @@ async def test_queries_test_returns_dispatcher_outcome(
     async with client_with_user as ac:
         resp = await ac.post(
             "/api/v1/queries/test",
-            json={"message": "cuanto gasté esta semana"},
+            json={"user_id": 123, "query": "cuanto gasté esta semana"},
         )
 
     assert resp.status_code == 200
@@ -171,7 +186,7 @@ async def test_queries_test_iteration_cap_error_in_reply(
     async with client_with_user as ac:
         resp = await ac.post(
             "/api/v1/queries/test",
-            json={"message": "haceme algo absurdamente largo"},
+            json={"user_id": 123, "query": "haceme algo absurdamente largo"},
         )
 
     assert resp.status_code == 200
@@ -208,7 +223,8 @@ async def test_queries_test_returns_429_when_budget_exhausted(
 
     async with client_with_user as ac:
         resp = await ac.post(
-            "/api/v1/queries/test", json={"message": "cuánto gasté hoy"}
+            "/api/v1/queries/test",
+            json={"user_id": 123, "query": "cuánto gasté hoy"},
         )
 
     assert resp.status_code == 429

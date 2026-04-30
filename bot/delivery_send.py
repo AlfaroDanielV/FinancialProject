@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from aiogram.enums import ParseMode
 from aiogram.types import InlineKeyboardMarkup, Message
 
 from app.queries.delivery import sanitize_telegram_html, split_for_telegram
@@ -60,4 +61,4 @@ async def send_chunked(
     last_idx = len(chunks) - 1
     for i, chunk in enumerate(chunks):
         kb = reply_markup if i == last_idx else None
-        await message.answer(chunk, reply_markup=kb)
+        await message.answer(chunk, parse_mode=ParseMode.HTML, reply_markup=kb)

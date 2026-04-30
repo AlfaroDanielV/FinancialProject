@@ -11,7 +11,6 @@ from typing import Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.config import settings
-from api.database import AsyncSessionLocal
 from api.models.llm_query_dispatch import LLMQueryDispatch
 from api.models.user import User
 from api.redis_client import get_redis
@@ -26,6 +25,7 @@ from .llm_client import (
     QueryLLMResponse,
 )
 from .prompts import build_system_prompt
+from .session import AsyncSessionLocal
 from .tools.base import execute_tool, list_tools_for_anthropic
 from .tools import register_builtin_tools
 

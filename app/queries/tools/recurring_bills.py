@@ -9,10 +9,11 @@ from zoneinfo import ZoneInfo
 from pydantic import Field
 from sqlalchemy import select
 
-from api.database import AsyncSessionLocal
 from api.models.account import Account
 from api.models.bill_occurrence import BillOccurrence
 from api.models.recurring_bill import RecurringBill
+
+from app.queries.session import AsyncSessionLocal
 
 from ._common import as_decimal, decimal_to_string, user_currency
 from .base import is_tool_registered, query_tool

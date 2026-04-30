@@ -307,15 +307,23 @@ Motivo:
 Decision: `POST /api/v1/queries/test` corre la query a traves del
 mismo dispatcher + delivery pipeline que el bot real. Auth via
 `current_user` (X-Shortcut-Token preferido, X-User-Id shim aceptado
-en dev — mismo dependency que el resto del API surface).
+en dev — mismo dependency que el resto del API surface). No se usa el
+webhook secret porque ese endpoint solo autentica requests firmados por
+Telegram; este endpoint consulta datos de un usuario y debe seguir el
+modelo tenant-scoped del API.
 
-Body: `{"message": str}` (1..4096 chars).
+Body: `{"user_id": int, "query": str}`. `user_id` es el Telegram
+`from.id` y se valida contra `current_user.telegram_user_id` cuando el
+usuario esta pareado, pero NO selecciona el tenant. El tenant sale de
+`current_user`; si no, un caller con token valido podria consultar datos
+de otro usuario cambiando el body. `query` acepta 1..4096 chars.
 
 Response 200: `{"reply", "chunks", "dispatch_id", "iterations",
-"tools_used", "tokens"}`. `chunks` es el output del splitter
-post-sanitize (la lista que el bot real mandaria como mensajes
-separados). `tokens` es `{"input", "output", "cache_read",
-"cache_creation"}`.
+"tools_used", "tokens"}`. `dispatch_id` se serializa como string porque
+`llm_query_dispatches.id` es UUID en la migracion 0009. `chunks` es el
+output del splitter post-sanitize (la lista que el bot real mandaria
+como mensajes separados). `tokens` es `{"input", "output",
+"cache_read", "cache_creation"}`.
 
 Status codes:
 - 401: ni X-Shortcut-Token ni X-User-Id presentes → mismo path que
@@ -344,6 +352,73 @@ Motivo:
   ("Llegaste al límite diario..."); un cliente HTTP quiere status
   code claro. El pre-check en el endpoint resuelve la asimetria sin
   cambiar la semantica del dispatcher.
+
+## 2026-04-29 - Bloque 10: session factory inyectable para query layer
+
+Decision: `app.queries.dispatcher` y las tools de `app.queries.tools.*`
+usan `app.queries.session.AsyncSessionLocal`, un proxy callable que por
+default delega a `api.database.AsyncSessionLocal`, pero que tests pueden
+reemplazar con `set_query_session_factory(session_factory)`.
+
+Motivo:
+- El app engine global usa pool compartido. En pytest, cada test async
+  corre con event loop propio; reutilizar conexiones asyncpg creadas en
+  otro loop produce `Event loop is closed` / transport cerrado.
+- El fixture `db_with_user` ya crea un engine `NullPool` por test. Bloque
+  10 conecta dispatcher + tools a esa factory para que todas las sesiones
+  vivan en el loop correcto.
+- Se preserva compatibilidad con tests unitarios que monkeypatchean
+  `module.AsyncSessionLocal`: cada modulo sigue teniendo ese nombre local.
+
+Tambien se actualizaron fixtures legacy:
+- `ExtractionResult` requiere `dispatcher`.
+- `query_recent` y `query_balance` quedaron eliminados; las queries usan
+  `intent="query"` + `dispatcher="query"`.
+- El write dispatcher ahora rechaza `Intent.QUERY`; el routing debe
+  interceptarlo antes y mandarlo a `app.queries.dispatcher`.
+
+Los e2e que miden tool selection limpian `query_history` antes de cada
+prompt para no confundir "eligio bien la tool" con "respondio desde
+history". La continuidad sigue cubierta por los tests de bloque 7.
+
+## 2026-04-29 - Bloque 11: curl guide ejecutable
+
+Decision A - forma del archivo: usar script ejecutable
+`docs/curl/phase-6a.sh`, con shebang, helpers compartidos y una funcion
+bash por seccion (`section_1_health`, `section_2_query_simple`, etc.).
+El dispatcher del final permite correr todo, listar secciones con
+`--list`, o ejecutar una seccion por nombre completo o alias corto
+(`section_2`). Esto lo hace util como guia leible y como smoke manual
+repetible en staging/produccion.
+
+Decision B - secretos: usar variables de entorno, sin valores reales
+commiteados. Las obligatorias son `BASE_URL`, `INTERNAL_SECRET` y
+`TEST_USER_ID`; `BASE_URL` defaulta a `http://localhost:8000` y las otras
+dos deben venir seteadas. Como el endpoint real usa `current_user`, el
+script agrega `AUTH_HEADER_NAME` con default `X-Shortcut-Token`; en dev se
+puede usar `AUTH_HEADER_NAME=X-User-Id` e `INTERNAL_SECRET=<user_uuid>`.
+`TEST_USER_ID` sigue siendo el Telegram `from.id` enviado en el body. Para
+secciones de DB/Redis se aceptan env vars opcionales (`APP_USER_ID`,
+`DATABASE_URL`, `PSQL_URL`, `REDIS_URL`); si faltan, la seccion queda
+marcada como TODO/skip en runtime y no inventa endpoints.
+
+Decision C - output: usar `curl -sS -w "\n%{http_code}\n"` y `jq` para
+validar campos. Para no filtrar tokens en terminal ni reportes, los curls
+con auth imprimen un comando redacted (`<redacted>`) en vez de `set -x`
+literal sobre la cabecera. Los comandos sin secretos (psql/redis-cli) se
+muestran antes de ejecutarse y todos los casos esperados de error HTTP se
+manejan sin abortar el script.
+
+Notas de contrato real:
+- `POST /api/v1/queries/test` devuelve `dispatch_id` como UUID string, no
+  entero numerico.
+- El presupuesto agotado en este endpoint devuelve HTTP 429 por pre-check.
+  El bot/dispatcher de Telegram lo convierte en texto para el usuario, pero
+  el endpoint de debugging conserva status code explicito.
+- No existe endpoint HTTP para leer o limpiar `query_history`; el guide usa
+  `redis-cli` cuando `APP_USER_ID`/`REDIS_URL` estan disponibles, o
+  `docker compose exec redis redis-cli` como fallback local. Si no hay forma
+  de llegar a Redis, deja TODO claro y no inventa endpoints.
 
 ## 2026-04-27 - Debt.interest_rate es decimal fraccional, no porcentual
 

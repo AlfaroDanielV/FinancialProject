@@ -6,9 +6,10 @@ from typing import Any, Optional
 
 from sqlalchemy import func, select
 
-from api.database import AsyncSessionLocal
 from api.models.account import Account
 from api.models.transaction import Transaction
+
+from app.queries.session import AsyncSessionLocal
 
 from ._common import (
     as_decimal,

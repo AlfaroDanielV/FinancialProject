@@ -10,7 +10,14 @@ class QueryTestRequest(BaseModel):
     """Body for POST /api/v1/queries/test — debugging entry into the
     same dispatcher pipeline the Telegram bot uses."""
 
-    message: str = Field(
+    user_id: int = Field(
+        ...,
+        description=(
+            "Telegram from.id for the caller. Auth still resolves the app "
+            "user server-side; this is a guard/debug identifier."
+        ),
+    )
+    query: str = Field(
         ...,
         min_length=1,
         max_length=4096,

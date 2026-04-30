@@ -26,7 +26,9 @@ from api.config import settings
 from api.models.account import Account
 from api.models.llm_query_dispatch import LLMQueryDispatch
 from api.models.transaction import Transaction
+from api.redis_client import get_redis
 from app.queries import dispatcher
+from app.queries.history import clear_history
 
 pytestmark = pytest.mark.skipif(
     not settings.anthropic_api_key,
@@ -138,6 +140,7 @@ async def test_phase_6a_block6_ambiguities(db_with_user) -> None:
     report: list[dict[str, Any]] = []
 
     async def run(prompt: str) -> tuple[str, LLMQueryDispatch]:
+        await clear_history(user_id, redis=get_redis())
         text = await dispatcher.handle(user_id=user_id, message_text=prompt)
         row = await _latest_dispatch(session, user_id)
         report.append(

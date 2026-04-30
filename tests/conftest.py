@@ -40,13 +40,13 @@ if str(ROOT) not in sys.path:
 # default, so the cached client carries a dead loop into the next test and
 # every Redis call raises "Event loop is closed". Resetting the singleton
 # before each test forces lazy reconstruction against the live loop.
-@pytest.fixture(autouse=True)
-def _reset_redis_singleton():
+@pytest_asyncio.fixture(autouse=True)
+async def _reset_redis_singleton():
     import api.redis_client as _redis_client_module
 
-    _redis_client_module._client = None
+    await _redis_client_module.close_redis()
     yield
-    _redis_client_module._client = None
+    await _redis_client_module.close_redis()
 
 
 # ── async DB fixture for Phase 5d evaluator / orchestrator tests ──────────────
@@ -80,6 +80,7 @@ async def db_with_user() -> AsyncGenerator[tuple[AsyncSession, uuid.UUID], None]
     """
     from api.config import settings
     from api.models.user import User
+    from app.queries.session import set_query_session_factory
 
     engine = create_async_engine(
         settings.database_url, poolclass=NullPool
@@ -87,38 +88,42 @@ async def db_with_user() -> AsyncGenerator[tuple[AsyncSession, uuid.UUID], None]
     session_factory = async_sessionmaker(
         bind=engine, expire_on_commit=False, autoflush=False
     )
+    set_query_session_factory(session_factory)
 
-    async with session_factory() as session:
-        user = User(
-            email=f"nudge-test-{uuid.uuid4().hex}@example.com",
-            full_name="Nudge Test",
-            shortcut_token=secrets.token_urlsafe(48),
-        )
-        session.add(user)
-        await session.commit()
-        await session.refresh(user)
-        user_id = user.id
-        try:
-            yield session, user_id
-        finally:
-            await session.rollback()
-            for table in _CLEANUP_TABLES:
-                if table == "debt_payments":
-                    # debt_payments has no user_id; FK via debts.id
+    try:
+        async with session_factory() as session:
+            user = User(
+                email=f"nudge-test-{uuid.uuid4().hex}@example.com",
+                full_name="Nudge Test",
+                shortcut_token=secrets.token_urlsafe(48),
+            )
+            session.add(user)
+            await session.commit()
+            await session.refresh(user)
+            user_id = user.id
+            try:
+                yield session, user_id
+            finally:
+                await session.rollback()
+                for table in _CLEANUP_TABLES:
+                    if table == "debt_payments":
+                        # debt_payments has no user_id; FK via debts.id
+                        await session.execute(
+                            text(
+                                "DELETE FROM debt_payments "
+                                "WHERE debt_id IN (SELECT id FROM debts WHERE user_id = :u)"
+                            ),
+                            {"u": user_id},
+                        )
+                        continue
                     await session.execute(
-                        text(
-                            "DELETE FROM debt_payments "
-                            "WHERE debt_id IN (SELECT id FROM debts WHERE user_id = :u)"
-                        ),
+                        text(f"DELETE FROM {table} WHERE user_id = :u"),
                         {"u": user_id},
                     )
-                    continue
                 await session.execute(
-                    text(f"DELETE FROM {table} WHERE user_id = :u"),
-                    {"u": user_id},
+                    text("DELETE FROM users WHERE id = :u"), {"u": user_id}
                 )
-            await session.execute(
-                text("DELETE FROM users WHERE id = :u"), {"u": user_id}
-            )
-            await session.commit()
-    await engine.dispose()
+                await session.commit()
+    finally:
+        set_query_session_factory(None)
+        await engine.dispose()

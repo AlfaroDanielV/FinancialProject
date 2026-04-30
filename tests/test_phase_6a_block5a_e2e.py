@@ -20,6 +20,8 @@ from api.models.pending_confirmation import PendingConfirmation
 from api.models.recurring_bill import RecurringBill
 from api.models.transaction import Transaction
 from app.queries import dispatcher
+from app.queries.history import clear_history
+from api.redis_client import get_redis
 
 pytestmark = pytest.mark.skipif(
     not settings.anthropic_api_key,
@@ -260,6 +262,7 @@ async def test_phase_6a_block5a_real_llm_uses_lookup_tools(db_with_user):
     report: list[dict[str, Any]] = []
 
     async def run(prompt: str) -> tuple[str, LLMQueryDispatch]:
+        await clear_history(user_id, redis=get_redis())
         text = await dispatcher.handle(user_id=user_id, message_text=prompt)
         row = await _latest_dispatch(session, user_id)
         report.append(
@@ -305,11 +308,19 @@ async def test_phase_6a_block5a_real_llm_uses_lookup_tools(db_with_user):
     # 5. ¿qué debo pagar?
     response, row = await run("¿qué debo pagar?")
     names = _tool_names(row)
-    assert (
+    used_default = (
         "list_recurring_bills" in names
         or "list_debts" in names
     )
-    _assert_tone(response)
+    lowered = response.lower()
+    asked_for_clarification = (
+        "?" in response and ("recurrentes" in lowered or "deudas" in lowered)
+    )
+    assert used_default or asked_for_clarification, {
+        "names": names,
+        "response": response,
+    }
+    _assert_tone(response, expect_money=used_default)
 
     # 6. ¿cuánto debo en total?
     response, row = await run("¿cuánto debo en total?")

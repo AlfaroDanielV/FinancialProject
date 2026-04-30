@@ -6,6 +6,7 @@ import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import select
@@ -15,7 +16,9 @@ from api.models.account import Account
 from api.models.debt import Debt
 from api.models.llm_query_dispatch import LLMQueryDispatch
 from api.models.transaction import Transaction
+from api.redis_client import get_redis
 from app.queries import dispatcher
+from app.queries.history import clear_history
 
 pytestmark = pytest.mark.skipif(
     not settings.anthropic_api_key,
@@ -121,6 +124,14 @@ def _tool_args(row: LLMQueryDispatch, name: str) -> list[dict[str, Any]]:
     return [t.get("args_summary", {}) for t in row.tools_used if t["name"] == name]
 
 
+def _april_2026_end_candidates() -> set[str]:
+    candidates = {"2026-04-30"}
+    today = datetime.now(ZoneInfo("America/Costa_Rica")).date()
+    if today.year == 2026 and today.month == 4:
+        candidates.add(today.isoformat())
+    return candidates
+
+
 @pytest.mark.asyncio
 async def test_phase_6a_block5b_real_llm_compares_periods(db_with_user):
     session, user_id = db_with_user
@@ -129,6 +140,7 @@ async def test_phase_6a_block5b_real_llm_compares_periods(db_with_user):
     report: list[dict[str, Any]] = []
 
     async def run(prompt: str) -> tuple[str, LLMQueryDispatch]:
+        await clear_history(user_id, redis=get_redis())
         text = await dispatcher.handle(user_id=user_id, message_text=prompt)
         row = await _latest_dispatch(session, user_id)
         report.append({
@@ -151,18 +163,17 @@ async def test_phase_6a_block5b_real_llm_compares_periods(db_with_user):
     assert args.get("period_a_start") == "2026-03-01"
     assert args.get("period_a_end") == "2026-03-31"
     assert args.get("period_b_start") == "2026-04-01"
-    assert args.get("period_b_end") in {"2026-04-30", "2026-04-27"}
+    assert args.get("period_b_end") in _april_2026_end_candidates()
     _assert_tone(response)
 
-    # 2. "Este mes vs el anterior" — hoy es 2026-04-27. The convention is
-    # A=reference/older, B=current, but accept either ordering as long as
-    # both months are covered.
+    # 2. "Este mes vs el anterior". The convention is A=reference/older,
+    # B=current, but accept either ordering as long as both months are covered.
     response, row = await run("cómo voy este mes vs el anterior")
     assert "compare_periods" in _tool_names(row)
     args = _tool_args(row, "compare_periods")[0]
     starts = {args.get("period_a_start"), args.get("period_b_start")}
     assert starts == {"2026-03-01", "2026-04-01"}, args
-    ends_april = {"2026-04-30", "2026-04-27"}
+    ends_april = _april_2026_end_candidates()
     march_end = "2026-03-31"
     a_end = args.get("period_a_end")
     b_end = args.get("period_b_end")
@@ -187,8 +198,8 @@ async def test_phase_6a_block5b_real_llm_compares_periods(db_with_user):
         f"compare_periods used inappropriately: {names}"
     )
     informative = {"aggregate_transactions", "list_transactions"}
-    assert set(names) & informative, names
     assert "list_debts" in names, names
+    assert set(names) & informative, names
     _assert_tone(response)
 
     # 5. Binary question — más o menos que el mes pasado.

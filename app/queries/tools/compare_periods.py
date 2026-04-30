@@ -7,7 +7,7 @@ from typing import Annotated, Any, Literal, Optional
 
 from pydantic import Field
 
-from api.database import AsyncSessionLocal
+from app.queries.session import AsyncSessionLocal
 
 from .base import is_tool_registered, query_tool
 from .transactions import (

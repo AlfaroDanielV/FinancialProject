@@ -9,10 +9,11 @@ from typing import Annotated, Any, Literal
 from pydantic import Field
 from sqlalchemy import Date, cast, func, literal, or_, select
 
-from api.database import AsyncSessionLocal
 from api.models.account import Account
 from api.models.transaction import Transaction
 from api.models.user import User
+
+from app.queries.session import AsyncSessionLocal
 
 from .base import is_tool_registered, query_tool
 

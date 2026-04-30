@@ -12,10 +12,12 @@ import pytest
 from sqlalchemy import select
 
 from app.queries import dispatcher
+from app.queries.history import clear_history
 from api.config import settings
 from api.models.account import Account
 from api.models.llm_query_dispatch import LLMQueryDispatch
 from api.models.transaction import Transaction
+from api.redis_client import get_redis
 
 pytestmark = pytest.mark.skipif(
     not settings.anthropic_api_key,
@@ -151,11 +153,15 @@ async def test_phase_6a_block4_real_llm_uses_transaction_tools(db_with_user):
 
     report: list[dict[str, Any]] = []
 
-    response = await dispatcher.handle(
-        user_id=user_id,
-        message_text="cuánto gasté esta semana",
-        telegram_chat_id=123,
-    )
+    async def run(prompt: str) -> str:
+        await clear_history(user_id, redis=get_redis())
+        return await dispatcher.handle(
+            user_id=user_id,
+            message_text=prompt,
+            telegram_chat_id=123,
+        )
+
+    response = await run("cuánto gasté esta semana")
     row = await _latest_dispatch(session, user_id)
     names = _tool_names(row)
     assert set(names) & {"aggregate_transactions", "list_transactions"}
@@ -167,11 +173,7 @@ async def test_phase_6a_block4_real_llm_uses_transaction_tools(db_with_user):
     _assert_tone(response)
     report.append({"message": "cuánto gasté esta semana", "tools": row.tools_used, "response": response})
 
-    response = await dispatcher.handle(
-        user_id=user_id,
-        message_text="dame el desglose por categoría de abril",
-        telegram_chat_id=123,
-    )
+    response = await run("dame el desglose por categoría de abril")
     row = await _latest_dispatch(session, user_id)
     aggregate_args = _tool_args(row, "aggregate_transactions")
     assert aggregate_args
@@ -186,11 +188,7 @@ async def test_phase_6a_block4_real_llm_uses_transaction_tools(db_with_user):
     _assert_tone(response)
     report.append({"message": "dame el desglose por categoría de abril", "tools": row.tools_used, "response": response})
 
-    response = await dispatcher.handle(
-        user_id=user_id,
-        message_text="muéstrame las transacciones en PriceSmart",
-        telegram_chat_id=123,
-    )
+    response = await run("muéstrame las transacciones en PriceSmart")
     row = await _latest_dispatch(session, user_id)
     list_args = _tool_args(row, "list_transactions")
     assert list_args
@@ -202,11 +200,7 @@ async def test_phase_6a_block4_real_llm_uses_transaction_tools(db_with_user):
     _assert_tone(response)
     report.append({"message": "muéstrame las transacciones en PriceSmart", "tools": row.tools_used, "response": response})
 
-    response = await dispatcher.handle(
-        user_id=user_id,
-        message_text="cuál fue mi gasto más alto del mes",
-        telegram_chat_id=123,
-    )
+    response = await run("cuál fue mi gasto más alto del mes")
     row = await _latest_dispatch(session, user_id)
     list_args = _tool_args(row, "list_transactions")
     assert list_args
@@ -216,11 +210,7 @@ async def test_phase_6a_block4_real_llm_uses_transaction_tools(db_with_user):
     _assert_tone(response)
     report.append({"message": "cuál fue mi gasto más alto del mes", "tools": row.tools_used, "response": response})
 
-    response = await dispatcher.handle(
-        user_id=user_id,
-        message_text="cuánto gasté en supermercado vs transporte",
-        telegram_chat_id=123,
-    )
+    response = await run("cuánto gasté en supermercado vs transporte")
     row = await _latest_dispatch(session, user_id)
     names = _tool_names(row)
     assert set(names) & {"aggregate_transactions", "list_transactions"}
@@ -235,11 +225,7 @@ async def test_phase_6a_block4_real_llm_uses_transaction_tools(db_with_user):
     _assert_tone(response)
     report.append({"message": "cuánto gasté en supermercado vs transporte", "tools": row.tools_used, "response": response})
 
-    response = await dispatcher.handle(
-        user_id=user_id,
-        message_text="qué gasté ayer entre 6 y 9 de la noche",
-        telegram_chat_id=123,
-    )
+    response = await run("qué gasté ayer entre 6 y 9 de la noche")
     row = await _latest_dispatch(session, user_id)
     names = _tool_names(row)
     assert not names or names == ["list_transactions"]

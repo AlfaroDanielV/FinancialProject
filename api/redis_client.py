@@ -6,7 +6,7 @@ All Phase 5b durable state passes through here:
 - `telegram:pending:{user_id}` — staged proposal awaiting confirm/edit, TTL 300s
 - `telegram:last_action:{user_id}` — last committed action id for /undo, TTL 24h
 - `telegram:rate:{user_id}:{minute}` — sliding-window rate counter
-- `telegram:tokens:{user_id}:{yyyymmdd}` — daily LLM token spend per user
+- `query_history:{user_id}` — query-layer conversation history, TTL 24h
 
 aiogram's FSM is NOT used for any of the above — it's only allowed for
 transient dialog bookkeeping inside a single handler. See the state storage

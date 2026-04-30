@@ -8,9 +8,10 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
-from api.database import AsyncSessionLocal
 from api.models.debt import Debt
 from api.services import amortization
+
+from app.queries.session import AsyncSessionLocal
 
 from ._common import as_decimal, decimal_to_string, fuzzy_any, signed_decimal_to_string
 from .base import is_tool_registered, query_tool

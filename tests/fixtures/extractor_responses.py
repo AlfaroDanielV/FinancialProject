@@ -21,6 +21,7 @@ from api.services.llm_extractor import RecordedLLMResponse
 BASIC_EXPENSE_CRC = RecordedLLMResponse(
     tool_input={
         "intent": "log_expense",
+        "dispatcher": "write",
         "amount": 5000,
         "currency": "CRC",
         "merchant": "supermercado",
@@ -42,6 +43,7 @@ BASIC_EXPENSE_CRC = RecordedLLMResponse(
 SLANG_AMOUNT_NO_CURRENCY = RecordedLLMResponse(
     tool_input={
         "intent": "log_expense",
+        "dispatcher": "write",
         "amount": 5000,
         "currency": None,  # user didn't say; dispatcher will default to user.currency
         "merchant": None,
@@ -63,6 +65,7 @@ SLANG_AMOUNT_NO_CURRENCY = RecordedLLMResponse(
 USD_EXPENSE = RecordedLLMResponse(
     tool_input={
         "intent": "log_expense",
+        "dispatcher": "write",
         "amount": 30,
         "currency": "USD",
         "merchant": "Amazon",
@@ -84,6 +87,7 @@ USD_EXPENSE = RecordedLLMResponse(
 EXPENSE_YESTERDAY = RecordedLLMResponse(
     tool_input={
         "intent": "log_expense",
+        "dispatcher": "write",
         "amount": 2000,
         "currency": "CRC",
         "merchant": "panadería",
@@ -104,7 +108,8 @@ EXPENSE_YESTERDAY = RecordedLLMResponse(
 # Input: "¿cuánto gasté esta semana?"
 WEEKLY_BALANCE_QUERY = RecordedLLMResponse(
     tool_input={
-        "intent": "query_balance",
+        "intent": "query",
+        "dispatcher": "query",
         "amount": None,
         "currency": None,
         "merchant": None,
@@ -126,6 +131,7 @@ WEEKLY_BALANCE_QUERY = RecordedLLMResponse(
 LOW_CONFIDENCE_AMBIGUOUS = RecordedLLMResponse(
     tool_input={
         "intent": "unknown",
+        "dispatcher": "control",
         "amount": 1000,
         "currency": None,
         "merchant": None,
