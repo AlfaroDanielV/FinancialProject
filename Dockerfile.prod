@@ -1,0 +1,56 @@
+# Production Dockerfile — Finance Assistant API
+# Build: docker build -f Dockerfile.prod -t finance-api:prod .
+# Run:   docker run --env-file .env.prod -p 8000:8000 finance-api:prod
+#
+# Multi-stage:
+#   - builder: installs deps with uv into an isolated venv (.venv)
+#   - runtime: slim Python image, non-root user, only the venv + source code
+#
+# Notes:
+#   - App entrypoint is api.main:app (NOT app.main:app — see CLAUDE.md).
+#   - Telegram bot starts on lifespan only when TELEGRAM_MODE != disabled,
+#     so the same image runs in webhook, polling, or REST-only modes.
+#   - --workers 1 keeps the lifespan singleton clean (one bot, one Redis pool,
+#     one engine). Scale horizontally with Container Apps replicas, not workers.
+
+FROM python:3.12-slim AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+WORKDIR /app
+
+# Copy lockfile + manifest first for better layer cache reuse.
+COPY pyproject.toml uv.lock ./
+
+# Install production deps into /app/.venv. --no-install-project skips the
+# project itself (we COPY the source in the next layer).
+RUN uv sync --frozen --no-dev --no-install-project
+
+# Source. Anything excluded by .dockerignore is skipped.
+COPY . .
+
+
+FROM python:3.12-slim AS runtime
+
+# Non-root runtime user.
+RUN useradd --create-home --uid 1000 appuser
+
+WORKDIR /app
+
+# Bring the venv + source from the builder.
+COPY --from=builder --chown=appuser:appuser /app /app
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+USER appuser
+
+EXPOSE 8000
+
+# Liveness: /health is cheap (no DB/Redis touch). Readiness probe should
+# point at /health/ready in the orchestrator config, not here.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=5).status == 200 else 1)" || exit 1
+
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

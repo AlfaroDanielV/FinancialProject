@@ -1,5 +1,48 @@
+# VCS
+.git
+.gitignore
+.github
+
+# Secrets / local env
+.env
+.env.*
+!.env.example
+
+# Python
 .venv
+.venv-docker
 __pycache__
 *.pyc
 *.pyo
-.env
+*.egg-info
+dist
+build
+
+# Test / lint caches
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Docs / dev-only
+README.md
+CODEBASE.md
+DOCKER.md
+docs
+tests
+scripts
+
+# Compose / dev images
+docker-compose*.yml
+Dockerfile
+Dockerfile.dev
+
+# Editor / OS
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

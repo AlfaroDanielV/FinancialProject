@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     # App
     environment: str = "development"
     secret_key: str = "change-me"
+    log_level: str = "INFO"
 
     @property
     def is_dev(self) -> bool:

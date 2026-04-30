@@ -1,10 +1,14 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import settings
-from .redis_client import close_redis
+from .database import get_db
+from .logging_config import setup_logging
+from .redis_client import close_redis, get_redis
 from .routers import (
     accounts,
     agent,
@@ -29,6 +33,7 @@ from .routers import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    setup_logging(settings.log_level)
     # Telegram bot is optional — only started when TELEGRAM_MODE != disabled.
     # This keeps CI, tests, and fresh dev envs runnable without a bot token.
     from bot.app import start_bot, stop_bot
@@ -89,3 +94,23 @@ app.include_router(telegram.telegram_router)
 @app.get("/health")
 async def health():
     return {"status": "ok", "environment": settings.environment}
+
+
+@app.get("/health/ready")
+async def health_ready(db: AsyncSession = Depends(get_db)):
+    checks: dict[str, object] = {"db": False, "redis": False}
+
+    try:
+        await db.execute(text("SELECT 1"))
+        checks["db"] = True
+    except Exception as exc:
+        checks["db_error"] = str(exc)
+
+    try:
+        await get_redis().ping()
+        checks["redis"] = True
+    except Exception as exc:
+        checks["redis_error"] = str(exc)
+
+    all_ok = checks["db"] is True and checks["redis"] is True
+    return {"status": "ok" if all_ok else "degraded", **checks}
