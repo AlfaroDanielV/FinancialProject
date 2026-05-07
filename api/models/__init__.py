@@ -14,6 +14,11 @@ from .llm_extraction import LLMExtraction
 from .llm_query_dispatch import LLMQueryDispatch
 from .pending_confirmation import PendingConfirmation
 from .user_nudge import UserNudge, UserNudgeSilence
+from .gmail_credential import GmailCredential
+from .gmail_sender_whitelist import GmailSenderWhitelist
+from .bank_notification_sample import BankNotificationSample
+from .gmail_message_seen import GmailMessageSeen
+from .gmail_ingestion_run import GmailIngestionRun
 
 __all__ = [
     "User",
@@ -34,4 +39,9 @@ __all__ = [
     "PendingConfirmation",
     "UserNudge",
     "UserNudgeSilence",
+    "GmailCredential",
+    "GmailSenderWhitelist",
+    "BankNotificationSample",
+    "GmailMessageSeen",
+    "GmailIngestionRun",
 ]

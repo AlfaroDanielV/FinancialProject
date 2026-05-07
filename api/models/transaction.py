@@ -30,11 +30,22 @@ class Transaction(Base):
     category: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     subcategory: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     transaction_date: Mapped[date] = mapped_column(Date, nullable=False)
-    # manual | email_parse | shortcut | whatsapp
+    # manual | shortcut | telegram | gmail | reconciled (CHECK in 0011)
     source: Mapped[str] = mapped_column(String(50), nullable=False, default="manual")
-    # email message-id or external ref for dedup
+    # generic external ref for dedup. Phase 6b uses gmail_message_id below
+    # for Gmail-origin rows; source_ref stays free for future origins.
     source_ref: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    # Phase 6b dedup column. UNIQUE(user_id, gmail_message_id) partial index
+    # in migration 0011 prevents the scanner from double-inserting.
+    gmail_message_id: Mapped[Optional[str]] = mapped_column(
+        String(128), nullable=True
+    )
     parse_status: Mapped[str] = mapped_column(String(50), default="confirmed")
+    # Phase 6b: confirmed | shadow | pending_review (CHECK in 0011). Shadow
+    # rows do NOT count toward balance until /aprobar_shadow promotes them.
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="confirmed"
+    )
     is_duplicate: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), default=datetime.utcnow

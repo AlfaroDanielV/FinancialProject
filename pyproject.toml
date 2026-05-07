@@ -17,6 +17,15 @@ dependencies = [
     "anthropic==0.39.0",
     "aiogram==3.13.1",
     "rapidfuzz==3.10.1",
+    "pyjwt==2.9.0",
+]
+
+# Optional production-only deps. Install via `uv sync --extra azure` when
+# deploying with SECRET_STORE_BACKEND=azure_kv. Dev / tests never need these.
+[project.optional-dependencies]
+azure = [
+    "azure-identity==1.19.0",
+    "azure-keyvault-secrets==4.9.0",
 ]
 
 [dependency-groups]

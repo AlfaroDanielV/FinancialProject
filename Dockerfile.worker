@@ -1,0 +1,46 @@
+# Production Dockerfile — Gmail daily worker (Phase 6b)
+# Build: docker build -f Dockerfile.worker -t finance-worker:prod .
+# Run:   docker run --env-file .env.prod finance-worker:prod
+#
+# This image runs the standalone `workers.gmail_daily` script ONCE per
+# invocation and exits. It is meant for Azure Container Apps Jobs (cron
+# 0 9 * * * UTC) — see infra/azure/container-apps-job.yaml.
+#
+# We deliberately mirror Dockerfile.prod's builder stage to keep the
+# image cache hits maximal (same uv sync output). Only the CMD differs.
+
+FROM python:3.12-slim AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY . .
+
+
+FROM python:3.12-slim AS runtime
+
+RUN useradd --create-home --uid 1000 appuser
+
+WORKDIR /app
+
+COPY --from=builder --chown=appuser:appuser /app /app
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+USER appuser
+
+# No HEALTHCHECK — this is a one-shot job. Container Apps Jobs measure
+# success by the script's exit code: 0 = success, anything else = retry
+# per the job's retry policy.
+#
+# The worker logs to stdout (api.logging_config.setup_logging) so the
+# orchestrator captures it without extra config.
+
+CMD ["python", "-m", "workers.gmail_daily"]

@@ -1,0 +1,77 @@
+# Azure Container Apps Job — Gmail daily scan
+#
+# Apply with:
+#   az containerapp job create --resource-group <rg> --name finance-gmail-daily \
+#       --environment <ca-env> --yaml infra/azure/container-apps-job.yaml
+#
+# Cron: 0 9 * * * UTC = 3am Costa Rica (UTC-6, no DST).
+# Replica timeout 1800s = 30 min — enough for a wide whitelist + slow Gmail API.
+# parallelism: 1 — only one instance per scheduled invocation. The Gmail
+# daily worker iterates ALL active users sequentially; we don't fan out.
+#
+# Image: replace <registry>/<image>:<tag> with the actual ACR address.
+# Built from Dockerfile.worker.
+
+properties:
+  environmentId: /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.App/managedEnvironments/<env>
+  configuration:
+    triggerType: Schedule
+    replicaTimeout: 1800
+    replicaRetryLimit: 1
+    scheduleTriggerConfig:
+      cronExpression: "0 9 * * *"
+      parallelism: 1
+      replicaCompletionCount: 1
+    secrets:
+      # Reference Key Vault secrets via managedIdentity.
+      - name: database-url
+        keyVaultUrl: https://<kv-name>.vault.azure.net/secrets/database-url
+        identity: system
+      - name: redis-url
+        keyVaultUrl: https://<kv-name>.vault.azure.net/secrets/redis-url
+        identity: system
+      - name: anthropic-api-key
+        keyVaultUrl: https://<kv-name>.vault.azure.net/secrets/anthropic-api-key
+        identity: system
+      - name: gmail-client-id
+        keyVaultUrl: https://<kv-name>.vault.azure.net/secrets/gmail-client-id
+        identity: system
+      - name: gmail-client-secret
+        keyVaultUrl: https://<kv-name>.vault.azure.net/secrets/gmail-client-secret
+        identity: system
+      - name: telegram-bot-token
+        keyVaultUrl: https://<kv-name>.vault.azure.net/secrets/telegram-bot-token
+        identity: system
+  template:
+    containers:
+      - name: gmail-daily
+        image: <registry>/<image>:<tag>
+        resources:
+          cpu: 0.5
+          memory: 1Gi
+        env:
+          - name: DATABASE_URL
+            secretRef: database-url
+          - name: REDIS_URL
+            secretRef: redis-url
+          - name: ANTHROPIC_API_KEY
+            secretRef: anthropic-api-key
+          - name: GMAIL_CLIENT_ID
+            secretRef: gmail-client-id
+          - name: GMAIL_CLIENT_SECRET
+            secretRef: gmail-client-secret
+          - name: TELEGRAM_BOT_TOKEN
+            secretRef: telegram-bot-token
+          - name: TELEGRAM_MODE
+            value: webhook  # so notifier's get_bot() can send messages
+          - name: ENVIRONMENT
+            value: production
+          - name: SECRET_STORE_BACKEND
+            value: azure_kv
+          - name: AZURE_KEY_VAULT_URL
+            value: https://<kv-name>.vault.azure.net/
+  # Managed identity must have:
+  #   - Get/List on Key Vault secrets (for SECRET_STORE_BACKEND=azure_kv)
+  #   - AcrPull on the registry
+  identity:
+    type: SystemAssigned

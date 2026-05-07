@@ -149,7 +149,8 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 | **5c** ⏸ | Wk 5–6 | WhatsApp Cloud API adapter | Deferred until Meta Business Portfolio approval. Not scoped by 5d. |
 | **5d** ✅ | Wk 5–6 | Engagement nudges (missing_income / stale_pending / upcoming_bill) | `docs/curl/phase-5d.sh` passes: evaluate → list → dismiss 1x → dismiss 2x (silence) → act → dedup re-run → quiet hours → HIGH bypasses rate limit |
 | **6a** 🔄 | Wk 6–7 | Conversational query layer | Blocks 1–10 done: tools, query dispatcher, history, delivery sanitize/split/errors/budget, Telegram wiring, `/clear`, `/queries/test`, legacy test cleanup, event-loop/session factory fix. Block 11 next. |
-| **6b** | Wk 7 | Pushback engine | Ask "can I afford X?" and get a deterministic answer from real data |
+| **6b** ✅ | Wk 7–8 | Gmail ingestion + reconciliation (re-scoped from "pushback") | All 4 addenda blocks (A → D) done: multi-bank email-based onboarding, scanner + reconciler + backfill, notifier + shadow summary + daily worker, FileSecretStore + `/agregar_muestra`. `scripts/test_phase_6b_full.sh` covers the curl smoke. See `docs/phase-6b/status.md` for block-by-block detail. |
+| **6c** | Wk 8–9 | Pushback engine (was 6b) | Ask "can I afford X?" and get a deterministic answer from real data. Deferred behind 6b — meaningful only once Gmail-fed transactions land in the ledger. |
 | **7** | Wk 6–10 | **Stabilize. Use it. Fix bugs.** | 4+ weeks of reliable use. Trust it more than your bank app. |
 | **8** | Wk 11–16 | Multi-tenant, auth, onboarding, billing | Can onboard a second person via Telegram and they get accurate reports within a week |
 
@@ -158,6 +159,8 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 **Do not advance to the next phase until the current phase's "done when" is met.** Skipping ahead creates compounding correctness problems — especially for the AI layer, which is downstream of reliable data pipelines.
 
 **Phase 6a gate (current):** do not advance to pushback or later feature work without explicit approval. Current suite state after Block 10: full pytest passes (`254 passed`) with remaining warnings around SQLAlchemy `datetime.utcnow()` deprecation and pytest-asyncio loop-scope config.
+
+**Phase 6b gate (closed):** Gmail ingestion shipped. Decisions in `docs/phase-6b-decisions.md`, status timeline in `docs/phase-6b/status.md`, GCP setup in `docs/phase-6b/gcp-setup.md`, deployment in `docs/phase-6b/deployment.md`, secret-store matrix in `docs/phase-6b/secret-store.md`. Curl smoke: `scripts/test_phase_6b_full.sh`. The 4 addenda blocks A→D wrapped multi-bank onboarding, scanner + reconciler + backfill, notifier + daily worker, and FileSecretStore + optional samples. Phase 6b suite is at 226 passing.
 
 ---
 
@@ -350,6 +353,172 @@ reply text plus the same sanitized/split chunks that Telegram would send.
 - Full suite passes: `254 passed`.
 - `bot/queries.py`, `RunQuery`, and `bot.queries` references are gone from
   active code and tests.
+
+---
+
+## Phase 6b — Gmail ingestion
+
+Automatic capture of bank notification emails, with reconciliation
+against transactions logged by Shortcut / Telegram. Re-scoped from the
+original "pushback engine" plan (see roadmap row 6c) because the agent
+needs a trustworthy ledger before it can give advice.
+
+### Onboarding (bot-driven, no console)
+
+Three steps the user sees:
+
+1. `/conectar_gmail` — bot mints an OAuth URL with a JWT-signed `state`
+   (HS256 + one-time nonce in Redis, TTL 10 min). User clicks, sees the
+   "App not verified" screen (expected in GCP Testing mode), grants
+   `gmail.readonly`, lands on `/static/gmail-connected.html`.
+2. **Bank selection.** Bot edits a single keyboard message with preset
+   bank buttons (BAC, Promerica, BCR, BN, Davivienda, Scotiabank,
+   Lafise, Coopealianza). Tapping a preset asks "Decime el correo de
+   <bank>" — we DO NOT preload canonical senders. User types the
+   actual sender they receive notifications from. Custom emails (no
+   preset) are also accepted; the bot infers `bank_name` from the
+   domain when possible. Soft cap: 8 senders.
+3. **Activate.** Tap `[Activar 🚀]` → `gmail_credentials.activated_at`
+   set, senders persisted to `gmail_sender_whitelist`,
+   `enqueue_backfill(user_id)` fired-and-forget. Backfill runs the
+   last 30 days; rows land as `status='shadow'` for the first 7 days
+   (the **shadow window**). Daily summary (8am CR) lets the user
+   `/aprobar_shadow` or `/rechazar_shadow`.
+
+### Bot commands
+
+| Command | Purpose |
+|---|---|
+| `/conectar_gmail` | Start OAuth + bank selection flow. |
+| `/desconectar_gmail` | Confirm + revoke (deletes refresh token from SecretStore, sets `revoked_at`). |
+| `/estado_gmail` | Connected? activated? full whitelist with bank labels. |
+| `/agregar_banco` | Reuse the bank-selection flow post-activation, no second activation gate. |
+| `/quitar_banco` | List active senders, soft-delete on tap (sets `removed_at`). Past transactions stay; future scans skip. |
+| `/revisar_correos` | Manual scan, last 2 days. 30-min cooldown via Redis `gmail_manual_scan_cooldown:{user_id}`. |
+| `/agregar_muestra` | Optional sample collection. Photo or text → Haiku analyzer → row in `bank_notification_samples` (NOT auto-added to whitelist). |
+| `/aprobar_shadow` | Promote all gmail+shadow rows to `confirmed`. |
+| `/rechazar_shadow` | Confirm with button → DELETE rows + UPDATE `gmail_messages_seen.outcome='rejected_by_user'`. |
+
+### Architecture
+
+```
+Telegram (preset tap / type email / Listo / Activar)
+  → bot/gmail_handlers.py
+    → on_activate_callback
+      → activated_at + commit
+      → whitelist.add_sender per pending_sender + commit
+      → asyncio.create_task(run_backfill_safe)
+    → returns "¡Activado!"
+
+run_backfill_safe(user_id):
+  notifier.notify_run_started     ← "Empecé a revisar..."
+  scanner.scan_user_inbox(mode=backfill, since=now-30d):
+    resolve_access_token (refresh via OAuth)
+    list message_ids (paginated)
+    for each NOT in gmail_messages_seen:
+      get full body → MIME parse (text/plain, fallback HTML stripped)
+      email_extractor → ExtractedEmailTransaction
+      reconciler.reconcile:
+        confidence < 0.7 → skipped_low_confidence
+        gmail_message_id duplicate → duplicate_gmail
+        amount ±1 + date ±1d match → matched_existing (UPDATE existing)
+        else → created_shadow (in window) | created_new (outside)
+      mark gmail_messages_seen
+      append to result.created_transaction_ids
+  notifier.notify_run_completed   ← branches: shadow | batch | per-txn
+
+workers/gmail_daily.py (Container Apps Job, cron 0 9 * * * UTC):
+  for each active user:
+    scan_user_inbox(mode=daily, since=last_started_at or now-2d)
+    notify_run_completed
+    maybe_send_shadow_summary    ← reads yesterday's accumulator,
+                                    sends "modo sombra" digest
+```
+
+### Shadow window
+
+During the 7 days from `activated_at`:
+- New gmail rows insert with `status='shadow'`. They do **not** count
+  toward balances.
+- Per-scan notifications are suppressed; instead the notifier appends
+  the new transaction IDs to `gmail_shadow_summary:{user_id}:{date}` in
+  Redis (TTL 48h).
+- The daily worker reads yesterday's accumulator at 8am CR and sends
+  one digest to the user. Filters out anything already approved.
+- After 7 days: new rows insert with `status='confirmed'`. Notifications
+  follow the batch / per-transaction rule (`GMAIL_BATCH_THRESHOLD=5`).
+
+### SecretStore backends
+
+`SECRET_STORE_BACKEND` selects how `gmail-refresh-{user_id}` is stored:
+
+- `env` (default): `os.environ` with `DEV_SECRET_` prefix. Process-local;
+  lost on uvicorn restart. The boot log warns about this.
+- `file`: `.dev_secrets.json` (gitignored). Persistent across restarts.
+  Recommended for local dev. Plaintext on disk; 0600 file mode.
+- `azure_kv`: Azure Key Vault via `DefaultAzureCredential`. Production.
+  Requires `uv sync --extra azure`.
+
+See `docs/phase-6b/secret-store.md` for the matrix.
+
+### Env vars
+
+```
+GMAIL_CLIENT_ID=...
+GMAIL_CLIENT_SECRET=...
+GMAIL_REDIRECT_URI=http://localhost:8000/api/v1/gmail/oauth/callback
+GMAIL_OAUTH_STATE_SECRET=...      # generate with secrets.token_urlsafe(48)
+GMAIL_BATCH_THRESHOLD=5           # batch summary trigger
+SECRET_STORE_BACKEND=env|file|azure_kv
+FILE_SECRET_STORE_PATH=           # optional override for the `file` backend
+AZURE_KEY_VAULT_URL=              # required when SECRET_STORE_BACKEND=azure_kv
+```
+
+### Endpoints
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| POST | `/api/v1/gmail/oauth/start` | `current_user` | Mint OAuth URL with signed state. |
+| GET | `/api/v1/gmail/oauth/callback` | state JWT | Receive Google's redirect, persist `gmail_credentials` row, publish `gmail_callback:{user_id}` so the bot listener advances. |
+| GET | `/api/v1/gmail/status` | `current_user` | Connected? activated? scopes? |
+| POST | `/api/v1/gmail/admin/run-backfill?days=30` | `current_user` | Re-trigger a backfill. Useful after a failure. |
+| POST | `/api/v1/gmail/admin/run-daily` | `current_user` | Run the daily worker code path in-process. Iterates ALL active users. |
+
+### Data model additions
+
+- `gmail_credentials` (PK = user_id) — KV secret name + `granted_at` /
+  `activated_at` / `revoked_at` / `last_refresh_at`.
+- `gmail_sender_whitelist` — per-user sender list with `removed_at`
+  soft delete + partial UNIQUE on (user_id, sender_email) where
+  removed_at IS NULL.
+- `bank_notification_samples` — user-supplied samples for extractor
+  calibration (optional, populated by `/agregar_muestra`).
+- `gmail_messages_seen` (composite PK user_id, gmail_message_id) —
+  idempotency log. Outcome ∈ {matched, created, created_shadow,
+  skipped, failed, rejected_by_user}.
+- `gmail_ingestion_runs` — one row per scan; counters + errors JSON.
+- `transactions` extended: `gmail_message_id` (UNIQUE per-user partial),
+  `status` (confirmed | shadow | pending_review), CHECK on `source`
+  admits 'gmail' and 'reconciled'.
+
+### Production deployment
+
+The daily worker runs as an Azure Container Apps Job — separate image
+(`Dockerfile.worker`), cron `0 9 * * * UTC` = 3am CR, replicaTimeout
+1800s. Steps in `docs/phase-6b/deployment.md`. The API uses managed
+identity to read Key Vault secrets (refresh tokens + the GCP client
+secret).
+
+### What NOT to add (without explicit reason)
+
+- Pre-loaded sender lists keyed off the bank label. Banks rotate
+  notification senders without warning; the user has to type what they
+  receive. The dict in `api/data/bank_senders_cr.py` is documentation
+  + domain inference data, NOT a default.
+- Auto-confirm of shadow rows. The 7-day window is a feature; the user
+  decides per-batch with `/aprobar_shadow` or `/rechazar_shadow`.
+- Per-bank polling cadence. The daily worker queries everything at
+  once per user.
 
 ---
 

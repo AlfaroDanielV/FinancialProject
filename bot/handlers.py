@@ -65,6 +65,20 @@ router = Router(name="phase5b")
 
 
 def register(dp: Dispatcher) -> None:
+    # Gmail onboarding router (Phase 6b) registered FIRST so its
+    # state-aware text handler (F.text & _is_selecting_banks) gets
+    # first shot at evaluating an incoming message. If we register the
+    # main router first, its catch-all
+    # `@router.message(F.text & ~F.text.startswith("/"))` consumes
+    # everything (including `notif@bac.cr` while the user is in the
+    # bank-selection flow) before the gmail filter runs.
+    #
+    # Slash commands like /undo, /help, /cancel still resolve correctly
+    # because the gmail router doesn't declare them — they fall through
+    # to the main router below.
+    from . import gmail_handlers
+
+    dp.include_router(gmail_handlers.router)
     dp.include_router(router)
 
 
@@ -272,9 +286,14 @@ async def on_undo(message: Message) -> None:
 
 
 # ── free text ─────────────────────────────────────────────────────────────────
+#
+# Excluimos slash commands del catch-all: texto libre va al pipeline de
+# extracción, pero `/algo` debe seguir buscándose hasta el router que lo
+# declare (e.g. /conectar_gmail vive en bot/gmail_handlers.py). Si no
+# excluís el "/", aiogram matchea acá primero y el comando nunca llega.
 
 
-@router.message(F.text)
+@router.message(F.text & ~F.text.startswith("/"))
 async def on_text(message: Message) -> None:
     if message.from_user is None or not message.text:
         return

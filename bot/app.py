@@ -63,6 +63,17 @@ async def start_bot() -> None:
     if _state.bot is not None:
         return
 
+    # Phase 6b warning: `env` SecretStore loses refresh tokens on restart.
+    # Loud INFO at every boot so the dev knows what to expect — was a
+    # debugging trap during the Block B smoke.
+    if settings.secret_store_backend.lower() == "env":
+        log.warning(
+            "SECRET_STORE_BACKEND=env: Gmail refresh tokens are stored in "
+            "process memory only. They will be lost on uvicorn restart and "
+            "users will have to /conectar_gmail again. For dev persistence "
+            "set SECRET_STORE_BACKEND=file."
+        )
+
     mode = settings.telegram_mode.lower()
     if mode == "disabled":
         log.info("TELEGRAM_MODE=disabled — bot will not start.")
@@ -85,7 +96,27 @@ async def start_bot() -> None:
 
     handlers.register(_state.dp)
 
+    # Phase 6b: pubsub bridge between OAuth callback and Telegram chat.
+    # Idempotent and harmless when no Gmail flow is active.
+    from . import gmail_listener
+
+    await gmail_listener.start()
+
     if mode == "polling":
+        # If a webhook was set previously (e.g. testing in webhook mode,
+        # or a stale prod registration on the same token), Telegram will
+        # reject every getUpdates call with TelegramConflictError. Delete
+        # the webhook before polling starts. drop_pending_updates=true
+        # discards anything Telegram queued for the webhook so we don't
+        # immediately replay stale updates from a previous session.
+        try:
+            await _state.bot.delete_webhook(drop_pending_updates=True)
+        except Exception:  # pragma: no cover — best-effort
+            log.exception(
+                "delete_webhook before polling failed; if you see "
+                "TelegramConflictError, run "
+                "curl https://api.telegram.org/bot$TOKEN/deleteWebhook"
+            )
         _state.polling_task = asyncio.create_task(_run_polling())
         log.info("Telegram bot started in polling mode.")
     elif mode == "webhook":
@@ -108,6 +139,16 @@ async def start_bot() -> None:
 
 
 async def stop_bot() -> None:
+    # Stop the gmail listener first — it doesn't need the Bot object,
+    # but stopping it before deleting the webhook avoids a window where
+    # a callback could fire and find no chat to respond to.
+    try:
+        from . import gmail_listener
+
+        await gmail_listener.stop()
+    except Exception:  # pragma: no cover
+        log.exception("gmail_listener.stop() raised")
+
     if _state.polling_task is not None:
         _state.polling_task.cancel()
         try:

@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +19,7 @@ from .routers import (
     calendar,
     custom_events,
     debts,
+    gmail,
     goals,
     jobs,
     notification_rules,
@@ -89,6 +92,12 @@ app.include_router(agent.router)
 app.include_router(queries.router)
 app.include_router(telegram.users_tg_router)
 app.include_router(telegram.telegram_router)
+app.include_router(gmail.router)
+
+# Static pages for the OAuth callback redirect targets. Kept separate
+# from the router so adding a new HTML file doesn't require code changes.
+_STATIC_DIR = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
 @app.get("/health")

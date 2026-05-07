@@ -30,3 +30,7 @@ Thumbs.db
 
 # Docker
 *.log
+
+# Phase 6b — FileSecretStore. Plaintext refresh tokens; never commit.
+.dev_secrets.json
+.dev_secrets.json.tmp

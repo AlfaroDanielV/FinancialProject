@@ -28,6 +28,22 @@ class Settings(BaseSettings):
     secret_key: str = "change-me"
     log_level: str = "INFO"
 
+    # Gmail / OAuth (Phase 6b)
+    gmail_client_id: str = ""
+    gmail_client_secret: str = ""
+    gmail_redirect_uri: str = (
+        "http://localhost:8000/api/v1/gmail/oauth/callback"
+    )
+    gmail_oauth_state_secret: str = ""
+    gmail_oauth_state_ttl_s: int = 600
+    gmail_batch_threshold: int = 5
+
+    # Secret store (Phase 6b)
+    secret_store_backend: str = "env"  # env | file | azure_kv
+    azure_key_vault_url: str = ""
+    dev_secret_prefix: str = "DEV_SECRET_"
+    file_secret_store_path: str = ""  # default .dev_secrets.json in cwd
+
     @property
     def is_dev(self) -> bool:
         return self.environment == "development"

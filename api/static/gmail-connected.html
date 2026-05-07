@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="es-CR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Conectado a Gmail</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+    }
+    html, body {
+      margin: 0; padding: 0;
+      height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, sans-serif;
+      background: #f7f7f9;
+      color: #1a1a1a;
+    }
+    @media (prefers-color-scheme: dark) {
+      html, body { background: #111316; color: #f1f1f1; }
+      .card { background: #1c1f24; box-shadow: none; border: 1px solid #2a2e35; }
+    }
+    .wrap {
+      min-height: 100%;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    .card {
+      max-width: 440px;
+      width: 100%;
+      background: #ffffff;
+      padding: 32px 28px;
+      border-radius: 16px;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.06);
+      text-align: center;
+    }
+    .check {
+      width: 64px; height: 64px;
+      border-radius: 50%;
+      background: #e6f7ec;
+      color: #137a3a;
+      display: grid;
+      place-items: center;
+      margin: 0 auto 18px;
+      font-size: 32px;
+      font-weight: 700;
+    }
+    h1 {
+      font-size: 22px;
+      margin: 0 0 8px;
+    }
+    p {
+      margin: 0 0 8px;
+      line-height: 1.45;
+      font-size: 16px;
+    }
+    .muted {
+      color: #6b7280;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <main class="card">
+      <div class="check" aria-hidden="true">✓</div>
+      <h1>¡Listo!</h1>
+      <p>Conectaste tu cuenta de Gmail.</p>
+      <p class="muted">Volvé a Telegram para terminar.</p>
+    </main>
+  </div>
+</body>
+</html>
