@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,6 +18,16 @@ class Settings(BaseSettings):
     llm_query_model: str = "claude-sonnet-4-5"
     llm_query_iteration_cap: int = 4
     llm_daily_token_budget_per_user: int = 100_000
+    insights_extractor_enabled: bool = False
+    # Phase 6c B11: gate on whether the Sonnet query dispatcher exposes
+    # `get_user_context` as a tool (and includes the memory section + the
+    # Example 6/7 few-shots in the system prompt). Off during shadow
+    # validation; flipped to True after the 7-day review per B12.
+    insights_dispatcher_enabled: bool = False
+    llm_insight_input_usd_per_mtok: Decimal = Decimal("1.00")
+    llm_insight_output_usd_per_mtok: Decimal = Decimal("5.00")
+    llm_insight_cache_read_usd_per_mtok: Decimal = Decimal("0.10")
+    llm_insight_cache_write_usd_per_mtok: Decimal = Decimal("1.25")
 
     # Telegram (Phase 5b)
     telegram_bot_token: str = ""

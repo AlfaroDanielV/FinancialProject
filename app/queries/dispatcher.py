@@ -15,6 +15,10 @@ from api.models.llm_query_dispatch import LLMQueryDispatch
 from api.models.user import User
 from api.redis_client import get_redis
 from api.services.budget import assert_within_budget
+from api.services.insights.extractor import (
+    compact_transaction_context_from_tools,
+    enqueue_insight_extraction,
+)
 
 from .delivery import BudgetExceeded, handle_query_error
 from .history import append_turn, load_history, to_anthropic_messages
@@ -211,11 +215,20 @@ async def run_dispatch(
         if result.text:
             # Persist only successful, non-empty exchanges. The empty-response
             # fallback above is a placeholder, not real conversation content.
-            await append_turn(
+            history_after = await append_turn(
                 user_id,
                 user_msg=message_text,
                 assistant_msg=result.text,
                 redis=redis,
+            )
+            enqueue_insight_extraction(
+                user_id=user_id,
+                conversation_window=history_after,
+                transaction_context=compact_transaction_context_from_tools(
+                    result.tools_used
+                ),
+                source_event="post_query",
+                origin_dispatch_id=row.id,
             )
         return DispatchOutcome(
             text=text,

@@ -382,6 +382,91 @@ CANCELLED = "Cancelado."
 CONTEXT_CLEARED = "Listo, contexto limpio."
 
 
+# ── /memoria, /olvidar, /editar_memoria (Phase 6c B7) ───────────────────────
+
+MEMORIA_FOOTER = (
+    "Para borrar algo: /olvidar.  Para corregir algo: /editar_memoria.  "
+    "Para borrar todo: /olvidar todo."
+)
+
+OLVIDAR_MENU_HEADER = (
+    "¿Qué querés borrar? Tapeá una categoría o «Borrar todo»."
+)
+OLVIDAR_BUTTON_TODO = "Borrar todo 🧨"
+OLVIDAR_GROUP_EMPTY = "No tenés nada en esa categoría."
+OLVIDAR_GROUP_HEADER_TPL = (
+    "Esto es lo que tengo en <b>{label}</b>. Tapeá lo que querés borrar."
+)
+OLVIDAR_SINGLE_CONFIRM_TPL = (
+    "Voy a borrar este insight:\n{bullet}\n\n¿Seguís?"
+)
+OLVIDAR_SINGLE_CONFIRM_YES = "Sí, borrar"
+OLVIDAR_SINGLE_DONE = "Listo, lo borré."
+OLVIDAR_SINGLE_NOT_FOUND = "Ese insight ya no está. Quizá ya lo borraste."
+OLVIDAR_TODO_CONFIRM_1_TPL = (
+    "Vas a borrar <b>{count}</b> insights de tu memoria:\n{lines}\n\n"
+    "Esto NO se deshace. ¿Seguís?"
+)
+OLVIDAR_TODO_CONFIRM_1_YES = "Sí, ver de nuevo"
+OLVIDAR_TODO_CONFIRM_2 = (
+    "Última oportunidad. Voy a borrar TODA tu memoria. ¿Confirmás?"
+)
+OLVIDAR_TODO_CONFIRM_2_YES = "Sí, definitivamente"
+OLVIDAR_TODO_NOTHING = "No tenés memoria activa para borrar."
+OLVIDAR_TODO_DONE_TPL = (
+    "Borré <b>{count}</b> insights. Empezamos de cero."
+)
+OLVIDAR_CANCELLED = "Cancelado, no toqué nada."
+
+EDITAR_MEMORIA_EMPTY = (
+    "Todavía no tengo nada que se pueda corregir. Cuando tenga "
+    "señales claras te aviso por acá."
+)
+EDITAR_MEMORIA_PROMPT = (
+    "Decime cómo querés que lo recuerde. Por ejemplo:\n"
+    "• «soy bastante conservador con la plata»\n"
+    "• «mi meta es ahorrar 5 millones para diciembre»\n\n"
+    "Mandá /cancel si te arrepentís."
+)
+EDITAR_MEMORIA_PARSE_FAIL = (
+    "No te entendí. Probá reescribirlo más simple, o /cancel para salir."
+)
+EDITAR_MEMORIA_PARSE_FAIL_GIVE_UP = (
+    "Ya van varios intentos sin entender. Mandá /editar_memoria de nuevo "
+    "cuando lo tengás más claro."
+)
+EDITAR_MEMORIA_LIST_HEADER = (
+    "¿Qué querés corregir? Tapeá uno:"
+)
+EDITAR_MEMORIA_DONE_TPL = (
+    "Listo, lo voy a recordar así:\n{bullet}\n\n"
+    "Si me equivoqué, mandá /editar_memoria de nuevo."
+)
+EDITAR_MEMORIA_PARSE_FAIL_NETWORK = (
+    "Algo se trabó del lado del modelo. Probá de nuevo en un rato."
+)
+
+# /recalcular_memoria (Phase 6c B10)
+RECALCULAR_MEMORIA_STARTED = (
+    "Empecé a recalcular tu memoria. Esto suele tardar unos segundos. "
+    "Te aviso cuando termine."
+)
+RECALCULAR_MEMORIA_DONE_TPL = (
+    "Listo, recalculé tu memoria.\n"
+    "• Insights nuevos o actualizados: <b>{written}</b>\n"
+    "• Banderas detectadas: <b>{gaps}</b>\n\n"
+    "Mandá /memoria para verla."
+)
+RECALCULAR_MEMORIA_COOLDOWN_TPL = (
+    "Hace poco que recalculé tu memoria. Probá de nuevo en {minutes} minutos, "
+    "o esperá la corrida automática nocturna."
+)
+RECALCULAR_MEMORIA_FAILED = (
+    "Algo se trabó al recalcular. Lo dejo registrado y volvemos a intentar "
+    "en la corrida nocturna."
+)
+
+
 # ── nudge callbacks ───────────────────────────────────────────────────────────
 
 NUDGE_EXPIRED = "Ese recordatorio ya no está activo."

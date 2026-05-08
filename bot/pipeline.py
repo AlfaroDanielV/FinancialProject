@@ -23,6 +23,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.queries.dispatcher import handle as query_dispatcher_handle
 from api.models.user import User
+from api.services.insights.extractor import (
+    enqueue_insight_extraction,
+    post_clarification_context,
+)
 from api.services.llm_extractor import (
     ExtractionResult,
     LLMClient,
@@ -207,9 +211,20 @@ async def process_message(
         decision = await dispatch(
             extraction=merged, user=user, today=today, db=db
         )
-        return await _apply_decision(
+        reply = await _apply_decision(
             user=user, decision=decision, db=db, redis=redis
         )
+        enqueue_insight_extraction(
+            user_id=user.id,
+            conversation_window=[
+                {"role": "assistant", "content": pending_clarify.question_es},
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": reply.text},
+            ],
+            transaction_context=post_clarification_context(),
+            source_event="post_clarification",
+        )
+        return reply
 
     # ── pending-action short-circuit ──
     # If the user has a pending proposal and typed a confirmation word,

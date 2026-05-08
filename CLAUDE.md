@@ -1,5 +1,22 @@
 # CLAUDE.md — Personal Finance Agent
+## Project Brain (Obsidian vault)
 
+Strategic context and architectural decisions for FinancialProject live in:
+`~/Documents/ObsidianVault/30_Projects/FinancialProject/`
+
+**Always read before non-trivial work:**
+- `08_Code-Context/AGENT_CONTEXT.md` — operational rules and stack constraints
+- `00_Project-Brain.md` — current state and active phase
+- `Roadmap.md` — phase sequence
+- `05_Decisions/` — read decisions relevant to the current task
+
+**Update the vault when:**
+- A durable decision emerges → draft a new `05_Decisions/Decision - <Name>.md`
+- A phase closes → add `11_Phases/Phase-Nx.md` summary
+- An architecture change happens → update `04_Architecture.md`
+- Weekly → drop a `10_Weekly-Reviews/YYYY-MM-DD.md`
+
+Draft notes follow the YAML frontmatter pattern of existing files. Never delete decision notes; mark `status: deprecated` instead
 ## What This Project Is
 
 A personal finance agent that automates transaction capture, parses bank emails, generates financial reports, and provides a conversational AI layer capable of giving financial advice — including pushing back on unrealistic goals. Built as a personal tool first, with a clear path to multi-tenancy if commercialized.
@@ -135,7 +152,7 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 
 ## Implementation Roadmap
 
-### Current Status: Phase 6a — Block 10 closed; Block 11 next
+### Current Status: Phase 6c — B1–B12 implemented; awaiting production flag flip
 
 | Phase | Weeks | Focus | Done When |
 |---|---|---|---|
@@ -148,9 +165,9 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 | **5b** ✅ | Wk 5 | Telegram bot + LLM extraction (Spanish) | `scripts/phase5b_smoke.sh` passes against `_simulate`: pair → propose → confirm → undo → balance query → unknown-help |
 | **5c** ⏸ | Wk 5–6 | WhatsApp Cloud API adapter | Deferred until Meta Business Portfolio approval. Not scoped by 5d. |
 | **5d** ✅ | Wk 5–6 | Engagement nudges (missing_income / stale_pending / upcoming_bill) | `docs/curl/phase-5d.sh` passes: evaluate → list → dismiss 1x → dismiss 2x (silence) → act → dedup re-run → quiet hours → HIGH bypasses rate limit |
-| **6a** 🔄 | Wk 6–7 | Conversational query layer | Blocks 1–10 done: tools, query dispatcher, history, delivery sanitize/split/errors/budget, Telegram wiring, `/clear`, `/queries/test`, legacy test cleanup, event-loop/session factory fix. Block 11 next. |
+| **6a** ✅ | Wk 6–7 | Conversational query layer | Closed: read-only tool dispatcher, history, delivery, budget, Telegram wiring, `/clear`, `/queries/test`, and cache metrics. |
 | **6b** ✅ | Wk 7–8 | Gmail ingestion + reconciliation (re-scoped from "pushback") | All 4 addenda blocks (A → D) done: multi-bank email-based onboarding, scanner + reconciler + backfill, notifier + shadow summary + daily worker, FileSecretStore + `/agregar_muestra`. `scripts/test_phase_6b_full.sh` covers the curl smoke. See `docs/phase-6b/status.md` for block-by-block detail. |
-| **6c** | Wk 8–9 | Pushback engine (was 6b) | Ask "can I afford X?" and get a deterministic answer from real data. Deferred behind 6b — meaningful only once Gmail-fed transactions land in the ledger. |
+| **6c** ✅ | Wk 8–9 | User memory + behavioral profiling | B1–B12 implemented: schema, computed writer, Haiku extractor, lifecycle, `get_user_context` tool, bot commands `/memoria` `/olvidar` `/editar_memoria` `/recalcular_memoria`, privacy endpoints, redaction middleware, nightly ACA Job, dispatcher feature flag, curl smoke, docs. **Awaiting production gate**: `INSIGHTS_DISPATCHER_ENABLED=true` after the 7-day shadow window per `docs/phase-6c/shadow-validation.md`. |
 | **7** | Wk 6–10 | **Stabilize. Use it. Fix bugs.** | 4+ weeks of reliable use. Trust it more than your bank app. |
 | **8** | Wk 11–16 | Multi-tenant, auth, onboarding, billing | Can onboard a second person via Telegram and they get accurate reports within a week |
 
@@ -158,7 +175,7 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 
 **Do not advance to the next phase until the current phase's "done when" is met.** Skipping ahead creates compounding correctness problems — especially for the AI layer, which is downstream of reliable data pipelines.
 
-**Phase 6a gate (current):** do not advance to pushback or later feature work without explicit approval. Current suite state after Block 10: full pytest passes (`254 passed`) with remaining warnings around SQLAlchemy `datetime.utcnow()` deprecation and pytest-asyncio loop-scope config.
+**Phase 6c gate (closing):** all 12 blocks shipped. Code-side close: CLAUDE.md updated, `docs/phase-6c/curl-guide.sh` green, full test suite at 615 passing. Production-side close: flip `INSIGHTS_DISPATCHER_ENABLED=true` in Azure Container Apps env-config after Daniel approves the 7-day shadow review per `docs/phase-6c/shadow-validation.md`. Decisions in `docs/phase-6c-decisions.md`. Privacy doc in `docs/phase-6c/privacy.md`. Cache health in `docs/phase-6c/cache-verification.md`. Deployment in `docs/phase-6c/deployment.md`.
 
 **Phase 6b gate (closed):** Gmail ingestion shipped. Decisions in `docs/phase-6b-decisions.md`, status timeline in `docs/phase-6b/status.md`, GCP setup in `docs/phase-6b/gcp-setup.md`, deployment in `docs/phase-6b/deployment.md`, secret-store matrix in `docs/phase-6b/secret-store.md`. Curl smoke: `scripts/test_phase_6b_full.sh`. The 4 addenda blocks A→D wrapped multi-bank onboarding, scanner + reconciler + backfill, notifier + daily worker, and FileSecretStore + optional samples. Phase 6b suite is at 226 passing.
 
@@ -519,6 +536,131 @@ secret).
   decides per-batch with `/aprobar_shadow` or `/rechazar_shadow`.
 - Per-bank polling cadence. The daily worker queries everything at
   once per user.
+
+---
+
+## Phase 6c — User Memory & Behavioral Profiling
+
+Phase 6c is not semantic recall and not persisted chat logs. It is a
+typed, expirable `user_insights` layer with two writers:
+
+- deterministic computed insights from ledger tables;
+- Haiku-extracted stated preferences/goals/style signals from recent
+  conversation windows.
+
+**Canonical decisions:** `docs/phase-6c-decisions.md`. Operational docs:
+`docs/phase-6c/privacy.md`, `docs/phase-6c/deployment.md`,
+`docs/phase-6c/cache-verification.md`, `docs/phase-6c/shadow-validation.md`.
+
+### Block summary (B1–B12 ✅ implemented)
+
+- **B1–B2** schema + migrations 0013/0014. `user_insights`,
+  `user_insights_audit`, 14 typed Pydantic content classes with
+  `dedup_key()`, typed audit payloads validated before insert.
+- **B3** deterministic computed writer (`api/services/insights/computed.py`)
+  + persister with reinforcement/skip-locked semantics. Six computed
+  functions: spending pattern, recurring drift, cash-flow stability,
+  debt load, emergency fund, CR seasonal pattern.
+- **B4** Haiku extractor (`prompts/insight_extractor.py`,
+  `api/services/insights/extractor.py`). Non-blocking enqueue from
+  query dispatcher success path + write clarification merge. Strict
+  schema, no partial salvage. Cost tracked in `llm_query_dispatches`.
+- **B5** lifecycle worker (`workers/insights_lifecycle.py`,
+  `api/services/insights/lifecycle.py`). TTL expiry, 30-day hard purge
+  for unlocked rows, `raw_quote` redaction, reinforcement, deterministic
+  `stated_observed_gap` rows.
+- **B6** `get_user_context` tool. The Sonnet dispatcher can read
+  formatted Spanish bullets via the tool, never inlining per-user data
+  in the prompt. `compare_periods` stays as the cache breakpoint anchor.
+- **B7** Bot commands `/memoria`, `/olvidar`, `/editar_memoria`. Per-row
+  audit on every action. Two-confirmation flow for `/olvidar todo`.
+  Haiku-driven editor for `/editar_memoria` flips rows to
+  `user_override` + `user_locked=true` + emits `locked` audit row.
+- **B8** Privacy endpoints. `DELETE /api/v1/users/me/insights` and
+  `GET /api/v1/users/me/insights/export[?include_expired=]` with
+  streaming above 2000 rows and an `exported` audit row per call. Root
+  logger filter (`api/middleware/sensitive_redaction.py`) redacts
+  `content` / `content_at_deletion` / `previous_content` / `new_content`
+  before stdout.
+- **B9** System prompt update. Memory guidance + Example 6 (comparative)
+  + Example 7 (recommendation). Cache safety locked by
+  `tests/test_phase_6c_b9_system_prompt.py`.
+- **B10** Nightly ACA Job. `workers/insights_nightly.py` iterates
+  active users, runs `compute_all` + persister + gap detection per
+  user, then a global `expire_stale` sweep. Cron `30 9 * * * UTC` (3:30
+  am Costa Rica), 30 min after the Gmail daily worker. Admin trigger
+  endpoint `POST /api/v1/admin/insights/run-nightly`. Bot command
+  `/recalcular_memoria` with 1h Redis cooldown.
+- **B11** Dispatcher feature flag `INSIGHTS_DISPATCHER_ENABLED=false`.
+  When off, the prompt and tool registry are byte-identical to the
+  pre-B6 footprint. Coverage on B11 target paths: 88% total
+  (`bot/memory_handlers.py` 83%, `app/queries/tools/user_context.py`
+  92%, `api/services/insights/*` 86–100%).
+- **B12** This block: CLAUDE.md updated, vault updated, curl-guide
+  shipped at `docs/phase-6c/curl-guide.sh`. Production gate awaiting
+  Daniel's flag flip per `docs/phase-6c/shadow-validation.md`.
+
+### Bot commands (Phase 6c)
+
+| Command | Purpose | Rate limit |
+|---|---|---|
+| `/memoria` | List active insights, grouped (Patrones / Tus metas / Cómo te conozco / Banderas), CR voseo. | none |
+| `/olvidar [grupo\|todo]` | Delete with confirmation. `todo` requires two confirmations. Per-row audit. | none |
+| `/editar_memoria` | List editable insights (USER_EDITABLE_TYPES only); user replies with natural-language correction; Haiku parses to schema; persisted with `user_locked=true`. 3-attempt retry budget. | none |
+| `/recalcular_memoria` | Manual nightly recompute for the caller. Fires async; replies with start + done messages. | 1/hour Redis SETNX |
+
+### Endpoints (Phase 6c)
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| DELETE | `/api/v1/users/me/insights` | `X-Shortcut-Token` | Hard-delete every caller insight. Returns `{deleted: N}`. |
+| GET | `/api/v1/users/me/insights/export[?include_expired=]` | `X-Shortcut-Token` | JSON dump. Streams above 2000 rows. Emits `exported` audit row. |
+| POST | `/api/v1/admin/insights/run-nightly[?user_id=]` | `X-Shortcut-Token` | Manual nightly recompute. `user_id` must match caller (cross-tenant in P9). |
+
+### Env vars
+
+```
+INSIGHTS_EXTRACTOR_ENABLED=false      # B4 — set true post-deploy for shadow
+INSIGHTS_DISPATCHER_ENABLED=false     # B11 — flip true after 7-day window
+LLM_INSIGHT_INPUT_USD_PER_MTOK=1.00
+LLM_INSIGHT_OUTPUT_USD_PER_MTOK=5.00
+LLM_INSIGHT_CACHE_READ_USD_PER_MTOK=0.10
+LLM_INSIGHT_CACHE_WRITE_USD_PER_MTOK=1.25
+```
+
+### Hard rules (do not relax)
+
+- Two writers, never crossed (Decision #2). Computed never calls an
+  LLM; the extractor never queries aggregates.
+- LLM-extracted confidence capped at 0.85 base, 0.95 after
+  reinforcement. Computed reaches 1.00 with full evidence.
+  `user_locked=true` rows hold confidence 1.0 forever (Decision #4).
+- User-locked rows are sacred. Persister, lifecycle, and computed
+  worker all skip them (Decision #6).
+- Insights NEVER inline in the system prompt. They flow through the
+  `get_user_context` tool (Decision #8). Cache health is verified
+  per `docs/phase-6c/cache-verification.md`.
+- `stated_preference.raw_quote` is wiped at 30 days; deletion audit
+  payloads redact it too (Decision #7).
+- Validation failure in the extractor returns `[]`; no partial
+  salvage (Decision #10).
+
+### Production deployment
+
+The nightly worker runs as an Azure Container Apps Job — same image
+(`Dockerfile.worker`) as the Gmail worker, different `command/args`.
+Cron `30 9 * * * UTC`. Steps in `docs/phase-6c/deployment.md`. Manual
+identity reads `database-url` and `redis-url` from Key Vault; no
+Anthropic key needed (computed worker is pure SQL).
+
+### Out of Phase 6c (revisit later)
+
+- **Vector embeddings** for semantic recall over chats — Decision #1
+  blocks; revisit if real evidence shows up.
+- **Cross-user learning** — federated insights are P9.
+- **Web UI for memory management** — Phase 6e (Centro Financiero SPA).
+- **ML clustering for archetypes** — LLM with curated few-shots is
+  enough at single-user scale.
 
 ---
 

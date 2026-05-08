@@ -19,6 +19,7 @@ from .gmail_sender_whitelist import GmailSenderWhitelist
 from .bank_notification_sample import BankNotificationSample
 from .gmail_message_seen import GmailMessageSeen
 from .gmail_ingestion_run import GmailIngestionRun
+from .user_insight import UserInsight, UserInsightAudit
 
 __all__ = [
     "User",
@@ -44,4 +45,6 @@ __all__ = [
     "BankNotificationSample",
     "GmailMessageSeen",
     "GmailIngestionRun",
+    "UserInsight",
+    "UserInsightAudit",
 ]

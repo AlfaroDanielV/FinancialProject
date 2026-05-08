@@ -1,8 +1,9 @@
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Optional
 
-from sqlalchemy import ForeignKey, Integer, Text
+from sqlalchemy import ForeignKey, Integer, Numeric, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import TIMESTAMP
@@ -30,6 +31,14 @@ class LLMQueryDispatch(Base):
     )
     cache_creation_input_tokens: Mapped[Optional[int]] = mapped_column(
         Integer, nullable=True
+    )
+    extractor_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_query_dispatches.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    estimated_cost_usd: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(12, 6), nullable=True
     )
     tools_used: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, nullable=False, default=list

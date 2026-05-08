@@ -13,6 +13,7 @@ from .logging_config import setup_logging
 from .redis_client import close_redis, get_redis
 from .routers import (
     accounts,
+    admin_insights,
     agent,
     bill_occurrences,
     budgets,
@@ -25,6 +26,7 @@ from .routers import (
     notification_rules,
     notifications,
     nudges,
+    privacy_insights,
     queries,
     recurring_bills,
     reports,
@@ -37,6 +39,12 @@ from .routers import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging(settings.log_level)
+    # Phase 6c B8: scrub user_insights payloads from log records before they
+    # reach stdout. Installed AFTER setup_logging so the filter attaches to
+    # the just-built handler.
+    from .middleware.sensitive_redaction import install_on_root_logger
+
+    install_on_root_logger()
     # Telegram bot is optional — only started when TELEGRAM_MODE != disabled.
     # This keeps CI, tests, and fresh dev envs runnable without a bot token.
     from bot.app import start_bot, stop_bot
@@ -93,6 +101,8 @@ app.include_router(queries.router)
 app.include_router(telegram.users_tg_router)
 app.include_router(telegram.telegram_router)
 app.include_router(gmail.router)
+app.include_router(privacy_insights.router)
+app.include_router(admin_insights.router)
 
 # Static pages for the OAuth callback redirect targets. Kept separate
 # from the router so adding a new HTML file doesn't require code changes.

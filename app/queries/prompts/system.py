@@ -10,9 +10,10 @@ resolved inconsistently without explicit guidance:
 3. "Qué debo pagar" — bills vs debts.
 4. compare_periods delta direction — period_a vs period_b.
 
-This module replaces the interim block with a five-section prompt
-(persona, capabilities, date context, rules, conventions) plus five
-few-shot examples. Each section earns its tokens.
+This module replaces the interim block with stable prompt sections for
+persona, capabilities, date context, rules, conventions, and memory
+guidance, plus a small set of few-shot examples. Each section earns its
+tokens.
 
 Cache breakpoint strategy: the entire system prompt is one cache block
 (`cache_control=ephemeral`, applied in llm_client._create_message).
@@ -47,7 +48,7 @@ def _persona(first_name: Optional[str]) -> str:
     )
 
 
-_CAPABILITIES = """\
+_CAPABILITIES_WITHOUT_MEMORY = """\
 Podés consultar y analizar:
 - Transacciones (gastos e ingresos) con filtros por fecha, cuenta, \
 categoría, comerciante o monto.
@@ -62,6 +63,28 @@ No podés:
 «gasté X en Y» o «me pagaron X»).
 - Modificar cuentas, deudas o pagos recurrentes.
 - Acceder a información fuera de los datos del usuario en este sistema."""
+
+_CAPABILITIES_WITH_MEMORY = """\
+Podés consultar y analizar:
+- Transacciones (gastos e ingresos) con filtros por fecha, cuenta, \
+categoría, comerciante o monto.
+- Saldos de cuentas y composición del patrimonio.
+- Deudas activas con proyección de cancelación.
+- Pagos recurrentes próximos, vencidos o recientes.
+- Propuestas pendientes de confirmación.
+- Comparaciones entre dos períodos de tiempo.
+- Memoria del usuario vía get_user_context para personalizar respuestas \
+cuando el contexto ayuda.
+
+No podés:
+- Registrar gastos o ingresos (para eso decile al usuario que escriba \
+«gasté X en Y» o «me pagaron X»).
+- Modificar cuentas, deudas o pagos recurrentes.
+- Acceder a información fuera de los datos del usuario en este sistema."""
+
+# Backward-compat alias used by tests in test_phase_6c_b9_system_prompt.
+# Memory-aware capabilities is the post-flag-on canonical form.
+_CAPABILITIES = _CAPABILITIES_WITH_MEMORY
 
 
 def _date_block(ctx: dict[str, str]) -> str:
@@ -142,6 +165,23 @@ anterior» → period_a=mes anterior, period_b=mes actual.
 preguntá antes de ejecutar herramientas."""
 
 
+_MEMORY_GUIDANCE = """\
+Memoria del usuario:
+
+- Tenés acceso a `get_user_context(insight_types, max_insights)` como
+  herramienta de lectura de memoria.
+- Usala cuando la pregunta pida personalización, comparación con metas,
+  seguimiento de hábitos, recomendaciones, contexto o tono.
+- No la uses para consultas puramente factuales que ya se resuelven con
+  las herramientas normales o con el historial inmediato. Ejemplos en los
+  que NO conviene llamarla: «cuánto gasté ayer», «cuál es mi saldo»,
+  «cuándo vence el alquiler».
+- Si una pregunta es específica, pedí solo los tipos relevantes de
+  memoria. Si no hace falta, no pidas memoria.
+- No inventés memoria ni des por hecho que un patrón está activo si la
+  herramienta no lo devuelve."""
+
+
 _FEW_SHOTS = """\
 Ejemplos:
 
@@ -195,6 +235,27 @@ mostrar todos los gastos de ayer si querés, pero no puedo filtrar por \
 hora."""
 
 
+_MEMORY_FEW_SHOT = """\
+Ejemplo 6
+Usuario: qué pensás de mis gastos vs mis metas
+[Tool call interno: get_user_context(insight_types=["spending_pattern", \
+"stated_goal", "risk_posture"], max_insights=5)]
+Respuesta: Veo que tus gastos en supermercado van más rápido que tu meta \
+de ahorro, y además tu postura al riesgo es conservadora. Si querés, te \
+digo dónde está la mayor fuga.
+
+Ejemplo 7
+Usuario: dónde podría apretar el cinturón este mes
+[Tool calls paralelos: get_user_context(insight_types=["stated_goal", \
+"risk_posture", "stated_preference"], max_insights=5), \
+aggregate_transactions(start_date={mes_inicio}, end_date={hoy}, \
+group_by="category", transaction_type="expense")]
+Respuesta: Considerando que tu meta declarada es ahorrar para el marchamo \
+y tu postura es conservadora, la categoría con más margen este mes es \
+<b>restaurantes</b> (₡145.000, segundo lugar después de supermercado). \
+Bajar a la mitad ahí libera ₡70.000 hacia tu meta sin tocar lo esencial."""
+
+
 def _first_name_from(full_name: Optional[str]) -> Optional[str]:
     if not full_name:
         return None
@@ -206,18 +267,38 @@ def build_system_prompt(user: User, now: datetime) -> str:
     """Build the full Phase 6a system prompt.
 
     Stable for identical inputs (important for prompt cache hit rate).
-    Five sections joined by blank lines, no headers — headers eat tokens
-    and the LLM doesn't need them.
+    Prompt sections are joined by blank lines, no headers — headers eat
+    tokens and the LLM doesn't need them.
+
+    Phase 6c B11: when `settings.insights_dispatcher_enabled` is False
+    (default, during the shadow window) the prompt is byte-identical to
+    the pre-B6 footprint — no memory section, no Example 6/7 few-shot,
+    and the capabilities list omits the get_user_context bullet. The
+    flag flips after the 7-day shadow review per B12.
     """
+    from api.config import settings
+
     first_name = _first_name_from(user.full_name)
     ctx = build_date_context(user.timezone, now)
 
-    sections = [
-        _persona(first_name),
-        _CAPABILITIES,
-        _date_block(ctx),
-        _RULES,
-        _CONVENTIONS,
-        _FEW_SHOTS,
-    ]
+    if settings.insights_dispatcher_enabled:
+        sections = [
+            _persona(first_name),
+            _CAPABILITIES_WITH_MEMORY,
+            _date_block(ctx),
+            _RULES,
+            _CONVENTIONS,
+            _MEMORY_GUIDANCE,
+            _FEW_SHOTS,
+            _MEMORY_FEW_SHOT,
+        ]
+    else:
+        sections = [
+            _persona(first_name),
+            _CAPABILITIES_WITHOUT_MEMORY,
+            _date_block(ctx),
+            _RULES,
+            _CONVENTIONS,
+            _FEW_SHOTS,
+        ]
     return "\n\n".join(sections)

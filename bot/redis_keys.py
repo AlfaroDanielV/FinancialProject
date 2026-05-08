@@ -83,6 +83,29 @@ def gmail_shadow_summary_key(
     return f"gmail_shadow_summary:{user_id}:{date_iso}"
 
 
+# ── Memory commands (Phase 6c B7) ────────────────────────────────────────────
+# /editar_memoria stashes the insight_id the user is editing here while
+# waiting for their natural-language correction. Cleared on success,
+# /cancel, or TTL expiry. Same 5-minute window as pending/clarification —
+# anything longer and the user has forgotten what they tapped.
+MEMORY_EDIT_TTL_S = 300
+
+
+def memory_edit_key(user_id: uuid.UUID | str) -> str:
+    return f"telegram:memory_edit:{user_id}"
+
+
+# /recalcular_memoria cooldown (Phase 6c B10): one manual nightly recompute
+# per user per hour. The full ACA Job runs nightly anyway — this is a
+# user-driven "warm me up" trigger, not a way to thrash compute. Atomic
+# SETNX with this TTL gives us the rate limit without bookkeeping.
+RECALC_COOLDOWN_S = 3600
+
+
+def recalc_cooldown_key(user_id: uuid.UUID | str) -> str:
+    return f"telegram:recalc_cooldown:{user_id}"
+
+
 # /agregar_muestra optional sample collection.
 # Set on /agregar_muestra; cleared on next photo/text from same user OR
 # on TTL expiry. Independent of the onboarding state machine.

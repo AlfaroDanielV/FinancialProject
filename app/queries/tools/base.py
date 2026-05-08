@@ -8,7 +8,7 @@ from typing import Any, get_type_hints
 
 from pydantic import ConfigDict, create_model
 
-ToolFunc = Callable[..., Awaitable[dict[str, Any]]]
+ToolFunc = Callable[..., Awaitable[Any]]
 
 
 @dataclass(frozen=True)
@@ -60,7 +60,7 @@ async def execute_tool(
     name: str,
     args: dict[str, Any],
     user_id: uuid.UUID,
-) -> dict[str, Any]:
+) -> Any:
     tool = _REGISTRY.get(name)
     if tool is None:
         raise KeyError(f"unknown query tool: {name}")

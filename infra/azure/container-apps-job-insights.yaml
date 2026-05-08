@@ -1,0 +1,67 @@
+# Azure Container Apps Job — Phase 6c nightly insights recompute.
+#
+# Apply with:
+#   az containerapp job create --resource-group <rg> --name finance-insights-nightly \
+#       --environment <ca-env> --yaml infra/azure/container-apps-job-insights.yaml
+#
+# Cron: 30 9 * * * UTC = 3:30am Costa Rica (UTC-6, no DST), 30 minutes
+# after the Gmail daily worker (0 9 UTC). Order matters: gmail_daily
+# refreshes the ledger first, then insights_nightly recomputes from it.
+#
+# Replica timeout 1800s = 30 min. Personal-use scale (<10 users) finishes
+# in well under a minute; the headroom is for future fan-out.
+#
+# parallelism: 1 — one instance per scheduled invocation. The worker
+# iterates ALL active users sequentially; we don't fan out.
+#
+# Image: replace <registry>/<image>:<tag> with the actual ACR address.
+# Built from the same Dockerfile.worker as the Gmail job. The CMD
+# default in Dockerfile.worker is the Gmail worker; we override here.
+#
+# NOTE: no Anthropic key. The nightly worker is pure SQL aggregates —
+# the Haiku extractor only fires from the dispatcher's post-query hook,
+# not from the nightly recompute (Decision #2: two writers, never crossed).
+
+properties:
+  environmentId: /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.App/managedEnvironments/<env>
+  configuration:
+    triggerType: Schedule
+    replicaTimeout: 1800
+    replicaRetryLimit: 1
+    scheduleTriggerConfig:
+      cronExpression: "30 9 * * *"
+      parallelism: 1
+      replicaCompletionCount: 1
+    secrets:
+      - name: database-url
+        keyVaultUrl: https://<kv-name>.vault.azure.net/secrets/database-url
+        identity: system
+      - name: redis-url
+        keyVaultUrl: https://<kv-name>.vault.azure.net/secrets/redis-url
+        identity: system
+  template:
+    containers:
+      - name: insights-nightly
+        image: <registry>/<image>:<tag>
+        command: ["python"]
+        args: ["-m", "workers.insights_nightly"]
+        resources:
+          cpu: 0.5
+          memory: 1Gi
+        env:
+          - name: DATABASE_URL
+            secretRef: database-url
+          - name: REDIS_URL
+            secretRef: redis-url
+          - name: ENVIRONMENT
+            value: production
+          # Telegram is intentionally disabled here — the worker doesn't
+          # send messages. The nightly stats land in stdout; per-user
+          # results are visible via /memoria after the run.
+          - name: TELEGRAM_MODE
+            value: disabled
+  # Managed identity must have:
+  #   - Get/List on Key Vault secrets (database-url, redis-url)
+  #   - AcrPull on the registry
+  identity:
+    type: SystemAssigned

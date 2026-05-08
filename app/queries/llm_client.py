@@ -72,7 +72,7 @@ class QueryLLMResponse:
     cache_creation_input_tokens: int = 0
 
 
-ToolExecutor = Callable[[str, dict[str, Any], uuid.UUID], Awaitable[dict[str, Any]]]
+ToolExecutor = Callable[[str, dict[str, Any], uuid.UUID], Awaitable[Any]]
 
 
 class AnthropicQueryClient:
@@ -265,10 +265,13 @@ class AnthropicQueryClient:
             result = await tool_executor(tool_name, args, user_id)
             usage_entry["duration_ms"] = _elapsed_ms(started)
             tools_used.append(usage_entry)
+            content = result if isinstance(result, str) else json.dumps(
+                result, default=str
+            )
             return {
                 "type": "tool_result",
                 "tool_use_id": _block_id(block),
-                "content": json.dumps(result, default=str),
+                "content": content,
             }
         except Exception as e:  # noqa: BLE001 - tool errors are model-visible
             usage_entry["duration_ms"] = _elapsed_ms(started)

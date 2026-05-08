@@ -34,6 +34,23 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+# ── Phase 6c B11 dispatcher flag default for tests ───────────────────────────
+# `insights_dispatcher_enabled` defaults to False in production so the
+# 7-day shadow window can run with the extractor on and the dispatcher
+# tool off. Tests for B6/B7/B9 etc. were written assuming the post-shadow
+# state (tool registered, memory sections in prompt), so we flip the flag
+# to True for the whole test session. B11 tests that verify the flag-off
+# behavior explicitly monkeypatch it back to False.
+@pytest.fixture(autouse=True)
+def _insights_dispatcher_flag_on():
+    from api.config import settings
+
+    previous = settings.insights_dispatcher_enabled
+    settings.insights_dispatcher_enabled = True
+    yield
+    settings.insights_dispatcher_enabled = previous
+
+
 # ── Redis singleton reset ─────────────────────────────────────────────────────
 # api.redis_client.get_redis() caches a `Redis` instance bound to the event
 # loop that created it. pytest-asyncio uses a fresh loop per function by

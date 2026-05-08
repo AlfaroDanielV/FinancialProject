@@ -46,11 +46,18 @@ def _clean_state():
 @pytest.mark.asyncio
 async def test_dispatcher_creates_llm_query_dispatch_row(db_with_user, monkeypatch):
     session, user_id = db_with_user
+    extraction_jobs: list[dict] = []
+
+    def _enqueue(**kwargs):
+        extraction_jobs.append(kwargs)
+        return None
+
     monkeypatch.setattr(
         dispatcher,
         "AsyncSessionLocal",
         lambda: _SessionContext(session),
     )
+    monkeypatch.setattr(dispatcher, "enqueue_insight_extraction", _enqueue)
 
     response = await dispatcher.handle(
         user_id=user_id,
@@ -72,3 +79,5 @@ async def test_dispatcher_creates_llm_query_dispatch_row(db_with_user, monkeypat
     assert row.final_response_chars == len(response)
     assert row.error is None
     assert row.duration_ms == 12
+    assert extraction_jobs[0]["source_event"] == "post_query"
+    assert extraction_jobs[0]["origin_dispatch_id"] == row.id

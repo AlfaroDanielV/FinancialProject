@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Optional
 
 from pydantic import BaseModel
@@ -19,6 +20,8 @@ class LLMQueryDispatchResponse(BaseModel):
     total_iterations: int
     total_input_tokens: int
     total_output_tokens: int
+    extractor_run_id: Optional[uuid.UUID] = None
+    estimated_cost_usd: Optional[Decimal] = None
     tools_used: list[QueryToolUsage]
     final_response_chars: Optional[int]
     error: Optional[str]

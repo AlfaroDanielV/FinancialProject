@@ -76,9 +76,16 @@ def register(dp: Dispatcher) -> None:
     # Slash commands like /undo, /help, /cancel still resolve correctly
     # because the gmail router doesn't declare them — they fall through
     # to the main router below.
-    from . import gmail_handlers
+    #
+    # Phase 6c B7 memory router slots between gmail and main: same
+    # rationale (its `_is_in_memory_edit` filter must beat the catch-all
+    # so /editar_memoria replies don't get extracted as transactions),
+    # but the gmail bank-selection flow has higher priority since it's
+    # an active onboarding state with a 30-min TTL.
+    from . import gmail_handlers, memory_handlers
 
     dp.include_router(gmail_handlers.router)
+    dp.include_router(memory_handlers.router)
     dp.include_router(router)
 
 
@@ -225,6 +232,9 @@ async def on_cancel(message: Message) -> None:
             await db.commit()
         await clear_pending(user_id=user.id, redis=redis)
         await clear_clarification(user_id=user.id, redis=redis)
+        # Phase 6c B7: also clear an in-progress /editar_memoria reply.
+        from .memory_handlers import clear_memory_edit_state
+        await clear_memory_edit_state(user_id=user.id, redis=redis)
     await message.answer(messages_es.CANCELLED)
 
 

@@ -47,12 +47,16 @@ async def _allow_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _noop(**kwargs):
         return None
 
+    def _noop_enqueue(**kwargs):
+        return None
+
     monkeypatch.setattr(pipeline, "check_and_increment_rate", _true)
     # Budget gate moved to api.services.budget in bloque 8.5; stub it
     # to a no-op so routing tests don't need a real DB sum.
     monkeypatch.setattr(pipeline, "assert_within_budget", _noop)
     monkeypatch.setattr(pipeline, "load_clarification", _none)
     monkeypatch.setattr(pipeline, "clear_clarification", _noop)
+    monkeypatch.setattr(pipeline, "enqueue_insight_extraction", _noop_enqueue)
 
 
 @pytest.mark.asyncio
@@ -299,6 +303,7 @@ async def test_pending_clarification_write_reply_uses_existing_dispatcher(
 ):
     await _allow_pipeline(monkeypatch)
     dispatch_calls: list[dict[str, Any]] = []
+    extraction_jobs: list[dict[str, Any]] = []
 
     async def _load_clarification(**kwargs):
         return ClarificationState(
@@ -318,9 +323,14 @@ async def test_pending_clarification_write_reply_uses_existing_dispatcher(
     async def _query_handle(*args, **kwargs):  # pragma: no cover - should never run
         raise AssertionError("write clarification should not hit query dispatcher")
 
+    def _enqueue(**kwargs):
+        extraction_jobs.append(kwargs)
+        return None
+
     monkeypatch.setattr(pipeline, "load_clarification", _load_clarification)
     monkeypatch.setattr(pipeline, "dispatch", _dispatch)
     monkeypatch.setattr(pipeline, "query_dispatcher_handle", _query_handle)
+    monkeypatch.setattr(pipeline, "enqueue_insight_extraction", _enqueue)
 
     reply = await pipeline.process_message(
         user=_FakeUser(),
@@ -334,3 +344,5 @@ async def test_pending_clarification_write_reply_uses_existing_dispatcher(
     assert reply.text
     assert len(dispatch_calls) == 1
     assert dispatch_calls[0]["extraction"].dispatcher == "write"
+    assert extraction_jobs[0]["source_event"] == "post_clarification"
+    assert extraction_jobs[0]["conversation_window"][1]["content"] == "gasto"

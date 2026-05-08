@@ -27,6 +27,8 @@ from api.models import (  # noqa: F401
     CustomEvent,
     NotificationRule,
     NotificationEvent,
+    UserInsight,
+    UserInsightAudit,
 )
 
 config = context.config

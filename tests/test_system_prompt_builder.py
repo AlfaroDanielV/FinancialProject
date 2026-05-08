@@ -111,13 +111,16 @@ def test_builder_includes_strict_rules_and_conventions() -> None:
     assert "month-to-date" in out
     assert "«Deber pagar»" in out
     assert "delta = period_b - period_a" in out
+    assert "Memoria del usuario:" in out
+    assert "get_user_context" in out
+    assert "No la uses para consultas puramente factuales" in out
 
 
 def test_builder_includes_few_shot_examples() -> None:
     user = _user()
     out = build_system_prompt(user=user, now=_now_utc())
-    # Five labeled examples present.
-    for n in range(1, 6):
+    # Six labeled examples present.
+    for n in range(1, 7):
         assert f"Ejemplo {n}" in out
     # The compare_periods example demonstrates the delta convention.
     assert "compare_periods(" in out
@@ -125,6 +128,9 @@ def test_builder_includes_few_shot_examples() -> None:
     assert "qué debo pagar" in out
     # The granularity refusal.
     assert "no puedo filtrar por hora" in out
+    # The memory example demonstrates the new tool.
+    assert "get_user_context(" in out
+    assert "dónde está la mayor fuga" in out
 
 
 def test_snapshot_for_2026_04_27_daniel() -> None:
@@ -146,8 +152,15 @@ def test_snapshot_for_2026_04_27_daniel() -> None:
     assert "Reglas estrictas:" in out
     # Conventions block.
     assert "Convenciones de interpretación:" in out
-    # Few-shots.
-    assert out.rstrip().endswith("no puedo filtrar por hora.")
+    # Few-shots — last line is the closing of Example 7 (memory recommendation).
+    # Updated in Phase 6c B9 when Example 7 was appended after Example 6.
+    assert out.rstrip().endswith(
+        "libera ₡70.000 hacia tu meta sin tocar lo esencial."
+    )
+    # Example 6 (memory comparative) still present.
+    assert "dónde está la mayor fuga." in out
+    # Example 7 (memory recommendation) is present.
+    assert "Ejemplo 7" in out
 
 
 def test_full_snapshot_byte_for_byte_2026_04_27() -> None:
@@ -159,14 +172,13 @@ def test_full_snapshot_byte_for_byte_2026_04_27() -> None:
     out = build_system_prompt(user=user, now=_now_utc())
 
     # Length sanity — guard against accidental empty sections.
-    assert 1500 < len(out) < 8000, f"prompt length out of expected band: {len(out)}"
-    # Section count: 6 sections joined by "\n\n".
-    # Persona, capacities, date block, rules, conventions, few-shots.
+    assert 2000 < len(out) < 10000, f"prompt length out of expected band: {len(out)}"
+    # Section count: 8 blocks joined by "\n\n".
     sections = out.split("\n\n")
-    # Few-shots block has internal blank lines, so total split chunks > 6.
     assert sections[0].startswith("Sos un asistente financiero personal para Daniel.")
     assert any(s.startswith("Podés consultar y analizar:") for s in sections)
     assert any(s.startswith("Fecha y hora actual:") for s in sections)
     assert any(s.startswith("Reglas estrictas:") for s in sections)
     assert any(s.startswith("Convenciones de interpretación:") for s in sections)
+    assert any(s.startswith("Memoria del usuario:") for s in sections)
     assert any(s.startswith("Ejemplos:") for s in sections)
