@@ -92,6 +92,57 @@ async def test_transition_oauth_to_selecting_banks():
     assert new.state == "selecting_banks"
 
 
+async def test_transition_oauth_to_onboarding_root():
+    redis = StubRedis()
+    user_id = uuid.uuid4()
+    await gmail_onboarding.begin(
+        user_id=user_id, telegram_chat_id=1, redis=redis
+    )
+    new = await gmail_onboarding.transition(
+        user_id=user_id, to="gmail_onboarding_root", redis=redis
+    )
+    assert new.state == "gmail_onboarding_root"
+
+
+async def test_root_to_bank_guided_states():
+    redis = StubRedis()
+    user_id = uuid.uuid4()
+    await gmail_onboarding.begin(
+        user_id=user_id, telegram_chat_id=1, redis=redis
+    )
+    await gmail_onboarding.transition(
+        user_id=user_id, to="gmail_onboarding_root", redis=redis
+    )
+    await gmail_onboarding.transition(
+        user_id=user_id, to="selecting_bank_from_list", redis=redis
+    )
+    state = await gmail_onboarding.transition(
+        user_id=user_id, to="entering_sender_for_bank", redis=redis
+    )
+    assert state.state == "entering_sender_for_bank"
+
+
+async def test_root_to_keyword_discovery_states():
+    redis = StubRedis()
+    user_id = uuid.uuid4()
+    await gmail_onboarding.begin(
+        user_id=user_id, telegram_chat_id=1, redis=redis
+    )
+    await gmail_onboarding.transition(
+        user_id=user_id, to="gmail_onboarding_root", redis=redis
+    )
+    await gmail_onboarding.transition(
+        user_id=user_id, to="selecting_keywords", redis=redis
+    )
+    await gmail_onboarding.transition(
+        user_id=user_id, to="discovery_running", redis=redis
+    )
+    state = await gmail_onboarding.transition(
+        user_id=user_id, to="discovery_results", redis=redis
+    )
+    assert state.state == "discovery_results"
+
+
 async def test_transition_selecting_to_confirming():
     redis = StubRedis()
     user_id = uuid.uuid4()
@@ -255,6 +306,43 @@ async def test_add_pending_sender_rejects_outside_selecting_banks():
         )
 
 
+async def test_add_pending_sender_allowed_from_new_commit_states():
+    redis = StubRedis()
+    user_id = uuid.uuid4()
+    await gmail_onboarding.begin(
+        user_id=user_id, telegram_chat_id=1, redis=redis
+    )
+    await gmail_onboarding.transition(
+        user_id=user_id, to="gmail_onboarding_root", redis=redis
+    )
+    await gmail_onboarding.transition(
+        user_id=user_id, to="selecting_bank_from_list", redis=redis
+    )
+    await gmail_onboarding.transition(
+        user_id=user_id, to="entering_sender_for_bank", redis=redis
+    )
+    await gmail_onboarding.transition(
+        user_id=user_id, to="test_scan_prompt", redis=redis
+    )
+
+    state, was_new = await gmail_onboarding.add_pending_sender(
+        user_id=user_id,
+        email="manual@bac.cr",
+        bank_name="bac",
+        source="manual_with_bank_hint",
+        redis=redis,
+    )
+
+    assert was_new is True
+    assert state.pending_senders == [
+        {
+            "email": "manual@bac.cr",
+            "bank_name": "bac",
+            "source": "manual_with_bank_hint",
+        }
+    ]
+
+
 async def test_remove_pending_sender():
     redis = StubRedis()
     user_id = uuid.uuid4()
@@ -359,6 +447,116 @@ async def test_set_selection_message_id():
     state = await gmail_onboarding.get(user_id, redis)
     assert state is not None
     assert state.selection_message_id == 42
+
+
+# ── bank-guided + discovery payload helpers ─────────────────────────────────
+
+
+async def test_set_bank_context_and_pending_sender_email():
+    redis = StubRedis()
+    user_id = uuid.uuid4()
+    await gmail_onboarding.begin(
+        user_id=user_id, telegram_chat_id=1, redis=redis
+    )
+    await gmail_onboarding.transition(
+        user_id=user_id, to="gmail_onboarding_root", redis=redis
+    )
+    await gmail_onboarding.transition(
+        user_id=user_id, to="selecting_bank_from_list", redis=redis
+    )
+    state = await gmail_onboarding.set_bank_context(
+        user_id=user_id,
+        bank_slug="bac",
+        bank_name="BAC Credomatic",
+        redis=redis,
+    )
+    assert state.selected_bank_slug == "bac"
+    assert state.selected_bank_name == "BAC Credomatic"
+
+    await gmail_onboarding.transition(
+        user_id=user_id, to="entering_sender_for_bank", redis=redis
+    )
+    state = await gmail_onboarding.set_pending_sender_email(
+        user_id=user_id,
+        email="Notificaciones@BAC.CR",
+        redis=redis,
+    )
+    assert state.pending_sender_email == "notificaciones@bac.cr"
+
+
+async def test_set_keywords_dedupes_and_caps():
+    redis = StubRedis()
+    user_id = uuid.uuid4()
+    await gmail_onboarding.begin(
+        user_id=user_id, telegram_chat_id=1, redis=redis
+    )
+    await gmail_onboarding.transition(
+        user_id=user_id, to="gmail_onboarding_root", redis=redis
+    )
+    await gmail_onboarding.transition(
+        user_id=user_id, to="selecting_keywords", redis=redis
+    )
+    state = await gmail_onboarding.set_keywords(
+        user_id=user_id,
+        keywords=[
+            "transacción",
+            "compra",
+            "transacción",
+            "movimiento",
+            "se realizó",
+            "transferencia",
+            "notificación",
+        ],
+        redis=redis,
+    )
+    assert state.selected_keywords == [
+        "transacción",
+        "compra",
+        "movimiento",
+        "se realizó",
+        "transferencia",
+    ]
+
+
+async def test_discovery_results_and_toggle_selection():
+    redis = StubRedis()
+    user_id = uuid.uuid4()
+    await gmail_onboarding.begin(
+        user_id=user_id, telegram_chat_id=1, redis=redis
+    )
+    await gmail_onboarding.transition(
+        user_id=user_id, to="gmail_onboarding_root", redis=redis
+    )
+    await gmail_onboarding.transition(
+        user_id=user_id, to="selecting_keywords", redis=redis
+    )
+    await gmail_onboarding.transition(
+        user_id=user_id, to="discovery_running", redis=redis
+    )
+    state = await gmail_onboarding.set_discovery_results(
+        user_id=user_id,
+        candidates=[
+            {
+                "email": "bank@example.com",
+                "count": 3,
+                "sample_subjects": ["Compra"],
+            }
+        ],
+        run_id="run-1",
+        redis=redis,
+    )
+    assert state.state == "discovery_results"
+    assert state.discovery_run_id == "run-1"
+    assert state.discovery_candidates[0]["email"] == "bank@example.com"
+
+    state = await gmail_onboarding.toggle_discovery_index(
+        user_id=user_id, index=0, redis=redis
+    )
+    assert state.discovery_selected_indices == [0]
+    state = await gmail_onboarding.toggle_discovery_index(
+        user_id=user_id, index=0, redis=redis
+    )
+    assert state.discovery_selected_indices == []
 
 
 # ── round-trip + forward-compat ──────────────────────────────────────────────

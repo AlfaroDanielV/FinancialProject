@@ -19,7 +19,11 @@ from .gmail_sender_whitelist import GmailSenderWhitelist
 from .bank_notification_sample import BankNotificationSample
 from .gmail_message_seen import GmailMessageSeen
 from .gmail_ingestion_run import GmailIngestionRun
+from .gmail_discovery_run import GmailDiscoveryRun
 from .user_insight import UserInsight, UserInsightAudit
+from .recurring_income import RecurringIncome
+from .magic_link_token import MagicLinkToken
+from .lazy_detection_event import LazyDetectionEvent
 
 __all__ = [
     "User",
@@ -45,6 +49,10 @@ __all__ = [
     "BankNotificationSample",
     "GmailMessageSeen",
     "GmailIngestionRun",
+    "GmailDiscoveryRun",
     "UserInsight",
     "UserInsightAudit",
+    "RecurringIncome",
+    "MagicLinkToken",
+    "LazyDetectionEvent",
 ]

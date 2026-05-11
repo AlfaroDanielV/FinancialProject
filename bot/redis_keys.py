@@ -68,6 +68,15 @@ def gmail_manual_scan_cooldown_key(user_id: uuid.UUID | str) -> str:
     return f"gmail_manual_scan_cooldown:{user_id}"
 
 
+# Gmail sender discovery: exploratory keyword scans are wider than normal
+# whitelisted scans, so keep a separate short cooldown.
+GMAIL_DISCOVERY_COOLDOWN_S = 10 * 60
+
+
+def gmail_discovery_cooldown_key(user_id: uuid.UUID | str) -> str:
+    return f"gmail_discovery_cooldown:{user_id}"
+
+
 # Shadow summary accumulator. The notifier appends transaction IDs
 # created during shadow window. The daily worker reads the previous
 # day's set at 8am CR and sends it as a digest. TTL gives us 48h to

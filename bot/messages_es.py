@@ -190,8 +190,9 @@ GMAIL_ADD_BANK_NOT_ACTIVE = (
     "Primero activá Gmail con /conectar_gmail antes de agregar bancos."
 )
 GMAIL_ADD_BANK_ENTRY = (
-    "Decime qué banco querés agregar. Tapeá un preset o mandame un correo "
-    "directo."
+    "¿Cómo querés agregar bancos?\n\n"
+    "💡 Por banco: elegís el banco y me pasás el correo exacto.\n"
+    "🔍 Discovery: busco senders por keywords."
 )
 GMAIL_ADD_BANK_DONE_TPL = (
     "Listo, agregué:\n{lines}\n\nVoy a empezar a revisarlos en la próxima "
@@ -243,6 +244,34 @@ GMAIL_MANUAL_SCAN_COOLDOWN = (
 )
 GMAIL_MANUAL_SCAN_QUEUED = (
     "Revisando los últimos 2 días… te aviso cuando termine."
+)
+
+GMAIL_BANK_GUIDED_ASK_EMAIL = (
+    "Para <b>{bank}</b>, mandame el correo exacto desde el que te llegan las "
+    "notificaciones (ej. <code>notificacion@notificacionesbaccr.com</code>).\n\n"
+    "Tip: andá a Gmail, abrí un correo del banco, copiá el sender del campo "
+    "<b>De</b>."
+)
+GMAIL_BANK_HINT_WARNING = (
+    "Mmm, <code>{email}</code> no parece de <b>{bank}</b>. ¿Estás seguro?"
+)
+GMAIL_TEST_SCAN_PROMPT = (
+    "¿Querés que confirme con un scan rápido de los últimos 7 días para "
+    "<code>{email}</code>?"
+)
+GMAIL_TEST_SCAN_ZERO = (
+    "No encontré ningún correo de <code>{email}</code> en los últimos 7 días. "
+    "Podés agregarlo igual o probar otro sender."
+)
+GMAIL_TEST_SCAN_FOUND = (
+    "Encontré <b>{count}</b> correos de <code>{email}</code> en los últimos "
+    "7 días. Lo agregué."
+)
+GMAIL_BANK_GUIDED_ADDED = "Agregado. ¿Querés agregar otro banco?"
+GMAIL_DISCOVERY_KEYWORD_PROMPT = (
+    "Voy a buscar correos en tu Gmail con las palabras que elijás. Tapeá las "
+    "comunes o escribí las tuyas (máx. 5).\n\n"
+    "Ojo: este modo escanea más correos de lo normal y puede tardar un poquito más."
 )
 
 

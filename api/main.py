@@ -15,6 +15,7 @@ from .routers import (
     accounts,
     admin_insights,
     agent,
+    auth,
     bill_occurrences,
     budgets,
     calendar,
@@ -26,9 +27,11 @@ from .routers import (
     notification_rules,
     notifications,
     nudges,
+    onboarding,
     privacy_insights,
     queries,
     recurring_bills,
+    recurring_incomes,
     reports,
     telegram,
     transactions,
@@ -74,9 +77,31 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+def _cors_origins() -> list[str]:
+    configured = [
+        origin.strip()
+        for origin in settings.spa_cors_origins.split(",")
+        if origin.strip()
+    ]
+    if settings.is_dev:
+        configured.extend(
+            [
+                settings.spa_base_url,
+                "http://localhost:5173",
+                "http://127.0.0.1:5173",
+            ]
+        )
+    elif settings.spa_base_url:
+        configured.append(settings.spa_base_url)
+
+    return list(dict.fromkeys(configured))
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if settings.is_dev else [],
+    allow_origins=_cors_origins(),
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -103,6 +128,9 @@ app.include_router(telegram.telegram_router)
 app.include_router(gmail.router)
 app.include_router(privacy_insights.router)
 app.include_router(admin_insights.router)
+app.include_router(recurring_incomes.router)
+app.include_router(onboarding.router)
+app.include_router(auth.router)
 
 # Static pages for the OAuth callback redirect targets. Kept separate
 # from the router so adding a new HTML file doesn't require code changes.

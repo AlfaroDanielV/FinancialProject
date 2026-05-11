@@ -19,15 +19,19 @@ from __future__ import annotations
 import uuid
 from typing import Optional
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Cookie, Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .config import settings
 from .database import get_db
 from .models.user import User
+from .services.auth.session import decode_session_jwt
 
 
-_AUTH_MISSING = "Falta autenticación: envíe X-Shortcut-Token o X-User-Id."
+_AUTH_MISSING = (
+    "Falta autenticación: envíe X-Shortcut-Token, cookie de sesión o X-User-Id."
+)
 _TOKEN_INVALID = "Token inválido."
 _USER_NOT_FOUND = "Usuario no encontrado."
 _USER_SUSPENDED = "Usuario suspendido."
@@ -61,14 +65,35 @@ def _ensure_active(user: User) -> User:
 async def current_user(
     db: AsyncSession = Depends(get_db),
     x_shortcut_token: Optional[str] = Header(default=None),
+    session_token: Optional[str] = Cookie(
+        default=None, alias=settings.session_cookie_name
+    ),
     x_user_id: Optional[str] = Header(default=None),
 ) -> User:
-    """Resolve the caller via X-Shortcut-Token (preferred) or X-User-Id (dev shim)."""
+    """Resolve caller auth in priority order.
+
+    Order matters: Shortcut token stays the strict production API path;
+    magic-link cookie is the SPA path; X-User-Id remains the dev shim.
+    """
     if x_shortcut_token:
         user = await _user_by_token(x_shortcut_token, db)
         if user is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail=_TOKEN_INVALID
+            )
+        return _ensure_active(user)
+
+    if session_token:
+        claims = decode_session_jwt(session_token)
+        if claims is None or not claims.get("sub"):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail=_TOKEN_INVALID
+            )
+        user = await _user_by_id(str(claims["sub"]), db)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=_USER_NOT_FOUND,
             )
         return _ensure_active(user)
 

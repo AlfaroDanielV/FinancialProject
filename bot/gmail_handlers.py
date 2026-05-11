@@ -27,6 +27,7 @@ Multi-bank selection flow (during onboarding AND /agregar_banco):
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import uuid
@@ -45,15 +46,17 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.config import settings
-from api.data.bank_senders_cr import (
-    KNOWN_BANK_SENDERS_CR,
-    infer_bank_from_email,
-    preset_senders_for,
+from api.data.bank_directory_cr import (
+    BANK_DIRECTORY_CR,
+    bank_by_slug,
+    bank_name_for_slug,
+    match_bank_by_hint,
 )
 from api.database import AsyncSessionLocal
 from api.models.gmail_credential import GmailCredential
 from api.models.user import User
 from api.redis_client import get_redis
+from api.services.gmail import discovery as discovery_svc
 from api.services.gmail import oauth as oauth_svc
 from api.services.gmail import whitelist as wl
 from api.services.gmail.backfill import enqueue_backfill, enqueue_manual_scan
@@ -111,6 +114,16 @@ def set_sample_analyzer(client) -> None:
 _EMAIL_RE = re.compile(
     r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
 )
+
+_DISCOVERY_KEYWORDS = [
+    "transacción",
+    "compra",
+    "movimiento",
+    "se realizó",
+    "transferencia",
+    "notificación",
+    "comprobante",
+]
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -188,10 +201,10 @@ def _bank_selection_kb(*, mode: str = "onboarding") -> InlineKeyboardMarkup:
     """
     rows = []
     bank_buttons: list[InlineKeyboardButton] = []
-    for bank_name in KNOWN_BANK_SENDERS_CR.keys():
+    for bank in BANK_DIRECTORY_CR:
         bank_buttons.append(
             InlineKeyboardButton(
-                text=bank_name, callback_data=f"bank_preset:{bank_name}"
+                text=bank["name"], callback_data=f"bank_preset:{bank['slug']}"
             )
         )
     # Lay out 2 buttons per row for readability on phones.
@@ -235,25 +248,201 @@ def _confirm_kb() -> InlineKeyboardMarkup:
     )
 
 
+def _root_kb(*, can_finish: bool) -> InlineKeyboardMarkup:
+    done_text = "Listo, activar 🚀" if can_finish else "Listo, no agregar más"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Por banco 💡", callback_data="gmail_root:bank"
+                ),
+                InlineKeyboardButton(
+                    text="Descubrir por keyword 🔍",
+                    callback_data="gmail_root:discovery",
+                ),
+            ],
+            [
+                InlineKeyboardButton(text=done_text, callback_data="gmail_root:done")
+            ],
+        ]
+    )
+
+
+def _root_text() -> str:
+    return (
+        "¡Conectado! ¿Cómo querés agregar tus bancos?\n\n"
+        "💡 <b>Por banco</b> (más rápido si sabés el correo): elegís un banco "
+        "de una lista y me das el sender exacto. Te ofrezco hacer un test "
+        "rápido para confirmar.\n\n"
+        "🔍 <b>Descubrir por keyword</b> (si no sabés los correos): escaneo tu "
+        "Gmail por palabras como “transacción” o “compra” y te muestro los "
+        "senders que aparecen.\n\n"
+        "Podés combinar los dos."
+    )
+
+
+def _bank_directory_kb() -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    buttons = [
+        InlineKeyboardButton(
+            text=bank["name"], callback_data=f"bank_select:{bank['slug']}"
+        )
+        for bank in BANK_DIRECTORY_CR
+    ]
+    for i in range(0, len(buttons), 2):
+        rows.append(buttons[i : i + 2])
+    rows.append([InlineKeyboardButton(text="Volver", callback_data="gmail_root:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _test_scan_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Sí, scanear", callback_data="bank_test:yes"),
+                InlineKeyboardButton(text="No, agregar igual", callback_data="bank_test:no"),
+            ]
+        ]
+    )
+
+
+def _hint_override_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Sí, agregar", callback_data="bank_hint_override:yes"
+                ),
+                InlineKeyboardButton(
+                    text="No, lo escribo de nuevo",
+                    callback_data="bank_hint_override:no",
+                ),
+            ]
+        ]
+    )
+
+
+def _zero_scan_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Agregar igual", callback_data="bank_test_zero:add"
+                ),
+                InlineKeyboardButton(
+                    text="Probar otro sender", callback_data="bank_test_zero:retry"
+                ),
+            ]
+        ]
+    )
+
+
+def _keyword_kb(selected: list[str]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    buttons = []
+    selected_set = {kw.casefold() for kw in selected}
+    for idx, kw in enumerate(_DISCOVERY_KEYWORDS):
+        mark = "✅" if kw.casefold() in selected_set else "☐"
+        buttons.append(
+            InlineKeyboardButton(text=f"{mark} {kw}", callback_data=f"kw_toggle:{idx}")
+        )
+    for i in range(0, len(buttons), 2):
+        rows.append(buttons[i : i + 2])
+    search_text = "Buscar 🔍" if selected else "Buscar 🔍 (elegí una)"
+    rows.append(
+        [
+            InlineKeyboardButton(text=search_text, callback_data="kw_search"),
+            InlineKeyboardButton(text="Cancelar", callback_data="kw_cancel"),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _discovery_results_text(
+    *, keywords: list[str], candidates: list[dict], selected: list[int]
+) -> str:
+    if not candidates:
+        return (
+            "No encontré senders con esas keywords. Podés probar palabras más "
+            "generales como “transacción” o “notificación”."
+        )
+    selected_set = set(selected)
+    lines = [f"Encontré estos senders con {', '.join(keywords)}:\n"]
+    for idx, item in enumerate(candidates):
+        mark = "✅" if idx in selected_set else "☐"
+        email = item.get("email", "")
+        count = item.get("count", 0)
+        lines.append(f"{mark} <code>{email}</code>  ({count} correos)")
+        for subject in (item.get("sample_subjects") or [])[:2]:
+            lines.append(f"  “{subject}”")
+    lines.append("\nTapeá los que SÍ son bancarios y dale a Confirmar.")
+    return "\n".join(lines)
+
+
+def _discovery_results_kb(candidates: list[dict]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for idx, item in enumerate(candidates[:10]):
+        email = item.get("email", "")
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{idx + 1}. {email[:45]}",
+                    callback_data=f"discovery_toggle:{idx}",
+                )
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="Confirmar selección ✅", callback_data="discovery_confirm"
+            )
+        ]
+    )
+    rows.append(
+        [InlineKeyboardButton(text="Volver al menú", callback_data="discovery_back")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 async def send_bank_selection_prompt(
     *, bot: Bot, chat_id: int, user_id: uuid.UUID, redis
 ) -> None:
-    """Send the bank-selection message and remember its message_id so
-    later preset taps can edit-in-place. Called by the OAuth callback
-    listener AND by /agregar_banco. The state must already be
-    `selecting_banks` before this runs.
-    """
+    """Send the post-OAuth Gmail onboarding root menu."""
     state = await gmail_onboarding.get(user_id, redis)
     if state is None:
         log.warning("send_bank_selection_prompt: no state for user=%s", user_id)
         return
+    if state.state != "gmail_onboarding_root":
+        try:
+            state = await gmail_onboarding.transition(
+                user_id=user_id, to="gmail_onboarding_root", redis=redis
+            )
+        except Exception:
+            log.exception("transition to gmail_onboarding_root failed")
+            return
     sent = await bot.send_message(
         chat_id=chat_id,
-        text=messages_es.GMAIL_CALLBACK_SUCCESS,
-        reply_markup=_bank_selection_kb(mode="onboarding"),
+        text=_root_text(),
+        reply_markup=_root_kb(can_finish=bool(state.pending_senders)),
     )
     await gmail_onboarding.set_selection_message_id(
         user_id=user_id, message_id=sent.message_id, redis=redis
+    )
+
+
+async def _send_root_menu(
+    *,
+    message: Message,
+    user_id: uuid.UUID,
+    redis,
+    text: str | None = None,
+) -> None:
+    state = await gmail_onboarding.get(user_id, redis)
+    if state is None:
+        return
+    await message.answer(
+        text or _root_text(),
+        reply_markup=_root_kb(can_finish=bool(state.pending_senders)),
     )
 
 
@@ -420,9 +609,31 @@ async def on_status_gmail(message: Message) -> None:
                     count=len(senders)
                 )
             ]
-            for s in senders:
-                bank = f" — {s.bank_name}" if s.bank_name else ""
-                lines.append(f"• <code>{s.sender_email}</code>{bank}")
+            source_groups = [
+                (
+                    "Cargados manual",
+                    {wl.SOURCE_CUSTOM, wl.SOURCE_MANUAL_WITH_BANK_HINT},
+                ),
+                ("Descubiertos por keyword", {wl.SOURCE_DISCOVERED}),
+                ("Histórico (preset antiguo)", {wl.SOURCE_PRESET}),
+                ("Importados", {wl.SOURCE_IMPORTED}),
+            ]
+            rendered_ids: set[uuid.UUID] = set()
+            for title, sources in source_groups:
+                group = [s for s in senders if s.source in sources]
+                if not group:
+                    continue
+                lines.append(f"\n<b>{title}</b>")
+                for s in group:
+                    rendered_ids.add(s.id)
+                    bank = f" — {s.bank_name}" if s.bank_name else ""
+                    lines.append(f"• <code>{s.sender_email}</code>{bank}")
+            leftovers = [s for s in senders if s.id not in rendered_ids]
+            if leftovers:
+                lines.append("\n<b>Otros</b>")
+                for s in leftovers:
+                    bank = f" — {s.bank_name}" if s.bank_name else ""
+                    lines.append(f"• <code>{s.sender_email}</code>{bank}")
             wl_section = "\n".join(lines)
 
         await message.answer(
@@ -462,16 +673,45 @@ async def on_add_bank(message: Message) -> None:
             user_id=user.id,
             telegram_chat_id=message.chat.id,
             redis=redis,
+            add_only=True,
         )
         await gmail_onboarding.transition(
-            user_id=user.id, to="selecting_banks", redis=redis
+            user_id=user.id, to="gmail_onboarding_root", redis=redis
         )
-        sent = await message.answer(
-            messages_es.GMAIL_ADD_BANK_ENTRY,
-            reply_markup=_bank_selection_kb(mode="add_bank"),
+        await _send_root_menu(
+            message=message,
+            user_id=user.id,
+            redis=redis,
+            text=messages_es.GMAIL_ADD_BANK_ENTRY,
         )
-        await gmail_onboarding.set_selection_message_id(
-            user_id=user.id, message_id=sent.message_id, redis=redis
+    finally:
+        await db.close()
+
+
+@router.message(Command("discovery"))
+async def on_discovery_shortcut(message: Message) -> None:
+    resolved = await _resolve_user(message)
+    if resolved is None:
+        return
+    user, db = resolved
+    try:
+        cred = await _get_credential(user.id, db)
+        if cred is None or cred.revoked_at is not None:
+            await message.answer(messages_es.GMAIL_STATUS_DISCONNECTED)
+            return
+        redis = get_redis()
+        await gmail_onboarding.begin(
+            user_id=user.id,
+            telegram_chat_id=message.chat.id,
+            redis=redis,
+            add_only=cred.activated_at is not None,
+        )
+        await gmail_onboarding.transition(
+            user_id=user.id, to="selecting_keywords", redis=redis
+        )
+        await message.answer(
+            messages_es.GMAIL_DISCOVERY_KEYWORD_PROMPT,
+            reply_markup=_keyword_kb([]),
         )
     finally:
         await db.close()
@@ -1008,6 +1248,666 @@ async def on_optional_sample_photo(message: Message) -> None:
         await db.close()
 
 
+# ── Gmail onboarding root + Mode A / Mode B ─────────────────────────────────
+
+
+@router.callback_query(F.data.startswith("gmail_root:"))
+async def on_gmail_root_callback(cb: CallbackQuery) -> None:
+    if cb.from_user is None or cb.data is None or cb.message is None:
+        return
+    action = cb.data.split(":", 1)[1]
+    user = await _resolve_user_for_callback(cb)
+    if user is None:
+        await cb.answer(messages_es.PAIR_PROMPT, show_alert=True)
+        return
+
+    redis = get_redis()
+    state = await gmail_onboarding.get(user.id, redis)
+    if state is None:
+        await cb.answer(messages_es.GMAIL_ONBOARDING_NOT_IN_FLOW)
+        return
+
+    if action == "back":
+        state = await gmail_onboarding.transition(
+            user_id=user.id, to="gmail_onboarding_root", redis=redis
+        )
+        await cb.message.answer(
+            _root_text(),
+            reply_markup=_root_kb(can_finish=bool(state.pending_senders)),
+        )
+        await cb.answer()
+        return
+
+    if action == "bank":
+        await gmail_onboarding.transition(
+            user_id=user.id, to="selecting_bank_from_list", redis=redis
+        )
+        await cb.message.answer(
+            "Elegí el banco para cargar el sender exacto.",
+            reply_markup=_bank_directory_kb(),
+        )
+        await cb.answer()
+        return
+
+    if action == "discovery":
+        await gmail_onboarding.transition(
+            user_id=user.id, to="selecting_keywords", redis=redis
+        )
+        await gmail_onboarding.set_keywords(user_id=user.id, keywords=[], redis=redis)
+        await cb.message.answer(
+            messages_es.GMAIL_DISCOVERY_KEYWORD_PROMPT,
+            reply_markup=_keyword_kb([]),
+        )
+        await cb.answer()
+        return
+
+    if action == "done":
+        await _finish_from_root(cb=cb, user=user, redis=redis)
+        return
+
+    await cb.answer()
+
+
+async def _finish_from_root(*, cb: CallbackQuery, user: User, redis) -> None:
+    state = await gmail_onboarding.get(user.id, redis)
+    if state is None:
+        await cb.answer(messages_es.GMAIL_ONBOARDING_NOT_IN_FLOW)
+        return
+    if not state.pending_senders:
+        await cb.answer(
+            "No agregaste ningún correo. Sin eso no puedo escanear nada.",
+            show_alert=True,
+        )
+        return
+
+    if state.add_only:
+        await gmail_onboarding.clear(user.id, redis)
+        await cb.message.answer(
+            "Listo. Agregué esos correos. Podés forzar una revisión con "
+            "/revisar_correos o esperar la corrida automática."
+        )
+        await cb.answer()
+        return
+
+    await gmail_onboarding.transition(user_id=user.id, to="confirming", redis=redis)
+    lines = []
+    for entry in state.pending_senders:
+        bank = entry.get("bank_name")
+        suffix = f" ({bank})" if bank else ""
+        lines.append(f"• <code>{entry['email']}</code>{suffix}")
+    await cb.message.answer(
+        messages_es.GMAIL_BANK_CONFIRM_TPL.format(lines="\n".join(lines)),
+        reply_markup=_confirm_kb(),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("bank_select:"))
+async def on_bank_select(cb: CallbackQuery) -> None:
+    if cb.from_user is None or cb.data is None or cb.message is None:
+        return
+    slug = cb.data.split(":", 1)[1]
+    await _handle_bank_select(cb, slug)
+
+
+async def _handle_bank_select(cb: CallbackQuery, slug: str) -> None:
+    if cb.from_user is None or cb.message is None:
+        return
+    bank = bank_by_slug(slug)
+    if bank is None:
+        await cb.answer("Banco desconocido", show_alert=True)
+        return
+    user = await _resolve_user_for_callback(cb)
+    if user is None:
+        await cb.answer(messages_es.PAIR_PROMPT, show_alert=True)
+        return
+    redis = get_redis()
+    state = await gmail_onboarding.get(user.id, redis)
+    if state is None or state.state not in {
+        "selecting_bank_from_list",
+        "selecting_banks",
+    }:
+        await cb.answer(messages_es.GMAIL_ONBOARDING_NOT_IN_FLOW)
+        return
+
+    await gmail_onboarding.set_bank_context(
+        user_id=user.id, bank_slug=slug, bank_name=bank["name"], redis=redis
+    )
+    await gmail_onboarding.transition(
+        user_id=user.id, to="entering_sender_for_bank", redis=redis
+    )
+    await cb.message.answer(
+        messages_es.GMAIL_BANK_GUIDED_ASK_EMAIL.format(bank=bank["name"])
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("bank_preset:"))
+async def on_bank_preset_tap(cb: CallbackQuery) -> None:
+    """Backward-compatible alias for old Phase 6b callback data."""
+    if cb.data is None:
+        return
+    await _handle_bank_select(cb, cb.data.split(":", 1)[1])
+
+
+async def _is_entering_sender_for_bank(message: Message) -> bool:
+    if message.from_user is None or not message.text or message.text.startswith("/"):
+        return False
+    db = AsyncSessionLocal()
+    try:
+        user = await user_by_telegram_id(
+            telegram_user_id=message.from_user.id, db=db
+        )
+        if user is None:
+            return False
+        state = await gmail_onboarding.get(user.id, redis=get_redis())
+        return state is not None and state.state == "entering_sender_for_bank"
+    finally:
+        await db.close()
+
+
+@router.message(F.text, _is_entering_sender_for_bank)
+async def on_guided_sender_email(message: Message) -> None:
+    if message.from_user is None or not message.text:
+        return
+    email = message.text.strip()
+    if not _EMAIL_RE.match(email):
+        await message.answer(messages_es.GMAIL_BANK_CUSTOM_INVALID)
+        return
+
+    db = AsyncSessionLocal()
+    try:
+        user = await user_by_telegram_id(
+            telegram_user_id=message.from_user.id, db=db
+        )
+        if user is None:
+            return
+    finally:
+        await db.close()
+
+    redis = get_redis()
+    state = await gmail_onboarding.get(user.id, redis)
+    if state is None or state.state != "entering_sender_for_bank":
+        return
+    norm = wl.normalize_email(email)
+    await gmail_onboarding.set_pending_sender_email(
+        user_id=user.id, email=norm, redis=redis
+    )
+
+    slug = state.selected_bank_slug
+    bank_name = state.selected_bank_name or bank_name_for_slug(slug) or "ese banco"
+    if not match_bank_by_hint(norm, slug):
+        await gmail_onboarding.transition(
+            user_id=user.id, to="sender_hint_override", redis=redis
+        )
+        await message.answer(
+            messages_es.GMAIL_BANK_HINT_WARNING.format(
+                email=norm, bank=bank_name
+            ),
+            reply_markup=_hint_override_kb(),
+        )
+        return
+
+    await gmail_onboarding.transition(
+        user_id=user.id, to="test_scan_prompt", redis=redis
+    )
+    await message.answer(
+        messages_es.GMAIL_TEST_SCAN_PROMPT.format(email=norm),
+        reply_markup=_test_scan_kb(),
+    )
+
+
+@router.callback_query(F.data.startswith("bank_hint_override:"))
+async def on_bank_hint_override(cb: CallbackQuery) -> None:
+    if cb.from_user is None or cb.data is None or cb.message is None:
+        return
+    action = cb.data.split(":", 1)[1]
+    user = await _resolve_user_for_callback(cb)
+    if user is None:
+        await cb.answer(messages_es.PAIR_PROMPT, show_alert=True)
+        return
+    redis = get_redis()
+    state = await gmail_onboarding.get(user.id, redis)
+    if state is None or state.state != "sender_hint_override":
+        await cb.answer(messages_es.GMAIL_ONBOARDING_NOT_IN_FLOW)
+        return
+    if action == "no":
+        await gmail_onboarding.set_pending_sender_email(
+            user_id=user.id, email=None, redis=redis
+        )
+        await gmail_onboarding.transition(
+            user_id=user.id, to="entering_sender_for_bank", redis=redis
+        )
+        bank_name = state.selected_bank_name or "ese banco"
+        await cb.message.answer(
+            messages_es.GMAIL_BANK_GUIDED_ASK_EMAIL.format(bank=bank_name)
+        )
+        await cb.answer()
+        return
+
+    await gmail_onboarding.transition(
+        user_id=user.id, to="test_scan_prompt", redis=redis
+    )
+    await cb.message.answer(
+        messages_es.GMAIL_TEST_SCAN_PROMPT.format(email=state.pending_sender_email),
+        reply_markup=_test_scan_kb(),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("bank_test:"))
+async def on_bank_test_scan_choice(cb: CallbackQuery) -> None:
+    if cb.from_user is None or cb.data is None or cb.message is None:
+        return
+    action = cb.data.split(":", 1)[1]
+    user = await _resolve_user_for_callback(cb)
+    if user is None:
+        await cb.answer(messages_es.PAIR_PROMPT, show_alert=True)
+        return
+    redis = get_redis()
+    state = await gmail_onboarding.get(user.id, redis)
+    if state is None or state.state != "test_scan_prompt":
+        await cb.answer(messages_es.GMAIL_ONBOARDING_NOT_IN_FLOW)
+        return
+    if not state.pending_sender_email:
+        await cb.answer(messages_es.GMAIL_ONBOARDING_NOT_IN_FLOW)
+        return
+
+    if action == "no":
+        await _commit_guided_sender(user=user, redis=redis)
+        await cb.message.answer(messages_es.GMAIL_BANK_GUIDED_ADDED)
+        await _send_root_after_callback(cb=cb, user_id=user.id, redis=redis)
+        await cb.answer()
+        return
+
+    await cb.message.answer("Haciendo un scan rápido de los últimos 7 días…")
+    db = AsyncSessionLocal()
+    try:
+        result = await discovery_svc.discover_senders(
+            user.id,
+            [state.pending_sender_email],
+            days=7,
+            max_messages=10,
+            db=db,
+            enforce_cooldown=False,
+        )
+    finally:
+        await db.close()
+    count = sum(s.count for s in result.senders)
+    if count <= 0:
+        await gmail_onboarding.transition(
+            user_id=user.id, to="test_scan_zero", redis=redis
+        )
+        await cb.message.answer(
+            messages_es.GMAIL_TEST_SCAN_ZERO.format(email=state.pending_sender_email),
+            reply_markup=_zero_scan_kb(),
+        )
+        await cb.answer()
+        return
+
+    await _commit_guided_sender(user=user, redis=redis)
+    await cb.message.answer(
+        messages_es.GMAIL_TEST_SCAN_FOUND.format(
+            count=count, email=state.pending_sender_email
+        )
+    )
+    await _send_root_after_callback(cb=cb, user_id=user.id, redis=redis)
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("bank_test_zero:"))
+async def on_bank_test_zero(cb: CallbackQuery) -> None:
+    if cb.from_user is None or cb.data is None or cb.message is None:
+        return
+    action = cb.data.split(":", 1)[1]
+    user = await _resolve_user_for_callback(cb)
+    if user is None:
+        await cb.answer(messages_es.PAIR_PROMPT, show_alert=True)
+        return
+    redis = get_redis()
+    state = await gmail_onboarding.get(user.id, redis)
+    if state is None or state.state != "test_scan_zero":
+        await cb.answer(messages_es.GMAIL_ONBOARDING_NOT_IN_FLOW)
+        return
+    if action == "retry":
+        await gmail_onboarding.set_pending_sender_email(
+            user_id=user.id, email=None, redis=redis
+        )
+        await gmail_onboarding.transition(
+            user_id=user.id, to="entering_sender_for_bank", redis=redis
+        )
+        bank_name = state.selected_bank_name or "ese banco"
+        await cb.message.answer(
+            messages_es.GMAIL_BANK_GUIDED_ASK_EMAIL.format(bank=bank_name)
+        )
+        await cb.answer()
+        return
+    await _commit_guided_sender(user=user, redis=redis)
+    await cb.message.answer(messages_es.GMAIL_BANK_GUIDED_ADDED)
+    await _send_root_after_callback(cb=cb, user_id=user.id, redis=redis)
+    await cb.answer()
+
+
+async def _commit_guided_sender(*, user: User, redis) -> None:
+    state = await gmail_onboarding.get(user.id, redis)
+    if state is None or not state.pending_sender_email:
+        return
+    bank_slug = state.selected_bank_slug
+    source = wl.SOURCE_MANUAL_WITH_BANK_HINT
+    db = AsyncSessionLocal()
+    try:
+        await wl.add_sender(
+            db=db,
+            user_id=user.id,
+            sender_email=state.pending_sender_email,
+            bank_name=None if bank_slug == "other" else bank_slug,
+            source=source,
+        )
+        await db.commit()
+    finally:
+        await db.close()
+    await gmail_onboarding.add_pending_sender(
+        user_id=user.id,
+        email=state.pending_sender_email,
+        bank_name=None if bank_slug == "other" else bank_slug,
+        source=source,
+        redis=redis,
+    )
+    await gmail_onboarding.transition(
+        user_id=user.id, to="gmail_onboarding_root", redis=redis
+    )
+
+
+async def _send_root_after_callback(*, cb: CallbackQuery, user_id: uuid.UUID, redis) -> None:
+    state = await gmail_onboarding.get(user_id, redis)
+    await cb.message.answer(
+        "¿Querés agregar otro banco o hacer discovery?",
+        reply_markup=_root_kb(can_finish=bool(state and state.pending_senders)),
+    )
+
+
+async def _is_selecting_keywords(message: Message) -> bool:
+    if message.from_user is None or not message.text or message.text.startswith("/"):
+        return False
+    db = AsyncSessionLocal()
+    try:
+        user = await user_by_telegram_id(
+            telegram_user_id=message.from_user.id, db=db
+        )
+        if user is None:
+            return False
+        state = await gmail_onboarding.get(user.id, redis=get_redis())
+        return state is not None and state.state == "selecting_keywords"
+    finally:
+        await db.close()
+
+
+@router.message(F.text, _is_selecting_keywords)
+async def on_custom_keyword(message: Message) -> None:
+    if message.from_user is None or not message.text:
+        return
+    db = AsyncSessionLocal()
+    try:
+        user = await user_by_telegram_id(
+            telegram_user_id=message.from_user.id, db=db
+        )
+        if user is None:
+            return
+    finally:
+        await db.close()
+    redis = get_redis()
+    state = await gmail_onboarding.get(user.id, redis)
+    if state is None or state.state != "selecting_keywords":
+        return
+    keywords = discovery_svc.normalize_keywords(
+        state.selected_keywords + [message.text]
+    )
+    await gmail_onboarding.set_keywords(user_id=user.id, keywords=keywords, redis=redis)
+    await message.answer(
+        messages_es.GMAIL_DISCOVERY_KEYWORD_PROMPT,
+        reply_markup=_keyword_kb(keywords),
+    )
+
+
+@router.callback_query(F.data.startswith("kw_toggle:"))
+async def on_keyword_toggle(cb: CallbackQuery) -> None:
+    if cb.from_user is None or cb.data is None or cb.message is None:
+        return
+    user = await _resolve_user_for_callback(cb)
+    if user is None:
+        await cb.answer(messages_es.PAIR_PROMPT, show_alert=True)
+        return
+    redis = get_redis()
+    state = await gmail_onboarding.get(user.id, redis)
+    if state is None or state.state != "selecting_keywords":
+        await cb.answer(messages_es.GMAIL_ONBOARDING_NOT_IN_FLOW)
+        return
+    idx = int(cb.data.split(":", 1)[1])
+    if idx < 0 or idx >= len(_DISCOVERY_KEYWORDS):
+        await cb.answer()
+        return
+    kw = _DISCOVERY_KEYWORDS[idx]
+    selected = list(state.selected_keywords)
+    keys = {item.casefold(): item for item in selected}
+    if kw.casefold() in keys:
+        selected = [item for item in selected if item.casefold() != kw.casefold()]
+    else:
+        if len(selected) >= 5:
+            await cb.answer("Máximo 5 keywords.", show_alert=True)
+            return
+        selected.append(kw)
+    selected = discovery_svc.normalize_keywords(selected)
+    await gmail_onboarding.set_keywords(user_id=user.id, keywords=selected, redis=redis)
+    await cb.message.edit_reply_markup(reply_markup=_keyword_kb(selected))
+    await cb.answer()
+
+
+@router.callback_query(F.data == "kw_cancel")
+async def on_keyword_cancel(cb: CallbackQuery) -> None:
+    if cb.from_user is None or cb.message is None:
+        return
+    user = await _resolve_user_for_callback(cb)
+    if user is None:
+        await cb.answer()
+        return
+    redis = get_redis()
+    state = await gmail_onboarding.transition(
+        user_id=user.id, to="gmail_onboarding_root", redis=redis
+    )
+    await cb.message.answer(
+        _root_text(),
+        reply_markup=_root_kb(can_finish=bool(state.pending_senders)),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "kw_search")
+async def on_keyword_search(cb: CallbackQuery) -> None:
+    if cb.from_user is None or cb.message is None:
+        return
+    user = await _resolve_user_for_callback(cb)
+    if user is None:
+        await cb.answer(messages_es.PAIR_PROMPT, show_alert=True)
+        return
+    redis = get_redis()
+    state = await gmail_onboarding.get(user.id, redis)
+    if state is None or state.state != "selecting_keywords":
+        await cb.answer(messages_es.GMAIL_ONBOARDING_NOT_IN_FLOW)
+        return
+    if not state.selected_keywords:
+        await cb.answer("Elegí al menos una keyword.", show_alert=True)
+        return
+    await gmail_onboarding.transition(
+        user_id=user.id, to="discovery_running", redis=redis
+    )
+    await cb.message.answer("Buscando senders en Gmail…")
+    asyncio.create_task(_run_discovery_safe(user_id=user.id, chat_id=cb.message.chat.id))
+    await cb.answer()
+
+
+async def _run_discovery_safe(*, user_id: uuid.UUID, chat_id: int) -> None:
+    bot = get_bot()
+    redis = get_redis()
+    state = await gmail_onboarding.get(user_id, redis)
+    if state is None:
+        return
+    db = AsyncSessionLocal()
+    try:
+        try:
+            result = await discovery_svc.discover_senders(
+                user_id,
+                state.selected_keywords,
+                days=30,
+                max_messages=settings.gmail_discovery_max_messages,
+                db=db,
+            )
+        except discovery_svc.DiscoveryRateLimited as exc:
+            minutes = max(1, (exc.ttl_s + 59) // 60)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"Ya hiciste un discovery hace poco. Probá en {minutes} minutos.",
+            )
+            await gmail_onboarding.transition(
+                user_id=user_id, to="selecting_keywords", redis=redis
+            )
+            return
+
+        await gmail_onboarding.transition(
+            user_id=user_id, to="discovery_results", redis=redis
+        )
+        candidates = [s.model_dump() for s in result.senders]
+        await gmail_onboarding.set_discovery_results(
+            user_id=user_id,
+            candidates=candidates,
+            run_id=str(result.run_id) if result.run_id else None,
+            redis=redis,
+        )
+        await bot.send_message(
+            chat_id=chat_id,
+            text=_discovery_results_text(
+                keywords=result.keywords, candidates=candidates, selected=[]
+            ),
+            reply_markup=_discovery_results_kb(candidates),
+        )
+    except Exception:
+        log.exception("gmail_discovery_safe_failed user=%s", user_id)
+        await bot.send_message(
+            chat_id=chat_id,
+            text="Algo falló haciendo discovery. Probá de nuevo en un rato.",
+        )
+    finally:
+        await db.close()
+
+
+@router.callback_query(F.data.startswith("discovery_toggle:"))
+async def on_discovery_toggle(cb: CallbackQuery) -> None:
+    if cb.from_user is None or cb.data is None or cb.message is None:
+        return
+    user = await _resolve_user_for_callback(cb)
+    if user is None:
+        await cb.answer(messages_es.PAIR_PROMPT, show_alert=True)
+        return
+    idx = int(cb.data.split(":", 1)[1])
+    redis = get_redis()
+    state = await gmail_onboarding.get(user.id, redis)
+    if state is None or state.state != "discovery_results":
+        await cb.answer(messages_es.GMAIL_ONBOARDING_NOT_IN_FLOW)
+        return
+    if idx < 0 or idx >= len(state.discovery_candidates):
+        await cb.answer()
+        return
+    state = await gmail_onboarding.toggle_discovery_index(
+        user_id=user.id, index=idx, redis=redis
+    )
+    await cb.message.edit_text(
+        _discovery_results_text(
+            keywords=state.selected_keywords,
+            candidates=state.discovery_candidates,
+            selected=state.discovery_selected_indices,
+        ),
+        reply_markup=_discovery_results_kb(state.discovery_candidates),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "discovery_back")
+async def on_discovery_back(cb: CallbackQuery) -> None:
+    if cb.from_user is None or cb.message is None:
+        return
+    user = await _resolve_user_for_callback(cb)
+    if user is None:
+        await cb.answer()
+        return
+    redis = get_redis()
+    state = await gmail_onboarding.transition(
+        user_id=user.id, to="gmail_onboarding_root", redis=redis
+    )
+    await cb.message.answer(
+        _root_text(),
+        reply_markup=_root_kb(can_finish=bool(state.pending_senders)),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "discovery_confirm")
+async def on_discovery_confirm(cb: CallbackQuery) -> None:
+    if cb.from_user is None or cb.message is None:
+        return
+    user = await _resolve_user_for_callback(cb)
+    if user is None:
+        await cb.answer(messages_es.PAIR_PROMPT, show_alert=True)
+        return
+    redis = get_redis()
+    state = await gmail_onboarding.get(user.id, redis)
+    if state is None or state.state != "discovery_results":
+        await cb.answer(messages_es.GMAIL_ONBOARDING_NOT_IN_FLOW)
+        return
+    if not state.discovery_selected_indices:
+        await cb.answer("Tenés que marcar al menos uno, o Volver.", show_alert=True)
+        return
+
+    selected = [
+        state.discovery_candidates[i]
+        for i in state.discovery_selected_indices
+        if 0 <= i < len(state.discovery_candidates)
+    ]
+    db = AsyncSessionLocal()
+    try:
+        for item in selected:
+            await wl.add_sender(
+                db=db,
+                user_id=user.id,
+                sender_email=item["email"],
+                bank_name=None,
+                source=wl.SOURCE_DISCOVERED,
+            )
+            await gmail_onboarding.add_pending_sender(
+                user_id=user.id,
+                email=item["email"],
+                bank_name=None,
+                source=wl.SOURCE_DISCOVERED,
+                redis=redis,
+            )
+        if state.discovery_run_id:
+            await discovery_svc.record_confirmed_senders(
+                db=db,
+                run_id=uuid.UUID(state.discovery_run_id),
+                confirmed=[discovery_svc.SenderCandidate(**item) for item in selected],
+            )
+        await db.commit()
+    finally:
+        await db.close()
+
+    await gmail_onboarding.transition(
+        user_id=user.id, to="gmail_onboarding_root", redis=redis
+    )
+    await cb.message.answer(
+        f"Agregué {len(selected)} correos. ¿Querés hacer otra búsqueda o cargar más bancos?",
+        reply_markup=_root_kb(can_finish=True),
+    )
+    await cb.answer()
+
+
 # ── selecting_banks: filter ─────────────────────────────────────────────────
 
 
@@ -1035,78 +1935,6 @@ async def _is_selecting_banks(message: Message) -> bool:
         await db.close()
 
 
-# ── selecting_banks: preset tap callback ─────────────────────────────────────
-
-
-@router.callback_query(F.data.startswith("bank_preset:"))
-async def on_bank_preset_tap(cb: CallbackQuery) -> None:
-    """User tapped a preset bank button. We do NOT auto-load canonical
-    senders — instead we set `awaiting_bank` and ask the user to type
-    the actual email they receive notifications from. See decisions
-    doc entry "Preset tap pide correo, no precarga senders"."""
-    if cb.from_user is None or cb.data is None or cb.message is None:
-        return
-    bank_name = cb.data.split(":", 1)[1]
-    if bank_name not in KNOWN_BANK_SENDERS_CR:
-        await cb.answer("Banco desconocido", show_alert=True)
-        return
-
-    db = AsyncSessionLocal()
-    try:
-        user = await user_by_telegram_id(
-            telegram_user_id=cb.from_user.id, db=db
-        )
-        if user is None:
-            await cb.answer(messages_es.PAIR_PROMPT, show_alert=True)
-            return
-    finally:
-        await db.close()
-
-    redis = get_redis()
-    state = await gmail_onboarding.get(user.id, redis)
-    if state is None or state.state != "selecting_banks":
-        await cb.answer(messages_es.GMAIL_ONBOARDING_NOT_IN_FLOW)
-        return
-
-    # Cap check: count active pending + 1 to admit the email about to
-    # come in. We're tolerant — if at cap, refuse the preset tap.
-    if len(state.pending_senders) >= wl.ACTIVE_CAP:
-        await cb.answer(messages_es.GMAIL_BANK_CAP_REACHED, show_alert=True)
-        return
-
-    # Stash the bank we're awaiting an email for. If a previous
-    # awaiting_bank was set, this overwrites — UX permissive: tap BAC,
-    # change mind, tap Promerica, then type Promerica's email. We don't
-    # block that.
-    await gmail_onboarding.set_awaiting_bank(
-        user_id=user.id, bank_name=bank_name, redis=redis
-    )
-
-    # Edit the keyboard message in place: same text, but with the
-    # "esperando correo de BAC" footer.
-    fresh = await gmail_onboarding.get(user.id, redis)
-    new_text = _bank_selection_text(
-        fresh.pending_senders if fresh else [],
-        awaiting_bank=bank_name,
-    )
-    try:
-        await cb.message.edit_text(
-            new_text, reply_markup=cb.message.reply_markup
-        )
-    except Exception:
-        # Edit may fail if the message body is identical (no-op edit).
-        log.debug("edit_text on preset tap failed", exc_info=True)
-
-    await cb.answer(
-        messages_es.GMAIL_BANK_PRESET_BUTTON_ACK.format(bank=bank_name)
-    )
-    # Send a separate prompt so it's unmistakable what the user has to
-    # do next. Keeps the keyboard message clean for the running list.
-    await cb.message.answer(
-        messages_es.GMAIL_BANK_PRESET_ASK_EMAIL.format(bank=bank_name)
-    )
-
-
 # ── selecting_banks: custom email text ───────────────────────────────────────
 
 
@@ -1115,12 +1943,11 @@ async def on_custom_email(message: Message) -> None:
     """Receive an email address while in selecting_banks.
 
     Two paths converge here:
-      1. The user typed an email cold (no preset tapped). We use
-         `infer_bank_from_email` to label the sender and record
-         `source='custom_typed'`.
+      1. The user typed an email cold (no preset tapped). We store it
+         without bank inference and record `source='custom_typed'`.
       2. The user tapped a preset earlier (e.g. BAC) and we set
          `awaiting_bank`. We use that bank name verbatim and record
-         `source='preset_tap'`. Inference is skipped — the user's
+         `source='manual_with_bank_hint'`. Inference is skipped — the user's
          intent ("this is my BAC notification email") wins over
          whatever the domain says.
     """
@@ -1156,9 +1983,9 @@ async def on_custom_email(message: Message) -> None:
 
     if awaited_bank:
         bank_name = awaited_bank
-        source = wl.SOURCE_PRESET
+        source = wl.SOURCE_MANUAL_WITH_BANK_HINT
     else:
-        bank_name = infer_bank_from_email(text)
+        bank_name = None
         source = wl.SOURCE_CUSTOM
 
     _, was_new = await gmail_onboarding.add_pending_sender(

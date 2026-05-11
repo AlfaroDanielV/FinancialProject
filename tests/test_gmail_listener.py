@@ -68,7 +68,7 @@ def _patch_redis_and_bot(monkeypatch):
 async def test_success_advances_state_and_sends_prompt(
     _patch_redis_and_bot, monkeypatch
 ):
-    """Post-addenda: success transitions to selecting_banks and delegates
+    """Success transitions to gmail_onboarding_root and delegates
     rendering of the prompt to gmail_handlers.send_bank_selection_prompt.
     The listener itself doesn't talk to bot.send_message anymore for the
     success path, so we patch the helper and assert it was called."""
@@ -100,7 +100,7 @@ async def test_success_advances_state_and_sends_prompt(
 
     state = await gmail_onboarding.get(user_id, redis)
     assert state is not None
-    assert state.state == "selecting_banks"
+    assert state.state == "gmail_onboarding_root"
 
     assert len(calls) == 1
     assert calls[0]["chat_id"] == chat_id

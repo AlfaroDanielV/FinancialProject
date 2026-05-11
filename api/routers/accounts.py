@@ -35,6 +35,8 @@ async def create_account(
         user_id=user.id,
         name=payload.name,
         account_type=payload.account_type,
+        currency=payload.currency,
+        initial_balance=payload.initial_balance,
     )
     db.add(account)
     try:

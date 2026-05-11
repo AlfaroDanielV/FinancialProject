@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from bot.gmail_handlers import _bank_selection_kb, _bank_selection_text
 from bot import messages_es
-from api.data.bank_senders_cr import KNOWN_BANK_SENDERS_CR
+from api.data.bank_directory_cr import BANK_DIRECTORY_CR
 
 
 def test_text_when_no_pending():
@@ -40,10 +40,10 @@ def test_kb_includes_one_button_per_preset_bank():
     kb = _bank_selection_kb(mode="onboarding")
     flat = [b for row in kb.inline_keyboard for b in row]
     bank_buttons = [b for b in flat if b.callback_data and b.callback_data.startswith("bank_preset:")]
-    assert len(bank_buttons) == len(KNOWN_BANK_SENDERS_CR)
+    assert len(bank_buttons) == len(BANK_DIRECTORY_CR)
     seen = {b.text for b in bank_buttons}
-    for bank in KNOWN_BANK_SENDERS_CR:
-        assert bank in seen
+    for bank in BANK_DIRECTORY_CR:
+        assert bank["name"] in seen
 
 
 def test_kb_listo_callback_differs_by_mode():

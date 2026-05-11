@@ -49,12 +49,25 @@ class Settings(BaseSettings):
     gmail_oauth_state_secret: str = ""
     gmail_oauth_state_ttl_s: int = 600
     gmail_batch_threshold: int = 5
+    gmail_discovery_cooldown_s: int = 600
+    gmail_discovery_max_messages: int = 200
 
     # Secret store (Phase 6b)
     secret_store_backend: str = "env"  # env | file | azure_kv
     azure_key_vault_url: str = ""
     dev_secret_prefix: str = "DEV_SECRET_"
     file_secret_store_path: str = ""  # default .dev_secrets.json in cwd
+
+    # Magic-link auth (Phase 6d B3)
+    spa_base_url: str = "http://localhost:5173"
+    spa_cors_origins: str = ""  # comma-separated; defaults to spa_base_url
+    magic_link_session_secret: str = "change-me-in-prod-magic-link-session"
+    magic_link_ttl_s: int = 1800  # 30 min
+    session_cookie_name: str = "fa_session"
+    session_cookie_ttl_s: int = 14400  # 4h
+    session_cookie_domain: str = ""  # empty = host-only (dev)
+    session_cookie_secure: bool = False  # dev=false, prod=true
+    bcrypt_rounds: int = 12
 
     @property
     def is_dev(self) -> bool:

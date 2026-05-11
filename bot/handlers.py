@@ -82,10 +82,11 @@ def register(dp: Dispatcher) -> None:
     # so /editar_memoria replies don't get extracted as transactions),
     # but the gmail bank-selection flow has higher priority since it's
     # an active onboarding state with a 30-min TTL.
-    from . import gmail_handlers, memory_handlers
+    from . import gmail_handlers, memory_handlers, onboarding_handlers
 
     dp.include_router(gmail_handlers.router)
     dp.include_router(memory_handlers.router)
+    dp.include_router(onboarding_handlers.router)
     dp.include_router(router)
 
 

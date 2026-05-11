@@ -5,8 +5,9 @@ The /api/v1/gmail/oauth/callback endpoint publishes JSON to
 pattern so a single connection serves all users.
 
 On `success`:
-    transition state awaiting_oauth → awaiting_sample,
-    send GMAIL_CALLBACK_SUCCESS to the chat that started /conectar_gmail.
+    transition state awaiting_oauth → gmail_onboarding_root,
+    send the multi-mode Gmail onboarding menu to the chat that started
+    /conectar_gmail.
 
 On `denied` / `error`:
     clear onboarding state, send the appropriate Spanish copy.
@@ -81,7 +82,7 @@ async def _handle_message(channel: str, payload: str) -> None:
     if status == "success":
         try:
             await gmail_onboarding.transition(
-                user_id=user_id, to="selecting_banks", redis=redis
+                user_id=user_id, to="gmail_onboarding_root", redis=redis
             )
         except Exception:
             log.exception("transition to selecting_banks failed")

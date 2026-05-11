@@ -14,7 +14,7 @@ class GmailSenderWhitelist(Base):
     __tablename__ = "gmail_sender_whitelist"
     __table_args__ = (
         CheckConstraint(
-            "source IN ('preset_tap','custom_typed','imported')",
+            "source IN ('preset_tap','custom_typed','imported','discovered','manual_with_bank_hint')",
             name="ck_gmail_sender_whitelist_source",
         ),
     )
@@ -29,7 +29,7 @@ class GmailSenderWhitelist(Base):
     )
     sender_email: Mapped[str] = mapped_column(Text, nullable=False)
     bank_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    source: Mapped[str] = mapped_column(String(30), nullable=False)
     added_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), default=datetime.utcnow
     )

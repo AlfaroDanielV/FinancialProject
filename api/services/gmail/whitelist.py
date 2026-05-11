@@ -22,10 +22,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...models.gmail_sender_whitelist import GmailSenderWhitelist
 
 
-# Allowed `source` values mirror the CHECK in migration 0012.
+# Allowed `source` values mirror the CHECK in migrations 0012 + 0015.
 SOURCE_PRESET = "preset_tap"
 SOURCE_CUSTOM = "custom_typed"
 SOURCE_IMPORTED = "imported"
+SOURCE_DISCOVERED = "discovered"
+SOURCE_MANUAL_WITH_BANK_HINT = "manual_with_bank_hint"
 
 ACTIVE_CAP = 8
 

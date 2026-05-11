@@ -377,3 +377,116 @@ Phase 6d se considera cerrada cuando:
 6. **P8** — Beta users onboarding *(desbloqueado por 6d)*
 7. **P9** — SaaS hardening
 8. **Diferidos:** P5c (WhatsApp), P5d (nudges)
+
+---
+
+## 9. Resoluciones registradas 2026-05-08
+
+Resueltas con Daniel antes de arrancar B1. Sobreescriben las decisiones inline donde haya conflicto. Se folded into §3 al frozen del doc en B13.
+
+### 9.1 Auth flow — opaque magic link + cookie post-exchange
+
+**Flipped 2026-05-08 (post-aprobación inicial).** El magic link lleva un token opaco, NO un JWT. El JWT solo aparece DESPUÉS del exchange, dentro de una cookie httpOnly.
+
+- **Magic link token**: opaco, formato `<selector>.<verifier>` (ver §9.9). Sin info del user en el URL. ~65 caracteres.
+- **Endpoint público único**: `POST /api/v1/auth/magic-link/exchange` con body `{token}`. La validación (selector lookup + bcrypt verifier) y consumo (atomic `UPDATE used_at`) viven dentro de una transacción.
+- **Cookie post-exchange**: JWT HS256 firmado con `MAGIC_LINK_SESSION_SECRET`, `exp=4h`, `jti = magic_link_tokens.jti`. Atributos `HttpOnly; Secure; SameSite=Lax; Path=/`. Dev: cookie host-only + Vite proxy. Prod: `Domain=.dominio.cr`.
+- **Sin refresh tokens** — si la sesión expira, el usuario pide otro link. Refresh tokens son scope de 6e.
+
+Razón del flip: opaque token en URL evita leak en referer/history; JWT-en-link era fácil de inspeccionar y agregaba claims redundantes. Cookie httpOnly post-exchange es robusta contra XSS.
+
+### 9.2 Recurring expenses → reuso de `recurring_bills` (Phase 4)
+
+La tabla `recurring_bills` ya existe desde Phase 4 con `bill_occurrences`, `notification_rules` y jobs. **NO se crea `recurring_expenses` nueva**. Se reutiliza `recurring_bills` para los gastos fijos del onboarding. Esto reemplaza la mención a `recurring_expenses` en B1.
+
+### 9.3 Magic-link mint — bot llama service directo, sin endpoint público
+
+**Flipped 2026-05-08 (post-aprobación inicial).** El bot importa `api.services.auth.magic_link.generate_link` directamente. **No hay endpoint mint público.** El único endpoint público de magic-link es `POST /api/v1/auth/magic-link/exchange` (consumo, no creación).
+
+Razón del flip: bot y API corren en el mismo proceso (FastAPI + aiogram en lifespan). Un endpoint mint solo agregaría una capa HTTP sin beneficio. Si en P9 separamos bot/API en procesos distintos, podemos exponer el mint como endpoint con auth de service-to-service en ese momento.
+
+### 9.4 `debts.principal_outstanding` → stored
+
+Lockeado: stored, actualizado manualmente desde el form en 6d. Sin tracking de pagos en 6d, no hay nada de qué derivar. Migración a derived es trivial cuando lleguen pagos individuales en 6e/post-6d.
+
+### 9.5 Categorías default → lista corta de 10
+
+Set determinístico CR Spanish, voseo: `alimentación, transporte, servicios, salud, ocio, vivienda, ingreso_salario, ingreso_extra, deudas, otros`. Categorías custom quedan fuera de 6d (van a 6e).
+
+### 9.6 SPA en monorepo (`web/` dentro de FinancialProject)
+
+Backend + SPA comparten contratos (Zod ↔ Pydantic). Un PR por feature cross-cutting, un solo CI a configurar. Repo separado solo gana con equipo aparte — no aplica.
+
+### 9.7 E2E framework → Playwright
+
+Mejor mobile emulation (crítico para B12 iOS/Android), multi-context limpio (bot + SPA en un test), recomendación del prompt operativo.
+
+### 9.8 `recurring_incomes.base_salary_link_id` → `ON DELETE CASCADE`
+
+Self-FK usa CASCADE, no SET NULL. Razón: aguinaldo y salario_escolar son derivados de un empleo concreto en CR. Si se elimina el salario base (ej: cambio de trabajo), los rows derivados son data inválida — el CHECK `ck_recurring_incomes_cr_cycles_need_base` los rechazaría con NULL anyway. CASCADE es semánticamente honesto y evita dependencia circular entre FK y CHECK. Cuando el usuario cambia de trabajo, registra salario nuevo + aguinaldo nuevo. Lockeada durante B1.
+
+### 9.9 Magic-link bcrypt lookup → selector + verifier pattern
+
+El token raw del link tiene formato `<selector>.<verifier>`:
+
+- `selector = secrets.token_urlsafe(16)` (~22 chars, plain, indexed UNIQUE).
+- `verifier = secrets.token_urlsafe(32)` (~43 chars, bcrypt'd como `token_hash`).
+
+Lookup en exchange: `SELECT * FROM magic_link_tokens WHERE selector = :s AND expires_at > now() AND used_at IS NULL` (O(1) via UNIQUE index), luego `bcrypt.checkpw(verifier_bytes, row.token_hash)`. Match → atomic `UPDATE ... SET used_at = now() WHERE id = :id AND used_at IS NULL` con RETURNING.
+
+**Razón vs alternativas:**
+
+- **Naive scan** (SELECT todas las rows válidas + iterar bcrypt): O(N) por request, DoS-eable cuando crece el set.
+- **uid en URL**: leakea `user_id` en referer/history; el endpoint exchange exige conocer el usuario antes de validar el token (anti-pattern).
+- **Selector + verifier**: O(1) lookup, sin info de usuario en URL, bcrypt sigue protegiendo contra DB leak. Patrón estándar (Rails secure_compare, OWASP ASVS V2.1.5).
+
+**Implicancia schema (B3 antes de B3 service code):** se agrega columna `selector String(32) NOT NULL UNIQUE` a `magic_link_tokens`. Migration 0016 se edita en place — la tabla nunca se escribió en producción (B1 sólo aplicó schema vacío).
+
+### 9.10 B4 SPA scaffold → Vite proxy + credentialed API calls
+
+B4 queda en `web/` dentro del monorepo, según §9.6. El scaffold usa Vite +
+React 18 + TypeScript + Tailwind + Zod + react-hook-form + react-router-dom +
+axios. Rutas iniciales: `/`, `/expired`, `/accounts/new`, `/incomes/new`,
+`/debts/new`, `/bills/new`.
+
+- **Dev auth:** cookie host-only `fa_session` + Vite proxy `/api/* →
+  localhost:8000`. El browser ve un solo origen (`localhost:5173`), y axios
+  usa `withCredentials: true`.
+- **Prod auth:** cookie `Domain=.dominio.cr` cuando `SESSION_COOKIE_DOMAIN`
+  está configurado. La API habilita CORS con credenciales contra
+  `SPA_BASE_URL` y/o `SPA_CORS_ORIGINS`; no se usa `*` con cookies.
+- **Current user:** `current_user` acepta auth en orden
+  `X-Shortcut-Token` → cookie `fa_session` → shim dev `X-User-Id`.
+- **Deploy:** workflow `.github/workflows/azure-static-web-apps.yml` usa
+  Azure Static Web Apps con `app_location=web` y `output_location=dist`.
+- **Status B4:** `npm run build` y `npm run lint` verdes localmente; B1–B3
+  enfocado verde con `42 passed`. Smoke con browser real y URL pública queda
+  pendiente hasta tener Static Web App provisionada y token
+  `AZURE_STATIC_WEB_APPS_API_TOKEN`.
+
+### 9.11 B5 accounts + incomes SPA → CRUD sobre endpoints B2
+
+B5 implementa las pantallas existentes del scaffold (`/accounts/new` y
+`/incomes/new`) y agrega aliases compatibles con el decisions doc
+(`/onboarding/cuentas` y `/onboarding/ingresos`).
+
+- **Cuentas:** list + create + edit inline + delete con confirmación. El form
+  usa `react-hook-form` + Zod y pega a `GET/POST/PATCH/DELETE
+  /api/v1/accounts`. Tipos permitidos siguen el contrato backend actual:
+  `checking`, `savings`, `credit`, `investment`.
+- **Ingresos recurrentes:** list + create + edit inline + delete con
+  confirmación. El form pega a `GET/POST/PATCH/DELETE
+  /api/v1/recurring-incomes`.
+- **Ciclos CR:** `aguinaldo` y `salario_escolar` ocultan monto, piden salario
+  base, bloquean submit si no hay salary registrado y delegan la derivación al
+  backend B2. La UI muestra una explicación corta del ciclo al seleccionar cada
+  tipo.
+- **Moneda/montos:** helpers en `web/src/lib/money.ts` parsean y formatean CRC
+  con miles `.` y USD con miles `,`. La validación impide saldo inicial
+  negativo excepto en cuentas `credit`.
+- **Redirect UX:** al crear cuenta o ingreso, vuelve al landing con
+  `?created=...&name=...`; `Landing` muestra un aviso descartable.
+- **Status B5:** `npm run lint` y `npm run build` verdes; rutas
+  `/accounts/new` y `/incomes/new` responden 200 en el dev server Vite;
+  backend B2+B3 sigue verde con `27 passed`. No hay Playwright todavía; E2E
+  real queda para B11 según §9.7.

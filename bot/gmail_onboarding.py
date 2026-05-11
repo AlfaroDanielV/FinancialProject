@@ -8,8 +8,12 @@ doesn't lose the user's place. State transitions (post-addenda):
     oauth_done       → callback succeeded; brief intermediate state,
                        usually replaced by selecting_banks within the
                        same handler turn.
-    selecting_banks  → user is choosing banks (preset taps + custom
-                       emails). pending_senders accumulates here.
+    gmail_onboarding_root → user picks "Por banco", "Discovery", or done.
+    selecting_bank_from_list → user is choosing a bank from the CR directory.
+    entering_sender_for_bank → user is typing the exact sender for that bank.
+    selecting_keywords → user is choosing Gmail discovery keywords.
+    discovery_running / discovery_results → discovery scan and result toggles.
+    selecting_banks  → legacy Phase 6b state kept for in-flight Redis JSON.
     confirming       → user tapped "Listo"; bot showed the sender list
                        and is waiting for tap on Activar / Editar /
                        Cancelar.
@@ -59,10 +63,40 @@ from .redis_keys import GMAIL_ONBOARDING_TTL_S, gmail_onboarding_key
 # the TTL (and the JSON payload). Treating it as a no-op transition
 # keeps the call sites uniform.
 _TRANSITIONS: dict[str, set[str]] = {
-    "awaiting_oauth": {"oauth_done", "selecting_banks"},
-    "oauth_done": {"selecting_banks"},
-    "selecting_banks": {"selecting_banks", "confirming"},
-    "confirming": {"selecting_banks", "active"},
+    "awaiting_oauth": {"oauth_done", "gmail_onboarding_root", "selecting_banks"},
+    "oauth_done": {"gmail_onboarding_root", "selecting_banks"},
+    "gmail_onboarding_root": {
+        "gmail_onboarding_root",
+        "selecting_bank_from_list",
+        "selecting_keywords",
+        "confirming",
+    },
+    "selecting_bank_from_list": {"gmail_onboarding_root", "entering_sender_for_bank"},
+    "entering_sender_for_bank": {
+        "gmail_onboarding_root",
+        "sender_hint_override",
+        "test_scan_prompt",
+    },
+    "sender_hint_override": {"entering_sender_for_bank", "test_scan_prompt"},
+    "test_scan_prompt": {"gmail_onboarding_root", "test_scan_zero"},
+    "test_scan_zero": {"gmail_onboarding_root", "entering_sender_for_bank"},
+    "selecting_keywords": {
+        "gmail_onboarding_root",
+        "selecting_keywords",
+        "discovery_running",
+    },
+    "discovery_running": {"gmail_onboarding_root", "discovery_results"},
+    "discovery_results": {"gmail_onboarding_root", "discovery_results"},
+    # Legacy Phase 6b state. Kept to avoid stranding in-flight sessions and
+    # older tests; new handlers use gmail_onboarding_root.
+    "selecting_banks": {
+        "selecting_banks",
+        "gmail_onboarding_root",
+        "confirming",
+        "selecting_bank_from_list",
+        "selecting_keywords",
+    },
+    "confirming": {"gmail_onboarding_root", "selecting_banks", "active"},
 }
 
 
@@ -83,6 +117,19 @@ class OnboardingState:
     # message they send is associated with that bank. Cleared once the
     # email lands. None means "next text uses domain inference".
     awaiting_bank: Optional[str] = None
+    # True when the root menu was opened from /agregar_banco or /discovery
+    # after activation. In that case "Listo" commits new senders without
+    # running the first-time activation flow.
+    add_only: bool = False
+    # Mode A context.
+    selected_bank_slug: Optional[str] = None
+    selected_bank_name: Optional[str] = None
+    pending_sender_email: Optional[str] = None
+    # Mode B context.
+    selected_keywords: list[str] = field(default_factory=list)
+    discovery_candidates: list[dict[str, Any]] = field(default_factory=list)
+    discovery_selected_indices: list[int] = field(default_factory=list)
+    discovery_run_id: Optional[str] = None
     # Pre-addenda fields kept for backwards-compat of any in-flight
     # state JSON that survived a deploy. They're unused in the new flow.
     sample_attempts: int = 0
@@ -145,7 +192,11 @@ class InvalidTransition(RuntimeError):
 
 
 async def begin(
-    *, user_id: uuid.UUID, telegram_chat_id: int, redis: Redis
+    *,
+    user_id: uuid.UUID,
+    telegram_chat_id: int,
+    redis: Redis,
+    add_only: bool = False,
 ) -> OnboardingState:
     """Start onboarding fresh. If a stale state exists for this user, we
     overwrite it — the new /conectar_gmail call wins."""
@@ -153,6 +204,7 @@ async def begin(
         state="awaiting_oauth",
         telegram_chat_id=telegram_chat_id,
         started_at=_now_iso(),
+        add_only=add_only,
     )
     await set_state(user_id, state, redis)
     return state
@@ -178,10 +230,14 @@ async def transition(
         )
 
     current.state = to
-    if to == "awaiting_sample":
-        # Resetting pending_analysis on each ask keeps confirming-state
-        # cleanups simple: only the most recent analysis is staged.
-        current.pending_analysis = None
+    if to == "gmail_onboarding_root":
+        current.selected_bank_slug = None
+        current.selected_bank_name = None
+        current.pending_sender_email = None
+        current.selected_keywords = []
+        current.discovery_candidates = []
+        current.discovery_selected_indices = []
+        current.discovery_run_id = None
     await set_state(user_id, current, redis)
     return current
 
@@ -203,9 +259,17 @@ async def add_pending_sender(
     current = await get(user_id, redis)
     if current is None:
         raise RuntimeError("no onboarding session for user")
-    if current.state != "selecting_banks":
+    allowed_states = {
+        "selecting_banks",
+        "gmail_onboarding_root",
+        "entering_sender_for_bank",
+        "test_scan_prompt",
+        "test_scan_zero",
+        "discovery_results",
+    }
+    if current.state not in allowed_states:
         raise InvalidTransition(
-            f"add_pending_sender only valid from selecting_banks "
+            f"add_pending_sender only valid from onboarding selection states "
             f"(was {current.state!r})"
         )
     norm = email.strip().lower()
@@ -217,6 +281,92 @@ async def add_pending_sender(
     )
     await set_state(user_id, current, redis)
     return current, True
+
+
+async def set_bank_context(
+    *,
+    user_id: uuid.UUID,
+    bank_slug: Optional[str],
+    bank_name: Optional[str],
+    redis: Redis,
+) -> OnboardingState:
+    current = await get(user_id, redis)
+    if current is None:
+        raise RuntimeError("no onboarding session for user")
+    current.selected_bank_slug = bank_slug
+    current.selected_bank_name = bank_name
+    current.pending_sender_email = None
+    await set_state(user_id, current, redis)
+    return current
+
+
+async def set_pending_sender_email(
+    *, user_id: uuid.UUID, email: Optional[str], redis: Redis
+) -> OnboardingState:
+    current = await get(user_id, redis)
+    if current is None:
+        raise RuntimeError("no onboarding session for user")
+    current.pending_sender_email = email.strip().lower() if email else None
+    await set_state(user_id, current, redis)
+    return current
+
+
+async def set_keywords(
+    *, user_id: uuid.UUID, keywords: list[str], redis: Redis
+) -> OnboardingState:
+    current = await get(user_id, redis)
+    if current is None:
+        raise RuntimeError("no onboarding session for user")
+    seen: set[str] = set()
+    selected: list[str] = []
+    for keyword in keywords:
+        cleaned = keyword.strip()
+        if not cleaned:
+            continue
+        key = cleaned.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(cleaned)
+        if len(selected) >= 5:
+            break
+    current.selected_keywords = selected
+    await set_state(user_id, current, redis)
+    return current
+
+
+async def set_discovery_results(
+    *,
+    user_id: uuid.UUID,
+    candidates: list[dict[str, Any]],
+    run_id: Optional[str],
+    redis: Redis,
+) -> OnboardingState:
+    current = await get(user_id, redis)
+    if current is None:
+        raise RuntimeError("no onboarding session for user")
+    current.state = "discovery_results"
+    current.discovery_candidates = candidates
+    current.discovery_selected_indices = []
+    current.discovery_run_id = run_id
+    await set_state(user_id, current, redis)
+    return current
+
+
+async def toggle_discovery_index(
+    *, user_id: uuid.UUID, index: int, redis: Redis
+) -> OnboardingState:
+    current = await get(user_id, redis)
+    if current is None:
+        raise RuntimeError("no onboarding session for user")
+    selected = set(current.discovery_selected_indices)
+    if index in selected:
+        selected.remove(index)
+    else:
+        selected.add(index)
+    current.discovery_selected_indices = sorted(selected)
+    await set_state(user_id, current, redis)
+    return current
 
 
 async def remove_pending_sender(

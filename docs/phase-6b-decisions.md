@@ -270,10 +270,13 @@ Implementación: tabla `gmail_sender_whitelist` con soft-delete
 Comandos `/agregar_banco` y `/quitar_banco` post-activación reutilizan
 los mismos handlers.
 
-## 2026-05-06 — Lista de bancos CR como data-driven config
+## 2026-05-06 — Lista de bancos CR como data-driven config (superseded 2026-05-08)
 
-Decision: `api/data/bank_senders_cr.py` exporta `KNOWN_BANK_SENDERS_CR`
-como dict literal. No se hardcodea en handlers ni se carga de DB.
+Decision original: `api/data/bank_senders_cr.py` exportaba
+`KNOWN_BANK_SENDERS_CR` como dict literal. No se hardcodeaba en handlers
+ni se cargaba de DB. Superseded por el addendum 2026-05-08: ahora el
+entrypoint visual es `api/data/bank_directory_cr.py` y no contiene senders
+canónicos.
 
 Motivo: queremos editarlos sin redeploy ni migración. Un dict literal
 en código vive mejor en revisión que una tabla seed. Cuando crezca a
@@ -283,11 +286,13 @@ Importante: la lista inicial es **propuesta**. Cada dominio se valida
 contra correos reales antes de promover a beta tester. El comment del
 archivo lo deja explícito.
 
-## 2026-05-06 — Detección de banco por dominio del email
+## 2026-05-06 — Detección de banco por dominio del email (superseded 2026-05-08)
 
-Decision: cuando el usuario escribe un email custom, el bot intenta
-inferir el banco mirando el dominio (`@bac.cr` → BAC). Si no matchea,
-queda con `bank_name=NULL` — no es error, solo "no etiquetado".
+Decision original: cuando el usuario escribía un email custom, el bot
+intentaba inferir el banco mirando el dominio (`@bac.cr` → BAC). Si no
+matcheaba, quedaba con `bank_name=NULL`. Superseded por el addendum
+2026-05-08: el sistema solo usa `match_bank_by_hint(sender, bank_slug)`
+cuando el usuario escogió explícitamente un banco, y el hint solo warning.
 
 Motivo: poder etiquetar samples y métricas por banco aún cuando el
 usuario no pasa por un preset. Mantener el `NULL` como estado válido
@@ -383,7 +388,7 @@ testeable con `httpx.MockTransport`.
 ## 2026-05-06 — Preset tap pide correo, no precarga senders
 
 Decision: tapear un botón de banco preset (BAC, Promerica, etc.) ya
-NO agrega los senders canónicos del dict `KNOWN_BANK_SENDERS_CR`.
+NO agrega los senders canónicos del directorio.
 En su lugar, el bot setea un sub-estado `awaiting_bank=<bank>` y le
 pide al usuario que tipee el correo desde el cual recibe notificaciones
 de ese banco. Cuando el usuario lo manda, se asocia con
@@ -397,15 +402,52 @@ que el código piensa que recibe. Asumir es el camino al falso negativo
 silencioso ("¿por qué no me detectó la última compra?").
 
 Implicación de código:
-- `KNOWN_BANK_SENDERS_CR.values()` quedan como referencia documental
-  (qué dominios eran "canon" en algún momento), pero no se consumen
-  desde handlers.
-- `preset_senders_for()` queda en el módulo pero deja de llamarse
-  desde producción.
+- El directorio queda como entrada visual y fuente de hints, no como
+  referencia de senders canónicos.
 - Agregamos `OnboardingState.awaiting_bank` (str | None) para recordar
   qué bank label nombró el usuario antes de mandar el correo.
 - Si el usuario tapea otro preset mientras hay un `awaiting_bank`
   pendiente, sobreescribe — UX permisiva, mejor que bloquear.
+
+## 2026-05-08 — Gmail onboarding discovery addendum (operator-called "Phase 6c")
+
+Decision: el onboarding Gmail deja de depender de que el usuario sepa de
+entrada el sender exacto. Se agregan dos caminos complementarios:
+
+1. **Modo A — Por banco**: `api/data/bank_directory_cr.py` reemplaza
+   `bank_senders_cr.py`. La lista es `[{name, slug, hint_pattern}]`, no
+   `{bank: [senders]}`. El `hint_pattern` solo genera warning si el sender
+   escrito no parece de ese banco; nunca bloquea. El sender aceptado se
+   persiste con `source='manual_with_bank_hint'`.
+2. **Modo B — Discovery por keyword**: el usuario elige keywords preset o
+   custom (máx. 5). El sistema escanea Gmail con metadata headers, agrupa
+   por `From`, muestra top 10 candidatos y solo whitelistea los que el
+   usuario confirma. Esos senders usan `source='discovered'`.
+
+Motivo: Phase 6b cerró con onboarding funcional pero frágil: si el usuario
+se equivoca de sender o no sabe cuál es, el scanner puede devolver 0 sin
+guía clara. El directorio visual reduce fricción para bancos conocidos y el
+discovery cubre bancos/senders no obvios.
+
+Límites locked:
+- Discovery nunca llama al extractor Haiku ni lee bodies completos.
+- Gmail API: `messages.list` + `messages.get(format='metadata',
+  metadataHeaders=['From','Subject'])`.
+- Query keyword: `(in:inbox OR in:spam) (subject:({kw OR ...}) OR {kw OR ...})
+  newer_than:30d`; test scan por sender usa `from:{email} newer_than:7d`.
+- Rate limit: un discovery por usuario cada 10 minutos.
+- Auditoría: nueva tabla `gmail_discovery_runs` guarda keywords, started/finished,
+  senders encontrados y senders confirmados.
+- `preset_tap` se mantiene válido para histórico. No se migran filas viejas.
+
+Implicación de código:
+- `api/services/gmail/discovery.py` es el scanner metadata-only.
+- `gmail_sender_whitelist.source` admite `discovered` y
+  `manual_with_bank_hint`.
+- `/agregar_banco` y post-OAuth abren un menú raíz multi-modo.
+- `/discovery` entra directo al Modo B.
+- `/estado_gmail` agrupa senders por source para que el usuario entienda
+  cómo llegaron a la whitelist.
 
 ## 2026-05-06 — Batching de notificaciones Telegram (Block C.1)
 
