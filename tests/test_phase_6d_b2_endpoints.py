@@ -365,7 +365,7 @@ async def test_onboarding_status_complete_with_all_four(db_with_user):
 
 
 @pytest.mark.asyncio
-async def test_list_categories_returns_short_cr_list(db_with_user):
+async def test_list_categories_returns_managed_default_cr_list(db_with_user):
     session, user_id = db_with_user
     _override(session, user_id)
     try:
@@ -376,10 +376,12 @@ async def test_list_categories_returns_short_cr_list(db_with_user):
         _clear()
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert len(body["categories"]) == 10
-    assert "alimentación" in body["categories"]
-    assert "ingreso_salario" in body["categories"]
-    assert "deudas" in body["categories"]
+    names = {item["name"] for item in body}
+    assert len(body) == 10
+    assert "alimentación" in names
+    assert "ingreso_salario" in names
+    assert "deudas" in names
+    assert all(item["archived"] is False for item in body)
 
 
 # ── derivation service unit test ────────────────────────────────────────────

@@ -23,6 +23,7 @@ from ..schemas.users import (
     UserRegisterResponse,
     UserResponse,
 )
+from ..services.categories import ensure_default_categories
 
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
 
@@ -60,6 +61,7 @@ async def register_user(
         country=payload.country,
         timezone=payload.timezone,
         currency=payload.currency,
+        display_currency=payload.display_currency or payload.currency[:3],
         locale=payload.locale,
         shortcut_token=_new_token(),
     )
@@ -67,6 +69,7 @@ async def register_user(
     try:
         await db.flush()
         await _seed_global_default_rule(user, db)
+        await ensure_default_categories(db, user.id)
         await db.commit()
     except IntegrityError as e:
         await db.rollback()

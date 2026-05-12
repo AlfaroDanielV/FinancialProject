@@ -59,7 +59,10 @@ async def list_accounts(
 ):
     stmt = select(Account).where(Account.user_id == user.id)
     if not include_inactive:
-        stmt = stmt.where(Account.is_active == True)  # noqa: E712
+        stmt = stmt.where(
+            Account.is_active == True,  # noqa: E712
+            Account.archived.is_(False),
+        )
     stmt = stmt.order_by(Account.created_at.desc())
 
     result = await db.execute(stmt)
@@ -134,6 +137,7 @@ async def delete_account(
         raise HTTPException(status_code=404, detail="Cuenta no encontrada.")
 
     account.is_active = False
+    account.archived = True
     await db.commit()
     await db.refresh(account)
     return account

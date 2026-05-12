@@ -1,5 +1,6 @@
 import uuid
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import String, Integer, Numeric, Date, ForeignKey
@@ -20,17 +21,36 @@ class Goal(Base):
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    target_amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
-    current_amount: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
-    deadline: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
-    monthly_contribution: Mapped[Optional[float]] = mapped_column(
+    target_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    target_currency: Mapped[str] = mapped_column(
+        String(3), nullable=False, default="CRC"
+    )
+    current_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
+    target_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    monthly_contribution: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(12, 2), nullable=True
     )
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
-    # active | paused | completed | abandoned
+    # active | achieved | abandoned | paused
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    linked_account_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), default=datetime.utcnow
     )
 
     user: Mapped["User"] = relationship(back_populates="goals")  # noqa: F821
+    linked_account: Mapped[Optional["Account"]] = relationship()  # noqa: F821
+    contributions: Mapped[list["GoalContribution"]] = relationship(  # noqa: F821
+        back_populates="goal", cascade="all, delete-orphan"
+    )
+
+    @property
+    def deadline(self) -> Optional[date]:
+        """Legacy name kept for older API callers; 6e uses target_date."""
+        return self.target_date
+
+    @deadline.setter
+    def deadline(self, value: Optional[date]) -> None:
+        self.target_date = value

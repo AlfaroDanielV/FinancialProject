@@ -22,6 +22,16 @@ class Transaction(Base):
     account_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=True
     )
+    transfer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("transfers.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    category_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("user_categories.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     # negative = expense, positive = income
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(10), nullable=False, default="CRC")
@@ -53,3 +63,5 @@ class Transaction(Base):
 
     user: Mapped["User"] = relationship(back_populates="transactions")  # noqa: F821
     account: Mapped[Optional["Account"]] = relationship(back_populates="transactions")  # noqa: F821
+    transfer: Mapped[Optional["Transfer"]] = relationship(back_populates="transactions")  # noqa: F821
+    category_ref: Mapped[Optional["UserCategory"]] = relationship(back_populates="transactions")  # noqa: F821

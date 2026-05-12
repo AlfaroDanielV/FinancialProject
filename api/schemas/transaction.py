@@ -31,12 +31,15 @@ class TransactionCreate(BaseModel):
     transaction_date: date
     source: str = "manual"
     account_id: Optional[uuid.UUID] = None
+    category_id: Optional[uuid.UUID] = None
 
 
 class TransactionResponse(BaseModel):
     id: uuid.UUID
     user_id: uuid.UUID
     account_id: Optional[uuid.UUID]
+    transfer_id: Optional[uuid.UUID] = None
+    category_id: Optional[uuid.UUID] = None
     amount: float
     currency: str
     merchant: Optional[str]

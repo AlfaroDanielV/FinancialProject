@@ -7,8 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
 from ..dependencies import current_user, current_user_via_token
+from ..models.account import Account
 from ..models.transaction import Transaction
 from ..models.user import User
+from ..models.user_category import UserCategory
 from ..schemas.transaction import (
     ShortcutTransactionCreate,
     TransactionCreate,
@@ -72,9 +74,31 @@ async def create_transaction(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(current_user),
 ):
+    if payload.account_id is not None:
+        account_result = await db.execute(
+            select(Account.id).where(
+                Account.id == payload.account_id,
+                Account.user_id == user.id,
+                Account.archived.is_(False),
+            )
+        )
+        if account_result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=400, detail="Cuenta inválida.")
+    if payload.category_id is not None:
+        category_result = await db.execute(
+            select(UserCategory.id).where(
+                UserCategory.id == payload.category_id,
+                UserCategory.user_id == user.id,
+                UserCategory.archived.is_(False),
+            )
+        )
+        if category_result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=400, detail="Categoría inválida.")
+
     txn = Transaction(
         user_id=user.id,
         account_id=payload.account_id,
+        category_id=payload.category_id,
         amount=payload.amount,
         currency=payload.currency,
         merchant=payload.merchant,

@@ -16,6 +16,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from urllib.parse import urlencode
 
 import bcrypt
 from sqlalchemy import select, update
@@ -46,10 +47,23 @@ def _split(raw_token: str) -> tuple[str, str] | None:
     return selector, verifier
 
 
+def _validate_target_path(target_path: str | None) -> str | None:
+    if target_path is None:
+        return None
+    if (
+        not target_path.startswith("/")
+        or target_path.startswith("//")
+        or "://" in target_path
+    ):
+        raise ValueError("target_path debe ser una ruta relativa del SPA.")
+    return target_path
+
+
 async def generate_link(
     session: AsyncSession,
     user_id: uuid.UUID,
     purpose: str = "onboarding",
+    target_path: str | None = None,
 ) -> GeneratedLink:
     """Mint a single-use magic link. Persists the row in a transaction; the
     caller is responsible for committing if calling within an external
@@ -68,19 +82,24 @@ async def generate_link(
         seconds=settings.magic_link_ttl_s
     )
 
+    clean_target_path = _validate_target_path(target_path)
     record = MagicLinkToken(
         user_id=user_id,
         selector=selector,
         token_hash=token_hash,
         jti=uuid.uuid4(),
         purpose=purpose,
+        target_path=clean_target_path,
         expires_at=expires_at,
     )
     session.add(record)
     await session.commit()
     await session.refresh(record)
 
-    url = f"{settings.spa_base_url.rstrip('/')}/?token={raw_token}"
+    query = {"token": raw_token}
+    if clean_target_path is not None:
+        query["path"] = clean_target_path
+    url = f"{settings.spa_base_url.rstrip('/')}/?{urlencode(query)}"
     return GeneratedLink(url=url, raw_token=raw_token, record_id=record.id)
 
 

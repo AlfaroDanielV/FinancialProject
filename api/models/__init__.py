@@ -3,8 +3,12 @@ from .account import Account
 from .transaction import Transaction
 from .budget import Budget
 from .goal import Goal
+from .goal_contribution import GoalContribution
 from .weekly_report import WeeklyReport
 from .debt import Debt, DebtPayment
+from .transfer import Transfer
+from .user_category import UserCategory
+from .currency_rate import CurrencyRate
 from .recurring_bill import RecurringBill
 from .bill_occurrence import BillOccurrence
 from .custom_event import CustomEvent
@@ -31,9 +35,13 @@ __all__ = [
     "Transaction",
     "Budget",
     "Goal",
+    "GoalContribution",
     "WeeklyReport",
     "Debt",
     "DebtPayment",
+    "Transfer",
+    "UserCategory",
+    "CurrencyRate",
     "RecurringBill",
     "BillOccurrence",
     "CustomEvent",

@@ -85,9 +85,13 @@ _CLEANUP_TABLES = (
     "llm_extractions",
     "magic_link_tokens",
     "recurring_incomes",
+    "goal_contributions",
     "debt_payments",
     "debts",
+    "transfers",
     "transactions",
+    "user_categories",
+    "goals",
     "accounts",
 )
 
@@ -129,6 +133,16 @@ async def db_with_user() -> AsyncGenerator[tuple[AsyncSession, uuid.UUID], None]
             finally:
                 await session.rollback()
                 for table in _CLEANUP_TABLES:
+                    if table == "goal_contributions":
+                        # goal_contributions has no user_id; FK via goals.id
+                        await session.execute(
+                            text(
+                                "DELETE FROM goal_contributions "
+                                "WHERE goal_id IN (SELECT id FROM goals WHERE user_id = :u)"
+                            ),
+                            {"u": user_id},
+                        )
+                        continue
                     if table == "debt_payments":
                         # debt_payments has no user_id; FK via debts.id
                         await session.execute(

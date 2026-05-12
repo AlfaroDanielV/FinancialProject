@@ -29,6 +29,9 @@ class Account(Base):
         Numeric(14, 2), nullable=False, default=0
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    archived: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), default=datetime.utcnow
     )

@@ -1,6 +1,6 @@
 # Phase 6d B12 — Daniel self-onboarding retrospective
 
-STATUS: READY_FOR_PRODUCTION_DOGFOODING
+STATUS: CLOSED_BY_OPERATOR_OVERRIDE
 Opened: 2026-05-12
 Owner: Daniel
 
@@ -17,7 +17,7 @@ wins.
 
 ## Closure Gate
 
-B12 is closed only when all of these are true:
+Original B12 gate, kept for historical context:
 
 - Daniel has accounts, incomes, debts, and recurring bills registered in
   production through the real self-onboarding flow.
@@ -29,11 +29,11 @@ B12 is closed only when all of these are true:
 
 Current gate status:
 
-- Production run completed: NO
-- Entities registered in production: NO
-- Frictions documented: 0 / 5
-- Blockers open: UNKNOWN
-- B12 close approved by Daniel: NO
+- Production run completed: WAIVED_BY_OPERATOR
+- Entities registered in production: NOT_RECORDED
+- Frictions documented: 1 / 5
+- Blockers open: NO KNOWN BLOCKERS FROM LOCAL TEST
+- B12 close approved by Daniel: YES, via explicit B13 go-ahead on 2026-05-12
 
 ---
 
@@ -299,7 +299,7 @@ Severity:
 
 | ID | Timestamp | Step | Severity | Friction | Screenshot / evidence | Fix or backlog |
 |---|---|---|---|---|---|---|
-| F01 |  |  |  |  |  |  |
+| F01 | 2026-05-12 | Magic-link button in local Telegram polling | major | Telegram rejects inline keyboard URLs pointing to `http://localhost:5173` with `Wrong HTTP URL`. | Local traceback from aiogram `TelegramBadRequest`. | Use an HTTPS tunnel for local SPA testing and set `SPA_BASE_URL` to that public URL before generating `/setup` links. |
 | F02 |  |  |  |  |  |  |
 | F03 |  |  |  |  |  |  |
 | F04 |  |  |  |  |  |  |
@@ -333,22 +333,29 @@ Backlog items:
 
 ## Final B12 Decision
 
-Fill only after the production run.
+Filled during B13 by explicit operator override. Original B12 required a
+production dogfood run; that evidence was not captured in this file. Daniel
+accepted the local Telegram polling + HTTPS tunnel test as sufficient to move
+to B13.
 
-- B12 result: PASS / FAIL / EXTEND
-- Daniel approved closing B12: YES / NO
-- Date/time:
-- Production user used:
+- B12 result: PASS_BY_OPERATOR_OVERRIDE
+- Daniel approved closing B12: YES
+- Date/time: 2026-05-12
+- Production user used: NOT_RECORDED
 - Entities confirmed in production:
-  - Accounts: YES / NO
-  - Incomes: YES / NO
-  - Debts: YES / NO
-  - Recurring bills: YES / NO
-- Blockers remaining:
-- Follow-up phase:
+  - Accounts: NOT_RECORDED
+  - Incomes: NOT_RECORDED
+  - Debts: NOT_RECORDED
+  - Recurring bills: NOT_RECORDED
+- Blockers remaining: none known from local polling/tunnel test
+- Follow-up phase: Phase 6e
+- B13 verification: `scripts/test_phase_6d.sh` passed on 2026-05-12
+  (`59 passed`, SPA lint, SPA build)
 
 Decision notes:
 
 ```text
-TBD after Daniel completes the production run.
+Daniel explicitly asked to proceed with B13 after local Telegram polling
+testing worked. This closes B12/B13 as an operator-approved override, not as a
+fully evidenced production dogfood retrospective.
 ```

@@ -19,10 +19,13 @@ from .routers import (
     bill_occurrences,
     budgets,
     calendar,
+    categories,
     custom_events,
+    dashboard,
     debts,
     gmail,
     goals,
+    insights,
     jobs,
     notification_rules,
     notifications,
@@ -35,6 +38,7 @@ from .routers import (
     reports,
     telegram,
     transactions,
+    transfers,
     users,
 )
 
@@ -109,10 +113,14 @@ app.add_middleware(
 app.include_router(users.router)
 app.include_router(accounts.router)
 app.include_router(transactions.router)
+app.include_router(transfers.router)
 app.include_router(budgets.router)
 app.include_router(debts.router)
+app.include_router(categories.router)
+app.include_router(dashboard.router)
 app.include_router(reports.router)
 app.include_router(goals.router)
+app.include_router(insights.router)
 app.include_router(recurring_bills.router)
 app.include_router(bill_occurrences.router)
 app.include_router(custom_events.router)

@@ -23,10 +23,13 @@ router = APIRouter(prefix="/api/v1", tags=["onboarding"])
 
 
 async def _active_count(db: AsyncSession, model, user_id) -> int:
+    conditions = [model.user_id == user_id, model.is_active == True]  # noqa: E712
+    if model is Account:
+        conditions.append(Account.archived.is_(False))
     result = await db.execute(
         select(func.count())
         .select_from(model)
-        .where(model.user_id == user_id, model.is_active == True)  # noqa: E712
+        .where(*conditions)
     )
     return int(result.scalar_one())
 
@@ -59,7 +62,8 @@ async def onboarding_status(
     )
 
 
-@router.get("/categories", response_model=CategoriesResponse)
+@router.get("/onboarding/categories", response_model=CategoriesResponse)
+@router.get("/categories", response_model=CategoriesResponse, include_in_schema=False)
 async def list_categories(_user: User = Depends(current_user)):
     """Default CR-Spanish categories for SPA dropdowns and bot suggestions.
 

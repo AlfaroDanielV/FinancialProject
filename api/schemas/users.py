@@ -37,6 +37,7 @@ class UserCreate(BaseModel):
     country: str = Field(default="CR", min_length=2, max_length=2)
     timezone: str = Field(default="America/Costa_Rica", max_length=50)
     currency: str = Field(default="CRC", max_length=10)
+    display_currency: Optional[str] = Field(default=None, max_length=3)
     locale: str = Field(default="es-CR", max_length=10)
 
     @field_validator("phone_number")
@@ -61,6 +62,7 @@ class UserUpdate(BaseModel):
     country: Optional[str] = Field(default=None, min_length=2, max_length=2)
     timezone: Optional[str] = Field(default=None, max_length=50)
     currency: Optional[str] = Field(default=None, max_length=10)
+    display_currency: Optional[str] = Field(default=None, max_length=3)
     locale: Optional[str] = Field(default=None, max_length=10)
 
     @field_validator("phone_number")
@@ -82,6 +84,7 @@ class UserResponse(BaseModel):
     country: str
     timezone: str
     currency: str
+    display_currency: str
     locale: str
     telegram_user_id: Optional[int]
     whatsapp_phone: Optional[str]

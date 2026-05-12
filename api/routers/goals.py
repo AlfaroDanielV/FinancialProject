@@ -1,6 +1,7 @@
-import uuid
 import math
-from datetime import date
+import uuid
+from datetime import date, datetime, timezone
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -8,17 +9,56 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
 from ..dependencies import current_user
+from ..models.account import Account
 from ..models.goal import Goal
+from ..models.goal_contribution import GoalContribution
+from ..models.transaction import Transaction
 from ..models.user import User
 from ..schemas.goals import (
     ContributeRequest,
-    GoalCreate,
+    GoalContributionCreate,
+    GoalContributionResult,
     GoalProgress,
     GoalResponse,
+    GoalCreate,
     GoalUpdate,
 )
 
 router = APIRouter(prefix="/api/v1/goals", tags=["goals"])
+
+
+def _stored_status(status: str | None) -> str | None:
+    if status == "completed":
+        return "achieved"
+    return status
+
+
+async def _get_goal(
+    db: AsyncSession, *, user_id: uuid.UUID, goal_id: uuid.UUID
+) -> Goal:
+    result = await db.execute(
+        select(Goal).where(Goal.id == goal_id, Goal.user_id == user_id)
+    )
+    goal = result.scalar_one_or_none()
+    if goal is None:
+        raise HTTPException(status_code=404, detail="Meta no encontrada.")
+    return goal
+
+
+async def _validate_linked_account(
+    db: AsyncSession, *, user_id: uuid.UUID, account_id: uuid.UUID | None
+) -> None:
+    if account_id is None:
+        return
+    result = await db.execute(
+        select(Account.id).where(
+            Account.id == account_id,
+            Account.user_id == user_id,
+            Account.archived.is_(False),
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=400, detail="Cuenta vinculada inválida.")
 
 
 @router.post("", response_model=GoalResponse, status_code=201)
@@ -27,14 +67,22 @@ async def create_goal(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(current_user),
 ):
+    await _validate_linked_account(
+        db, user_id=user.id, account_id=payload.linked_account_id
+    )
     goal = Goal(
         user_id=user.id,
         name=payload.name,
         target_amount=payload.target_amount,
-        deadline=payload.deadline,
+        target_currency=payload.target_currency,
+        current_amount=payload.current_amount,
+        target_date=payload.target_date,
         priority=payload.priority,
         monthly_contribution=payload.monthly_contribution,
+        linked_account_id=payload.linked_account_id,
     )
+    if Decimal(goal.current_amount) >= Decimal(goal.target_amount):
+        goal.status = "achieved"
     db.add(goal)
     await db.commit()
     await db.refresh(goal)
@@ -49,7 +97,7 @@ async def list_goals(
 ):
     stmt = select(Goal).where(Goal.user_id == user.id)
     if status:
-        stmt = stmt.where(Goal.status == status)
+        stmt = stmt.where(Goal.status == _stored_status(status))
     stmt = stmt.order_by(Goal.priority.asc(), Goal.created_at.desc())
 
     result = await db.execute(stmt)
@@ -67,40 +115,45 @@ async def goals_progress(
     goals = list(result.scalars().all())
     today = date.today()
 
-    progress_list = []
-    for g in goals:
-        target = float(g.target_amount)
-        current = float(g.current_amount)
-        remaining = max(target - current, 0)
-        percent = (current / target * 100) if target > 0 else 0
+    progress_list: list[GoalProgress] = []
+    for goal in goals:
+        target = Decimal(goal.target_amount)
+        current = Decimal(goal.current_amount or 0)
+        remaining = max(target - current, Decimal("0"))
+        percent = (float(current / target) * 100) if target > 0 else 0
 
         months_remaining = None
         monthly_needed = None
         on_track = None
 
-        if g.deadline:
-            days_left = (g.deadline - today).days
+        if goal.target_date:
+            days_left = (goal.target_date - today).days
             months_remaining = max(math.ceil(days_left / 30.44), 0)
             if months_remaining > 0:
-                monthly_needed = round(remaining / months_remaining, 2)
-                if g.monthly_contribution:
-                    on_track = monthly_needed <= float(g.monthly_contribution)
+                monthly_needed = (remaining / Decimal(months_remaining)).quantize(
+                    Decimal("0.01")
+                )
+                if goal.monthly_contribution:
+                    on_track = monthly_needed <= Decimal(goal.monthly_contribution)
             elif remaining > 0:
                 monthly_needed = remaining
                 on_track = False
 
-        progress_list.append(GoalProgress(
-            id=g.id,
-            name=g.name,
-            target_amount=target,
-            current_amount=current,
-            remaining=round(remaining, 2),
-            progress_percent=round(percent, 2),
-            months_remaining=months_remaining,
-            monthly_needed=monthly_needed,
-            on_track=on_track,
-            status=g.status,
-        ))
+        progress_list.append(
+            GoalProgress(
+                id=goal.id,
+                name=goal.name,
+                target_amount=target,
+                target_currency=goal.target_currency,
+                current_amount=current,
+                remaining=remaining,
+                progress_percent=round(percent, 2),
+                months_remaining=months_remaining,
+                monthly_needed=monthly_needed,
+                on_track=on_track,
+                status=goal.status,
+            )
+        )
 
     return progress_list
 
@@ -111,13 +164,7 @@ async def get_goal(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(current_user),
 ):
-    result = await db.execute(
-        select(Goal).where(Goal.id == goal_id, Goal.user_id == user.id)
-    )
-    goal = result.scalar_one_or_none()
-    if not goal:
-        raise HTTPException(status_code=404, detail="Meta no encontrada.")
-    return goal
+    return await _get_goal(db, user_id=user.id, goal_id=goal_id)
 
 
 @router.patch("/{goal_id}", response_model=GoalResponse)
@@ -127,20 +174,78 @@ async def update_goal(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(current_user),
 ):
-    result = await db.execute(
-        select(Goal).where(Goal.id == goal_id, Goal.user_id == user.id)
-    )
-    goal = result.scalar_one_or_none()
-    if not goal:
-        raise HTTPException(status_code=404, detail="Meta no encontrada.")
+    goal = await _get_goal(db, user_id=user.id, goal_id=goal_id)
 
     update_data = payload.model_dump(exclude_unset=True)
+    if "deadline" in update_data and "target_date" not in update_data:
+        update_data["target_date"] = update_data["deadline"]
+    update_data.pop("deadline", None)
+    if "status" in update_data:
+        update_data["status"] = _stored_status(update_data["status"])
+    if "linked_account_id" in update_data:
+        await _validate_linked_account(
+            db, user_id=user.id, account_id=update_data["linked_account_id"]
+        )
+
     for field, value in update_data.items():
         setattr(goal, field, value)
 
     await db.commit()
     await db.refresh(goal)
     return goal
+
+
+async def _create_goal_contribution(
+    goal: Goal,
+    payload: GoalContributionCreate,
+    db: AsyncSession,
+    user: User,
+) -> GoalContribution:
+    if goal.status in ("abandoned", "achieved"):
+        raise HTTPException(
+            status_code=400,
+            detail="Esta meta no acepta más contribuciones.",
+        )
+    if payload.transaction_id is not None:
+        result = await db.execute(
+            select(Transaction.id).where(
+                Transaction.id == payload.transaction_id,
+                Transaction.user_id == user.id,
+            )
+        )
+        if result.scalar_one_or_none() is None:
+            raise HTTPException(
+                status_code=400,
+                detail="La transacción vinculada no existe para este usuario.",
+            )
+
+    contribution = GoalContribution(
+        goal_id=goal.id,
+        transaction_id=payload.transaction_id,
+        amount=payload.amount,
+        occurred_at=payload.occurred_at or datetime.now(timezone.utc),
+    )
+    db.add(contribution)
+    goal.current_amount = Decimal(goal.current_amount or 0) + payload.amount
+    if Decimal(goal.current_amount) >= Decimal(goal.target_amount):
+        goal.status = "achieved"
+    await db.flush()
+    return contribution
+
+
+@router.post("/{goal_id}/contributions", response_model=GoalContributionResult)
+async def add_goal_contribution(
+    goal_id: uuid.UUID,
+    payload: GoalContributionCreate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    goal = await _get_goal(db, user_id=user.id, goal_id=goal_id)
+    contribution = await _create_goal_contribution(goal, payload, db, user)
+    await db.commit()
+    await db.refresh(goal)
+    await db.refresh(contribution)
+    return GoalContributionResult(goal=goal, contribution=contribution)
 
 
 @router.post("/{goal_id}/contribute", response_model=GoalResponse)
@@ -150,21 +255,8 @@ async def contribute_to_goal(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(current_user),
 ):
-    result = await db.execute(
-        select(Goal).where(Goal.id == goal_id, Goal.user_id == user.id)
-    )
-    goal = result.scalar_one_or_none()
-    if not goal:
-        raise HTTPException(status_code=404, detail="Meta no encontrada.")
-
-    if goal.status != "active":
-        raise HTTPException(status_code=400, detail="Solo se puede contribuir a metas activas.")
-
-    goal.current_amount = float(goal.current_amount) + payload.amount
-
-    if float(goal.current_amount) >= float(goal.target_amount):
-        goal.status = "completed"
-
+    goal = await _get_goal(db, user_id=user.id, goal_id=goal_id)
+    await _create_goal_contribution(goal, payload, db, user)
     await db.commit()
     await db.refresh(goal)
     return goal
@@ -176,13 +268,7 @@ async def delete_goal(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(current_user),
 ):
-    result = await db.execute(
-        select(Goal).where(Goal.id == goal_id, Goal.user_id == user.id)
-    )
-    goal = result.scalar_one_or_none()
-    if not goal:
-        raise HTTPException(status_code=404, detail="Meta no encontrada.")
-
+    goal = await _get_goal(db, user_id=user.id, goal_id=goal_id)
     goal.status = "abandoned"
     await db.commit()
     await db.refresh(goal)

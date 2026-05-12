@@ -29,6 +29,9 @@ class User(Base):
         String(50), nullable=False, default="America/Costa_Rica"
     )
     currency: Mapped[str] = mapped_column(String(10), nullable=False, default="CRC")
+    display_currency: Mapped[str] = mapped_column(
+        String(3), nullable=False, default="CRC"
+    )
     locale: Mapped[str] = mapped_column(String(10), nullable=False, default="es-CR")
     shortcut_token: Mapped[str] = mapped_column(
         String(128), nullable=False, unique=True
@@ -53,3 +56,4 @@ class User(Base):
     goals: Mapped[list["Goal"]] = relationship(back_populates="user")  # noqa: F821
     weekly_reports: Mapped[list["WeeklyReport"]] = relationship(back_populates="user")  # noqa: F821
     debts: Mapped[list["Debt"]] = relationship(back_populates="user")  # noqa: F821
+    categories: Mapped[list["UserCategory"]] = relationship(back_populates="user")  # noqa: F821

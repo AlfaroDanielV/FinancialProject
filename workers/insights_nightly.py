@@ -33,6 +33,7 @@ from sqlalchemy import select
 from api.database import AsyncSessionLocal
 from api.logging_config import setup_logging
 from api.models.user import User
+from api.services.dashboard.materialized import refresh_dashboard_materialized_views
 from api.services.insights.lifecycle import ExpireStats, expire_stale
 from api.services.insights.nightly_runner import (
     NightlyRunStats,
@@ -60,6 +61,7 @@ class NightlyWorkerStats:
     expired_active: int = 0
     raw_quotes_redacted: int = 0
     hard_deleted: int = 0
+    dashboard_materialized_refreshed: bool = False
     failed_user_ids: list[str] = field(default_factory=list)
 
 
@@ -91,6 +93,17 @@ async def _run_global_expire(*, now: datetime) -> ExpireStats:
         stats = await expire_stale(db, now=now)
         await db.commit()
         return stats
+
+
+async def _refresh_dashboard_views() -> bool:
+    try:
+        async with AsyncSessionLocal() as db:
+            await refresh_dashboard_materialized_views(db)
+            await db.commit()
+        return True
+    except Exception:
+        log.exception("dashboard_materialized_refresh_failed")
+        return False
 
 
 async def run_nightly_for_all_users(
@@ -130,11 +143,13 @@ async def run_nightly_for_all_users(
     summary.expired_active = expire_stats.expired_active
     summary.raw_quotes_redacted = expire_stats.raw_quotes_redacted
     summary.hard_deleted = expire_stats.hard_deleted
+    summary.dashboard_materialized_refreshed = await _refresh_dashboard_views()
 
     log.info(
         "insights_nightly_done users=%d ok=%d failed=%d "
         "created=%d updated=%d reinforced=%d gaps_created=%d "
-        "expired_active=%d raw_quotes_redacted=%d hard_deleted=%d",
+        "expired_active=%d raw_quotes_redacted=%d hard_deleted=%d "
+        "dashboard_mv_refreshed=%s",
         summary.users_scanned,
         summary.users_succeeded,
         summary.users_failed,
@@ -145,6 +160,7 @@ async def run_nightly_for_all_users(
         summary.expired_active,
         summary.raw_quotes_redacted,
         summary.hard_deleted,
+        summary.dashboard_materialized_refreshed,
     )
     return summary
 

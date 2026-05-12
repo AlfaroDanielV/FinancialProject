@@ -1,6 +1,6 @@
 # Phase 6d B12 Test Guide
 
-Status: READY_FOR_PRODUCTION_DOGFOODING
+Status: HISTORICAL_B12_RUNBOOK
 Owner: Daniel
 Date: 2026-05-12
 
@@ -9,6 +9,10 @@ retrospective and friction log live in `docs/phase-6d-retrospective.md`.
 
 B12 only passes when Daniel completes the real self-onboarding flow in
 production without manual DB inserts, seed scripts, or private shortcuts.
+
+Historical note: B13 closed by explicit operator override after local Telegram
+polling + HTTPS tunnel testing. This guide remains useful for any later
+production replay before beta.
 
 ---
 

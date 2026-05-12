@@ -36,7 +36,10 @@ A personal finance agent that automates transaction capture, parses bank emails,
 2. **Stabilization** — 4+ weeks of reliable daily use with accurate weekly reports
 3. **Product** — Multi-tenant SaaS sold to individuals and couples via Telegram bot, API-backed LLM, chat-native UX
 
-The product is **not** a dashboard app. It's a financial assistant that lives in a messaging thread. The Phase 6d onboarding SPA is the only web surface; everything else is chat.
+The product is **not** a dashboard-first app. It is a financial assistant
+that lives in a messaging thread. The SPA exists for onboarding and the
+Phase 6e Centro Financiero read/edit surface; transaction capture remains
+Telegram-first.
 
 ---
 
@@ -54,7 +57,7 @@ The product is **not** a dashboard app. It's a financial assistant that lives in
 | **Messaging** | Telegram Bot API (aiogram v3) | NOT WhatsApp |
 | **Email** | Gmail API | OAuth2, per-bank parsers |
 | **LLM** | Anthropic API (Haiku for extraction, Sonnet for queries) | Not self-hosted |
-| **Onboarding SPA** | Vite + React + Tailwind + Zod | Phase 6d only |
+| **SPA** | Vite + React + Tailwind + Zod | Phase 6d onboarding + Phase 6e Centro Financiero |
 | **Transaction Capture** | iPhone Shortcuts → POST webhook | `X-Shortcut-Token` header |
 | **Containerization** | Docker Compose (dev), Azure Container Apps (prod) | |
 | **Settings** | Pydantic `BaseSettings` | Reads from `.env` |
@@ -80,9 +83,10 @@ finance-agent/
 │   ├── routers/                # transactions, accounts, recurring_bills, bill_occurrences,
 │   │                           # custom_events, notification_rules, notifications, calendar,
 │   │                           # jobs, gmail/oauth, auth (magic link), onboarding, queries,
-│   │                           # nudges, telegram, users, agent
+│   │                           # nudges, telegram, users, agent, categories, dashboard, transfers
 │   ├── services/               # amortization, recurrence, dedup, email_parser,
-│   │                           # nudges/*, insights/*, gmail/*, finance/*, auth/*, budget
+│   │                           # nudges/*, insights/*, gmail/*, finance/*, auth/*,
+│   │                           # budget, categories, transfers, dashboard/*
 │   ├── models/__init__.py      # All SQLAlchemy ORM models
 │   ├── schemas/                # Pydantic schemas per resource
 │   ├── middleware/             # sensitive_redaction (Phase 6c B8)
@@ -147,7 +151,7 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 
 ## Implementation Roadmap
 
-### Current Status: Phase 6d — B12 dogfooding active; production run pending
+### Current Status: Phase 6e — Centro Financiero SPA active
 
 | Phase | Focus | Done When |
 |---|---|---|
@@ -163,9 +167,11 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 | **6a** ✅ | Conversational query layer | See `11_Phases/Phase-6a-Conversational-Query-Layer.md` |
 | **6b** ✅ | Gmail ingestion + reconciliation | See `11_Phases/Phase-6b-Gmail-Ingestion.md` |
 | **6c** ✅ | User memory + behavioral profiling | See `11_Phases/Phase-6c-User-Memory.md`. Awaiting production `INSIGHTS_DISPATCHER_ENABLED=true` flip. |
-| **6d** 🚧 | Onboarding & self-registration | See "Phase 6d (active)" below |
-| **7** | Stabilize. Use it. Fix bugs. | 4+ weeks of reliable daily use |
-| **8** | Multi-tenant, auth, onboarding, billing | Onboard a second person via Telegram with accurate reports within a week |
+| **6d** ✅ | Onboarding & self-registration | Closed in B13; see "Phase 6d (closed)" below |
+| **6e** 🚧 | Centro Financiero SPA (full) | Active; B1-B3 implemented, B4 accounts module next |
+| **P7** | Affordability / pushback engine | Deterministic affordability checks + LLM explanation wrapper |
+| **P8** | Beta users | Onboard a second person via Telegram with accurate reports within a week |
+| **P9** | SaaS hardening | Multi-tenant auth, billing, compliance, observability |
 
 ### Phase Gate Rule
 
@@ -173,9 +179,13 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 
 ---
 
-## Phase 6d (active) — Onboarding & self-registration
+## Phase 6d (closed) — Onboarding & self-registration
 
-Self-onboarding is the explicit P8 gate. B1–B11 are code-complete locally.
+Self-onboarding is the explicit P8 gate. B1–B13 are closed. B13 closed by
+operator approval on 2026-05-12 after local Telegram polling + HTTPS tunnel
+testing verified the critical B12 path. The original production-dogfood
+retrospective remains the historical B12 log and records that this was an
+operator override rather than a fully filled production friction log.
 
 - **B1** schema delta — `magic_link_tokens`, `recurring_incomes`, `lazy_detection_events` (migration 0016).
 - **B2** onboarding backend — `api/routers/onboarding.py`, `api/routers/recurring_incomes.py`, schemas + `api/services/finance/`.
@@ -188,11 +198,88 @@ Self-onboarding is the explicit P8 gate. B1–B11 are code-complete locally.
 - **B9** conversational account-creation mini-flow in Redis (`telegram:account_creation:{user_id}`, TTL 10 min). Supports manual `crear cuenta ...`, B8 lazy-triggered name prefill, `/cancel`, inline validation, and replay of the original transaction extraction after the account is created.
 - **B10** `/start`, `/help`, and `/setup` onboarding-aware command UX. `/start` and `/help` branch on `GET /api/v1/onboarding/status`; empty/partial users get setup guidance, complete users get a short command reminder, and `/setup` always mints a fresh single-use magic link.
 - **B11** E2E coverage for the full hybrid onboarding path and lazy-only path. Tests live in `tests/test_phase_6d_b11_e2e.py`; CI runner is `.github/workflows/phase-6d-e2e.yml`.
-- **B12 active** — retrospective/runbook opened at `docs/phase-6d-retrospective.md`. This block cannot close until Daniel completes the production self-onboarding run and fills the real friction log.
+- **B12** local dogfood accepted by operator override — local polling + HTTPS
+  tunnel exposed the magic-link SPA path, including the Telegram inline URL
+  constraint against `localhost`. Historical notes live in
+  `docs/phase-6d-retrospective.md`.
+- **B13** docs freeze — `docs/phase-6d-decisions.md` is frozen,
+  `docs/phase-6e-decisions.md` is stubbed, and `scripts/test_phase_6d.sh`
+  is the focused Phase 6d verification entrypoint.
 
-Verification: B11 focused tests `3 passed`; B8+B9+B10+B11+dispatcher/routing command regression `51 passed`; B2+B3+B6+B7+B8+B9+B10+B11 focused tests `59 passed`; `npm run lint` green; Python `py_compile` green; `git diff --check` green. Playwright is locked over Cypress for future browser/mobile E2E harness; current B11 CI E2E is pytest ASGI + bot pipeline plus SPA transfer budget because the repo has no browser runner yet.
+**Commands added/changed:** `/setup` always mints a new single-use setup link;
+`/cancel` clears pending write state, clarification state, and the Redis account
+creation flow; `/start` and `/help` are onboarding-aware.
 
-B12 status: `docs/phase-6d-retrospective.md` is ready for Daniel. Production run completed: no. Frictions documented: 0/5. Do not proceed to B13 until Daniel approves the filled retrospective.
+**Endpoints added/extended:** `POST /api/v1/auth/magic-link/exchange`;
+`GET /api/v1/onboarding/status`; `GET /api/v1/onboarding/categories`;
+`GET/POST/PATCH/DELETE /api/v1/accounts`; `GET/POST/PATCH/DELETE
+/api/v1/recurring-incomes`; `GET/POST/PATCH/DELETE /api/v1/debts` plus
+`GET /api/v1/debts/{id}/schedule`; `GET/POST/PATCH/DELETE
+/api/v1/recurring-bills`.
+
+**Tables added/extended:** `magic_link_tokens`, `recurring_incomes`,
+`lazy_detection_events`; `accounts` gained `currency` + `initial_balance`;
+`debts` gained Phase 6d amortization fields; Phase 4 `recurring_bills` is reused
+for fixed bills.
+
+**SPA stack/location:** Vite + React 18 + TypeScript + Tailwind + Zod +
+react-hook-form in `web/`. Dev URL is `http://localhost:5173`; local Telegram
+button testing requires an HTTPS tunnel for `SPA_BASE_URL` because Telegram
+rejects `localhost` inline keyboard URLs. Production SPA URL is configured via
+`SPA_BASE_URL` in the runtime environment.
+
+Verification: B11 focused tests `3 passed`; B8+B9+B10+B11+dispatcher/routing command regression `51 passed`; B2+B3+B6+B7+B8+B9+B10+B11 focused tests `59 passed`; `npm run lint` green; Python `py_compile` green; `git diff --check` green. B13 rerun: `scripts/test_phase_6d.sh` passed with `59 passed`, `npm run lint`, and `npm run build` on 2026-05-12. Playwright is locked over Cypress for future browser/mobile E2E harness; current B11 CI E2E is pytest ASGI + bot pipeline plus SPA transfer budget because the repo has no browser runner yet.
+
+---
+
+## Phase 6e (active) — Centro Financiero SPA
+
+Phase 6e expands the existing `web/` onboarding SPA into the full Centro
+Financiero surface. Initial scope is read/edit workflows for existing accounts,
+debts, recurring incomes, recurring bills, transactions, and insights. It must
+preserve Telegram-first product direction: the web surface is for structured
+review and editing, not a replacement for the bot.
+
+Current block status: B1-B3 implemented; B4 accounts module is next.
+
+- **B1** decisions + architecture doc expanded in `docs/phase-6e-decisions.md`.
+  Daniel approved the B1 recommendations by moving forward on 2026-05-12.
+- **B2** backend foundation implemented in Alembic migration `0017` and routers
+  under `api/routers/{goals,transfers,categories,dashboard}.py`. Existing
+  `goals` was migrated in place. `transactions.category` remains for legacy
+  flows while `transactions.category_id` points to `user_categories`.
+- **B3** dashboard home route implemented at `web/src/routes/Dashboard.tsx`.
+  `/` now renders the Centro Financiero dashboard with period selector,
+  balance header, monthly metrics, daily cash-flow sparkline, category chart,
+  upcoming payments, top active goals, top memory insights, partial-onboarding
+  CTAs, and quick links. Recharts is code-split into
+  `DashboardCharts` so the initial bundle remains under the 200KB gzip budget.
+
+**B2 endpoints:** `POST/GET/PATCH/DELETE /api/v1/goals[/{id}]`;
+`POST /api/v1/goals/{id}/contributions`; legacy
+`POST /api/v1/goals/{id}/contribute`; `POST/GET /api/v1/transfers`;
+`POST/GET/PATCH /api/v1/categories[/{id}]`;
+`GET /api/v1/dashboard/summary?period=month_current|month_prev|ytd`;
+`GET /api/v1/dashboard/cash-flow?from=YYYY-MM&to=YYYY-MM`;
+`GET /api/v1/dashboard/daily-cash-flow?from=YYYY-MM-DD&to=YYYY-MM-DD`;
+`GET /api/v1/users/me/insights/summary`.
+
+**B2 tables/columns:** `goal_contributions`, `transfers`, `user_categories`,
+`currency_rates`, `transactions.transfer_id`, `transactions.category_id`,
+`users.display_currency`, `accounts.archived`,
+`magic_link_tokens.target_path`, and materialized views
+`mv_monthly_summary_by_user`, `mv_yearly_summary_by_user`.
+
+**B2 verification:** Alembic `0017 (head)` applied locally. Focused tests
+`tests/test_phase_6e_b2_backend.py` passed (`4 passed`). Regression slice
+`tests/test_phase_6d_b2_endpoints.py`, `tests/test_phase_6d_b3_magic_link.py`,
+and `tests/test_phase_6d_b10_welcome.py` passed (`34 passed`). Syntax compile
+passed with `PYTHONPYCACHEPREFIX=/tmp/phase6e-pycache`.
+
+**B3 verification:** `npm run lint` passed, `npm run build` passed
+(`index` JS gzip ~119KB, `DashboardCharts` chunk gzip ~106KB), Python compile
+passed, `tests/test_phase_6e_b2_backend.py` passed (`4 passed`), and the 6d
+onboarding/auth regression slice passed (`34 passed`).
 
 ---
 
@@ -325,7 +412,7 @@ The LLM's system prompt enforces this separation:
 ## What NOT to Build (Until Phase 8 Is Done)
 
 - ❌ WhatsApp channel (use Telegram)
-- ❌ Dashboard or web UI beyond the Phase 6d onboarding SPA (main product remains Telegram-first; Centro Financiero is Phase 6e)
+- ❌ Web UI outside the active Phase 6e Centro Financiero scope. The product remains Telegram-first; the SPA is for structured review/editing.
 - ❌ Investment portfolio analysis beyond manual tracking
 - ❌ ML-based categorization (rule-based first)
 - ❌ Family/household support

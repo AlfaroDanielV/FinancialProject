@@ -1,9 +1,15 @@
 # Phase 6d — Onboarding & Self-Registration
 
-**Status:** Decisions locked, implementation pending
+**STATUS:** FROZEN
+**Status note:** B13 closed on 2026-05-12 by operator approval after local
+Telegram polling + HTTPS tunnel testing. The original B12 production-dogfood
+friction log was not filled; future production-only frictions move to 6e or
+post-6d backlog.
+
 **Predecessor:** Phase 6c (User memory / behavioral profiling)
 **Successor:** Phase 6e (Centro Financiero SPA — full)
 **Date locked:** 2026-05-05
+**Date frozen:** 2026-05-12
 
 ---
 
@@ -354,16 +360,21 @@ Calendar realista (con interrupciones, feedback, debug): **3–4 semanas.**
 
 ---
 
-## 7. Done de Phase 6d (gate para iniciar 6b o 6c)
+## 7. Done de Phase 6d (gate para iniciar 6e)
 
 Phase 6d se considera cerrada cuando:
 
 - Los 13 bloques tienen done-when verdes.
-- Daniel completó self-onboarding en producción.
+- Daniel aprobó cerrar B12/B13 tras prueba local con Telegram polling +
+  HTTPS tunnel. Nota histórica: el done-when original pedía dogfooding en
+  producción; queda registrado como override explícito del operador, no como
+  evidencia de producción completa.
 - E2E tests corriendo verdes en CI.
 - `CLAUDE.md` actualizado.
 - Roadmap shifted (6e era 6d, etc.).
-- Magic-link flow probado en iOS y Android real.
+- Magic-link flow probado localmente con Telegram + URL HTTPS pública para el
+  SPA; pruebas iOS/Android reales quedan como riesgo de 6e/post-6d si no se
+  ejecutan antes de beta.
 
 ---
 
@@ -640,11 +651,13 @@ self-onboarding antes del dogfooding de B12.
 
 ### 9.18 B12 production dogfooding runbook opened
 
-B12 no se puede cerrar desde el repo: Daniel tiene que pasar por el flow real
-en producción y documentar fricciones reales. Para arrancar el gate se creó
-`docs/phase-6d-retrospective.md`.
+El criterio original de B12 pedía que Daniel pasara por el flow real en
+producción y documentara fricciones reales. Para arrancar ese gate se creó
+`docs/phase-6d-retrospective.md`. En B13, Daniel aprobó avanzar con un
+override explícito después de una prueba local en Telegram polling + HTTPS
+tunnel; ver §9.19.
 
-- **Status B12:** activo, pendiente de producción. No cerrado.
+- **Status B12 original:** reemplazado por override explícito en B13.
 - **Runbook:** el doc cubre preflight, creación de usuario limpio vía API si
   Daniel no quiere resetear su usuario real, pairing de Telegram, flujo
   Telegram→SPA, creación de cuenta/ingreso/deuda/gasto fijo, vuelta al bot,
@@ -656,3 +669,22 @@ en producción y documentar fricciones reales. Para arrancar el gate se creó
   post-6d / 6e.
 - **Prohibido:** seeds, inserts manuales o shortcuts paralelos para crear las
   entidades estructurales del usuario.
+
+### 9.19 B13 freeze + 6e handoff
+
+B13 cierra Phase 6d por aprobación explícita de Daniel después de una prueba
+local en Telegram polling con SPA expuesto por HTTPS tunnel. Se documenta el
+override porque el criterio original de B12 pedía producción + cinco
+fricciones reales.
+
+- **Freeze:** este documento queda `STATUS: FROZEN` con fecha 2026-05-12.
+- **Docs:** `CLAUDE.md` ahora describe 6d como cerrado, lista comandos,
+  endpoints, tablas y stack SPA; `docs/phase-6e-decisions.md` arranca como
+  stub activo de Centro Financiero SPA.
+- **Runbook:** `scripts/test_phase_6d.sh` concentra la regresión de 6d:
+  tests B2/B3/B6/B7/B8/B9/B10/B11 + lint/build del SPA.
+- **Verificación B13:** `scripts/test_phase_6d.sh` verde el 2026-05-12:
+  `59 passed`, `npm run lint` y `npm run build`.
+- **Riesgo heredado:** no se inventa una retrospectiva de producción; la
+  fricción real observada fue que Telegram rechaza inline keyboard URLs con
+  `localhost`, mitigada usando un HTTPS tunnel para `SPA_BASE_URL`.

@@ -196,7 +196,7 @@ export default function BillsNew() {
     try {
       const [billsResp, categoriesResp] = await Promise.all([
         api.get("/recurring-bills", { params: { is_active: true } }),
-        api.get("/categories"),
+        api.get("/onboarding/categories"),
       ]);
       setBills(RecurringBillList.parse(billsResp.data));
       const parsedCategories = CategoriesResponse.safeParse(categoriesResp.data);
