@@ -56,6 +56,8 @@ async def _allow_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pipeline, "assert_within_budget", _noop)
     monkeypatch.setattr(pipeline, "load_clarification", _none)
     monkeypatch.setattr(pipeline, "clear_clarification", _noop)
+    monkeypatch.setattr(pipeline, "load_account_creation", _none)
+    monkeypatch.setattr(pipeline, "clear_account_creation", _noop)
     monkeypatch.setattr(pipeline, "enqueue_insight_extraction", _noop_enqueue)
 
 

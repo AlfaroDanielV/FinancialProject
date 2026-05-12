@@ -46,6 +46,15 @@ from api.services.telegram_dispatcher import (
 )
 
 from . import messages_es
+from .account_creation import (
+    AccountCreationError,
+    clear_account_creation,
+    handle_account_creation_reply,
+    load_account_creation,
+    parse_account_creation_start,
+    save_lazy_account_creation,
+    start_account_creation,
+)
 from .clarification import (
     ClarificationState,
     clear_clarification,
@@ -55,6 +64,7 @@ from .clarification import (
 )
 from .commit import commit_pending
 from .formatting import format_amount
+from .onboarding_welcome import build_onboarding_reply
 from .pending import (
     PendingAction,
     clear_pending,
@@ -170,7 +180,8 @@ async def process_message(
     # free of LLM cost and lets _simulate exercise them without a token.
     lowered = text.strip().lower()
     if lowered in _COMMAND_HELP:
-        return BotReply(text=messages_es.HELP_TEXT)
+        reply = await build_onboarding_reply(user=user, db=db)
+        return BotReply(text=reply.text)
     if lowered in _COMMAND_UNDO:
         await clear_clarification(user_id=user.id, redis=redis)
         _ok, msg = await run_undo(user=user, db=db, redis=redis)
@@ -184,7 +195,58 @@ async def process_message(
             await db.commit()
         await clear_pending(user_id=user.id, redis=redis)
         await clear_clarification(user_id=user.id, redis=redis)
+        await clear_account_creation(user_id=user.id, redis=redis)
         return BotReply(text=messages_es.CANCELLED)
+
+    # ── account-creation round-trip ──
+    # Phase 6d B9: this conversational flow owns its replies while active,
+    # including "sí" in the confirmation step. That must beat the generic
+    # pending-action confirmation handler below.
+    pending_account = await load_account_creation(user_id=user.id, redis=redis)
+    if pending_account is not None:
+        try:
+            outcome = await handle_account_creation_reply(
+                user=user,
+                text=text,
+                state=pending_account,
+                db=db,
+                redis=redis,
+            )
+        except AccountCreationError as exc:
+            await clear_account_creation(user_id=user.id, redis=redis)
+            return BotReply(text=str(exc))
+
+        if outcome.account is not None and outcome.origin_extraction:
+            try:
+                followup_extraction = ExtractionResult.model_validate(
+                    outcome.origin_extraction
+                )
+            except ValidationError:
+                return BotReply(text=outcome.text)
+            followup = await _route_extraction(
+                user=user,
+                text=text,
+                extraction=followup_extraction,
+                today=today,
+                db=db,
+                redis=redis,
+            )
+            return BotReply(
+                text=f"{outcome.text}\n\n{followup.text}",
+                buttons=followup.buttons,
+            )
+        return BotReply(text=outcome.text)
+
+    starts_account_creation, account_name = parse_account_creation_start(text)
+    if starts_account_creation:
+        await clear_clarification(user_id=user.id, redis=redis)
+        return BotReply(
+            text=await start_account_creation(
+                user_id=user.id,
+                redis=redis,
+                name=account_name,
+            )
+        )
 
     # ── clarification round-trip ──
     # If the previous dispatch returned AskClarification, any non-command
@@ -418,6 +480,12 @@ async def _apply_decision(
             await db.commit()
         return BotReply(text=decision.question_es)
     if isinstance(decision, LazyDetectionPrompt):
+        await save_lazy_account_creation(
+            user_id=user.id,
+            suggested_name=decision.hint_text,
+            origin_extraction=decision.origin_extraction,
+            redis=redis,
+        )
         if telemetry_persisted:
             await db.commit()
         return BotReply(text=decision.message_es)

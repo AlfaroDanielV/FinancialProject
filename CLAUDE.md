@@ -147,7 +147,7 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 
 ## Implementation Roadmap
 
-### Current Status: Phase 6d — B8 lazy detection closed; B9 next
+### Current Status: Phase 6d — B12 dogfooding active; production run pending
 
 | Phase | Focus | Done When |
 |---|---|---|
@@ -175,7 +175,7 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 
 ## Phase 6d (active) — Onboarding & self-registration
 
-Self-onboarding is the explicit P8 gate. B1–B8 are code-complete locally.
+Self-onboarding is the explicit P8 gate. B1–B11 are code-complete locally.
 
 - **B1** schema delta — `magic_link_tokens`, `recurring_incomes`, `lazy_detection_events` (migration 0016).
 - **B2** onboarding backend — `api/routers/onboarding.py`, `api/routers/recurring_incomes.py`, schemas + `api/services/finance/`.
@@ -185,9 +185,14 @@ Self-onboarding is the explicit P8 gate. B1–B8 are code-complete locally.
 - **B6** `/debts/new` SPA debt creation + alias `/onboarding/deudas`. The form covers French-amortization parameters, client-side cuota preview, Ley 7472 prepago warning, and server schedule pagination via `GET /api/v1/debts/{id}/schedule`.
 - **B7** `/bills/new` SPA recurring bills CRUD + alias `/onboarding/gastos`. Reuses existing Phase 4 `recurring_bills`; categories come from Phase 6d `CATEGORIES_CR`, and the backend keeps legacy bill-category strings compatible.
 - **B8** lazy detection in the write dispatcher for unknown account/bank hints. The extractor prompt now explicitly fills `account_hint`; deterministic matching uses threshold `0.85`; unknown hints return a create/link prompt and every hint path writes `lazy_detection_events` telemetry.
-- **B9 next** — conversational account-creation mini-flow in Redis, triggered by the B8 create path.
+- **B9** conversational account-creation mini-flow in Redis (`telegram:account_creation:{user_id}`, TTL 10 min). Supports manual `crear cuenta ...`, B8 lazy-triggered name prefill, `/cancel`, inline validation, and replay of the original transaction extraction after the account is created.
+- **B10** `/start`, `/help`, and `/setup` onboarding-aware command UX. `/start` and `/help` branch on `GET /api/v1/onboarding/status`; empty/partial users get setup guidance, complete users get a short command reminder, and `/setup` always mints a fresh single-use magic link.
+- **B11** E2E coverage for the full hybrid onboarding path and lazy-only path. Tests live in `tests/test_phase_6d_b11_e2e.py`; CI runner is `.github/workflows/phase-6d-e2e.yml`.
+- **B12 active** — retrospective/runbook opened at `docs/phase-6d-retrospective.md`. This block cannot close until Daniel completes the production self-onboarding run and fills the real friction log.
 
-Verification: B2+B3+B6+B7+B8 focused tests `40 passed`; extractor/router/dispatcher smoke `33 passed`; `web` build/lint green from B7; `/onboarding/gastos` returns 200 on local Vite dev. Playwright E2E remains B11 per `docs/phase-6d-decisions.md`.
+Verification: B11 focused tests `3 passed`; B8+B9+B10+B11+dispatcher/routing command regression `51 passed`; B2+B3+B6+B7+B8+B9+B10+B11 focused tests `59 passed`; `npm run lint` green; Python `py_compile` green; `git diff --check` green. Playwright is locked over Cypress for future browser/mobile E2E harness; current B11 CI E2E is pytest ASGI + bot pipeline plus SPA transfer budget because the repo has no browser runner yet.
+
+B12 status: `docs/phase-6d-retrospective.md` is ready for Daniel. Production run completed: no. Frictions documented: 0/5. Do not proceed to B13 until Daniel approves the filled retrospective.
 
 ---
 

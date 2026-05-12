@@ -36,8 +36,14 @@ from api.redis_client import get_redis
 from app.queries.history import clear_history
 
 from . import messages_es
+from .account_creation import clear_account_creation
 from .app import get_bot, get_llm_client
 from .delivery_send import send_chunked
+from .onboarding_welcome import (
+    SETUP_BUTTON_LABEL,
+    OnboardingReply,
+    build_onboarding_reply,
+)
 from .pairing import consume_pairing_code, resolve_pairing_code
 from .clarification import clear_clarification
 from .pending import clear_pending, load_pending
@@ -104,6 +110,16 @@ def _kb(reply: BotReply) -> Optional[InlineKeyboardMarkup]:
     )
 
 
+def _setup_kb(reply: OnboardingReply) -> Optional[InlineKeyboardMarkup]:
+    if not reply.setup_url:
+        return None
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=SETUP_BUTTON_LABEL, url=reply.setup_url)]
+        ]
+    )
+
+
 async def _send(message: Message, reply: BotReply) -> None:
     """Send `reply` to Telegram, chunked + sanitized for HTML safety.
 
@@ -165,12 +181,13 @@ async def on_start(message: Message, command: CommandObject) -> None:
     async with AsyncSessionLocal() as db:
         existing = await user_by_telegram_id(telegram_user_id=tg_id, db=db)
         if existing is not None and not command.args:
-            # Already paired — greet and show capabilities.
-            await message.answer(
-                messages_es.PAIR_SUCCESS.format(name=first_name)
-                + "\n\n"
-                + messages_es.HELP_TEXT
+            reply = await build_onboarding_reply(
+                user=existing,
+                db=db,
+                first_name=first_name,
+                include_setup_link=True,
             )
+            await message.answer(reply.text, reply_markup=_setup_kb(reply))
             return
 
         if not command.args:
@@ -199,9 +216,14 @@ async def on_start(message: Message, command: CommandObject) -> None:
 
         await bind_telegram_id(user=candidate, telegram_user_id=tg_id, db=db)
         await consume_pairing_code(code=code, redis=redis)
-        await message.answer(
-            messages_es.PAIR_SUCCESS.format(name=first_name)
+        reply = await build_onboarding_reply(
+            user=candidate,
+            db=db,
+            first_name=first_name,
+            include_setup_link=True,
+            paired_now=True,
         )
+        await message.answer(reply.text, reply_markup=_setup_kb(reply))
 
 
 # ── /help, /whoami, /cancel, /undo ────────────────────────────────────────────
@@ -209,7 +231,17 @@ async def on_start(message: Message, command: CommandObject) -> None:
 
 @router.message(Command("help"))
 async def on_help(message: Message) -> None:
-    await message.answer(messages_es.HELP_TEXT)
+    if message.from_user is None:
+        return
+    async with AsyncSessionLocal() as db:
+        user = await user_by_telegram_id(
+            telegram_user_id=message.from_user.id, db=db
+        )
+        if user is None:
+            await message.answer(messages_es.PAIR_PROMPT)
+            return
+        reply = await build_onboarding_reply(user=user, db=db)
+    await message.answer(reply.text)
 
 
 @router.message(Command("cancel"))
@@ -233,6 +265,7 @@ async def on_cancel(message: Message) -> None:
             await db.commit()
         await clear_pending(user_id=user.id, redis=redis)
         await clear_clarification(user_id=user.id, redis=redis)
+        await clear_account_creation(user_id=user.id, redis=redis)
         # Phase 6c B7: also clear an in-progress /editar_memoria reply.
         from .memory_handlers import clear_memory_edit_state
         await clear_memory_edit_state(user_id=user.id, redis=redis)

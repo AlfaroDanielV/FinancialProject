@@ -73,6 +73,8 @@ class LazyDetectionPrompt:
     """
 
     message_es: str
+    hint_text: str
+    origin_extraction: dict[str, Any]
     telemetry_events: list[LazyDetectionTelemetry] = field(default_factory=list)
 
 
@@ -263,6 +265,8 @@ async def _dispatch_log(
                     f"{extraction.account_hint}. ¿La creamos? Decime crear "
                     'para hacerlo acá rápido, o link para abrirlo en el SPA.'
                 ),
+                hint_text=extraction.account_hint,
+                origin_extraction=extraction.model_dump(mode="json"),
                 telemetry_events=telemetry_events,
             )
     else:

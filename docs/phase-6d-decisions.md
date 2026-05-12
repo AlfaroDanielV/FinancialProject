@@ -561,3 +561,98 @@ resolución y decisión son determinísticas.
 - **Status B8:** focused B8 DB `2 passed`, dispatcher unit `21 passed`,
   extractor/router/dispatcher smoke `33 passed`, y regresión
   B2+B3+B6+B7+B8 `40 passed`.
+
+### 9.15 B9 conversational account creation → Redis state machine
+
+B9 implementa el mini-flow conversacional para crear cuentas desde Telegram,
+sin duplicar contratos de backend. El flow vive en Redis y llama el mismo
+endpoint/service path de `POST /api/v1/accounts` que usa el SPA.
+
+- **Estado Redis:** `telegram:account_creation:{user_id}` con TTL 10 min.
+  Sub-estados: `awaiting_start`, `asking_name`, `asking_type`,
+  `asking_currency`, `asking_balance`, `confirming`.
+- **Entrada manual:** mensajes como `crear cuenta` o `crear cuenta BAC`
+  arrancan el flow sin LLM y limpian cualquier aclaración vieja.
+- **Entrada lazy B8:** `LazyDetectionPrompt` ahora transporta `hint_text` y
+  `origin_extraction`. El pipeline guarda estado `awaiting_start` con nombre
+  sugerido; si el usuario dice `crear`, se salta `asking_name`.
+- **Validación inline:** tipo (`checking|savings|credit|investment`), moneda
+  (`CRC|USD`) y saldo inicial se validan antes de confirmar. Cuentas no-crédito
+  no pueden iniciar en negativo.
+- **Confirmación:** al responder `sí`, el bot crea la cuenta, limpia Redis y,
+  si venía de lazy detection, re-dispatcha la extracción original para proponer
+  la transacción ya asociada a la cuenta nueva.
+- **Cancelación:** `/cancel` limpia `pending`, `clarification`,
+  `account_creation` y el editor de memoria; no escribe cuenta.
+- **Status B9:** focused B9 `9 passed`, regresión B8+B9+dispatcher/routing
+  `38 passed`, y regresión B2+B3+B6+B7+B8+B9 `49 passed`.
+
+### 9.16 B10 `/start`, `/help`, `/setup` onboarding-aware UX
+
+B10 reemplaza el welcome/help estático por copy que consulta el estado real de
+onboarding y mantiene `/setup` como generador permanente de magic links.
+
+- **Fuente de verdad:** `bot/onboarding_welcome.py` llama
+  `api.routers.onboarding.onboarding_status`, el mismo contrato de
+  `GET /api/v1/onboarding/status` usado por el SPA.
+- **Estados:** DB vacía muestra bienvenida + setup web + alternativa
+  conversacional (`crear cuenta BAC`). Estado parcial lista lo que falta
+  (`cuentas`, `ingresos`, `deudas`, `gastos fijos`). Estado completo muestra
+  recordatorio breve de comandos.
+- **Links:** `/start` genera botón URL al setup web para usuarios vacíos o
+  parciales. Usuarios completos no reciben link automático; `/setup` sigue
+  disponible.
+- **`/setup`:** refactorizado para usar el helper compartido y siempre mintar
+  un link single-use nuevo, TTL 30 min.
+- **Pairing:** `/start <code>` pareado exitoso cae directo al mismo welcome
+  onboarding-aware.
+- **Status B10:** focused B10 `7 passed`, regresión B8+B9+B10+dispatcher/routing
+  `48 passed`, y regresión B2+B3+B6+B7+B8+B9+B10 `56 passed`.
+
+### 9.17 B11 E2E coverage + runner decision
+
+B11 agrega cobertura end-to-end para los dos caminos críticos de
+self-onboarding antes del dogfooding de B12.
+
+- **Runner decision:** Playwright queda elegido sobre Cypress para cualquier
+  harness browser/mobile real que se agregue después. En B11 no se introduce
+  dependencia browser porque el repo no tenía runner Node E2E; el gate CI se
+  implementa con pytest cruzando las costuras reales API/bot/DB/cookie y un
+  budget de transferencia del build SPA.
+- **Full hybrid path:** `tests/test_phase_6d_b11_e2e.py` simula `/start`,
+  extrae el magic-link, hace exchange real contra
+  `/api/v1/auth/magic-link/exchange`, usa la cookie `fa_session`, crea cuenta,
+  salario, aguinaldo linkeado, deuda y gasto fijo por endpoints reales, valida
+  `onboarding/status`, vuelve al bot y propone `gasté 5000... con la BAC`
+  contra la cuenta creada.
+- **Lazy-only path:** el usuario empieza directo con `gasté 5000 con la BAC`;
+  B8 genera prompt lazy, B9 crea la cuenta en Redis/chat y el pipeline reusa la
+  extracción original para proponer la transacción contra la cuenta nueva.
+- **Performance budget:** el test mide p95 de endpoints onboarding (<500 ms)
+  y estima carga inicial SPA <2 s en slow-4G usando gzip sobre el build Vite.
+- **CI:** `.github/workflows/phase-6d-e2e.yml` corre B11 en PR/push a `main`
+  cuando cambian `web/`, endpoints/auth onboarding, dispatch/extractor, `bot/`
+  o el test/workflow.
+- **Status B11:** focused B11 `3 passed`, regresión
+  B8+B9+B10+B11+dispatcher/routing `51 passed`, y regresión
+  B2+B3+B6+B7+B8+B9+B10+B11 `59 passed`. `npm run lint`, `py_compile` y
+  `git diff --check` verdes.
+
+### 9.18 B12 production dogfooding runbook opened
+
+B12 no se puede cerrar desde el repo: Daniel tiene que pasar por el flow real
+en producción y documentar fricciones reales. Para arrancar el gate se creó
+`docs/phase-6d-retrospective.md`.
+
+- **Status B12:** activo, pendiente de producción. No cerrado.
+- **Runbook:** el doc cubre preflight, creación de usuario limpio vía API si
+  Daniel no quiere resetear su usuario real, pairing de Telegram, flujo
+  Telegram→SPA, creación de cuenta/ingreso/deuda/gasto fijo, vuelta al bot,
+  path lazy-only y recuperación con `/setup`.
+- **Gate explícito:** mínimo 5 observaciones reales en la tabla de fricciones,
+  o explicación escrita de por qué una corrida con menos observaciones cuenta
+  como dogfooding serio.
+- **Scope cap:** parches de UX máximos 1 día. Fricciones grandes van a backlog
+  post-6d / 6e.
+- **Prohibido:** seeds, inserts manuales o shortcuts paralelos para crear las
+  entidades estructurales del usuario.

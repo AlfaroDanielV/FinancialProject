@@ -81,6 +81,8 @@ _CLEANUP_TABLES = (
     "notification_rules",
     "gmail_discovery_runs",
     "lazy_detection_events",
+    "llm_query_dispatches",
+    "llm_extractions",
     "magic_link_tokens",
     "recurring_incomes",
     "debt_payments",

@@ -19,8 +19,8 @@ from aiogram.types import (
 )
 
 from api.database import AsyncSessionLocal
-from api.services.auth.magic_link import generate_link
 
+from .onboarding_welcome import SETUP_BUTTON_LABEL, build_setup_reply
 from .user_resolver import user_by_telegram_id
 
 router = Router(name="phase6d_onboarding")
@@ -30,13 +30,6 @@ log = logging.getLogger("bot.onboarding")
 _PAIR_PROMPT = (
     "Primero pareá tu cuenta. Mandá /start con tu código de pareo."
 )
-_SETUP_HEADER = (
-    "Acá tenés tu link al setup web. Es válido por 30 minutos y se "
-    "usa una sola vez. Si lo dejás abierto y luego querés abrirlo de "
-    "nuevo, mandame /setup otra vez."
-)
-_SETUP_BUTTON_LABEL = "Abrir setup web"
-
 
 @router.message(Command("setup"))
 async def on_setup(message: Message) -> None:
@@ -49,9 +42,12 @@ async def on_setup(message: Message) -> None:
         if user is None:
             await message.answer(_PAIR_PROMPT)
             return
-        link = await generate_link(db, user_id=user.id, purpose="onboarding")
+        reply = await build_setup_reply(user=user, db=db)
 
+    assert reply.setup_url is not None
     keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=_SETUP_BUTTON_LABEL, url=link.url)]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text=SETUP_BUTTON_LABEL, url=reply.setup_url)]
+        ]
     )
-    await message.answer(_SETUP_HEADER, reply_markup=keyboard)
+    await message.answer(reply.text, reply_markup=keyboard)

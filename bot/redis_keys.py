@@ -16,6 +16,9 @@ PENDING_TTL_S = 300
 # Partial extraction awaiting the user's answer to a follow-up question.
 CLARIFICATION_TTL_S = 300
 
+# Phase 6d B9 conversational account creation.
+ACCOUNT_CREATION_TTL_S = 10 * 60
+
 # Last committed action id, for /undo.
 LAST_ACTION_TTL_S = 24 * 60 * 60
 
@@ -34,6 +37,10 @@ def pending_key(user_id: uuid.UUID | str) -> str:
 
 def clarification_key(user_id: uuid.UUID | str) -> str:
     return f"telegram:clarification:{user_id}"
+
+
+def account_creation_key(user_id: uuid.UUID | str) -> str:
+    return f"telegram:account_creation:{user_id}"
 
 
 def last_action_key(user_id: uuid.UUID | str) -> str:
