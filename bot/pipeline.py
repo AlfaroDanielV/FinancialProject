@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.queries.dispatcher import handle as query_dispatcher_handle
 from api.models.user import User
+from api.models.lazy_detection_event import LazyDetectionEvent
 from api.services.insights.extractor import (
     enqueue_insight_extraction,
     post_clarification_context,
@@ -36,6 +37,7 @@ from api.services.llm_extractor import (
 from api.services.telegram_dispatcher import (
     AskClarification,
     ConfirmResponse,
+    LazyDetectionPrompt,
     ProposeAction,
     Reject,
     ShowHelp,
@@ -366,6 +368,10 @@ async def _apply_decision(
     db: AsyncSession,
     redis: Redis,
 ) -> BotReply:
+    telemetry_persisted = _stage_lazy_detection_events(
+        user=user, decision=decision, db=db
+    )
+
     # Clarification state is tied to "we just asked a question". Any
     # decision that isn't a new question ends the clarification.
     if not isinstance(decision, AskClarification):
@@ -408,7 +414,13 @@ async def _apply_decision(
             ),
             redis=redis,
         )
+        if telemetry_persisted:
+            await db.commit()
         return BotReply(text=decision.question_es)
+    if isinstance(decision, LazyDetectionPrompt):
+        if telemetry_persisted:
+            await db.commit()
+        return BotReply(text=decision.message_es)
     if isinstance(decision, ConfirmResponse):
         return await _handle_confirm(
             user=user, yes=decision.yes, db=db, redis=redis
@@ -421,6 +433,22 @@ async def _apply_decision(
     if isinstance(decision, Reject):
         return BotReply(text=decision.message_es)
     return BotReply(text=messages_es.HELP_TEXT)
+
+
+def _stage_lazy_detection_events(*, user: User, decision, db: AsyncSession) -> bool:
+    events = getattr(decision, "telemetry_events", None) or []
+    for event in events:
+        db.add(
+            LazyDetectionEvent(
+                user_id=user.id,
+                hint_type=event.hint_type,
+                hint_text=event.hint_text,
+                fuzzy_match_score=event.fuzzy_match_score,
+                resolution=event.resolution,
+                matched_account_id=event.matched_account_id,
+            )
+        )
+    return bool(events)
 
 
 # ── handler entry for inline-keyboard callbacks ──────────────────────────────

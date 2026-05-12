@@ -131,7 +131,7 @@ All tables use UUID primary keys via `gen_random_uuid()`. Timestamps are `TIMEST
 
 All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; timestamps `TIMESTAMPTZ`.
 
-- **recurring_bills** — template for a recurring charge. `id`, `name`, `provider`, `category` (bill category enum), `amount_expected` (nullable if `is_variable_amount`), `currency`, `is_variable_amount`, `account_id` FK → accounts, `frequency` (weekly/biweekly/monthly/bimonthly/quarterly/semiannual/annual/custom), `day_of_month` (1–31, CHECK), `recurrence_rule` (iCal RRULE, required when frequency=custom), `start_date`, `end_date`, `lead_time_days`, `is_active`, `notes`, `linked_loan_id` FK → debts (nullable, `ON DELETE SET NULL`).
+- **recurring_bills** — template for a recurring charge. `id`, `name`, `provider`, `category` (Phase 6d CR category string from `CATEGORIES_CR`, with legacy Phase 4 bill-category strings still accepted), `amount_expected` (nullable if `is_variable_amount`), `currency`, `is_variable_amount`, `account_id` FK → accounts, `frequency` (weekly/biweekly/monthly/bimonthly/quarterly/semiannual/annual/custom), `day_of_month` (1–31, CHECK), `recurrence_rule` (iCal RRULE, required when frequency=custom), `start_date`, `end_date`, `lead_time_days`, `is_active`, `notes`, `linked_loan_id` FK → debts (nullable, `ON DELETE SET NULL`).
 - **bill_occurrences** — materialized instance. `id`, `recurring_bill_id` FK cascade, `due_date`, `amount_expected`, `amount_paid`, `status` (pending/paid/partially_paid/skipped/overdue/cancelled), `paid_at`, `transaction_id` FK → transactions, `notes`. **UNIQUE(recurring_bill_id, due_date)** guarantees idempotent regeneration.
 - **custom_events** — one-off or recurring calendar events not tied to a bill. `id`, `title`, `description`, `event_type` (tax_deadline/goal_milestone/income_expected/reminder/other), `event_date`, `is_all_day`, `event_time`, `amount`, `currency`, `recurrence_rule`, `is_active`.
 - **notification_rules** — advance-notice configuration. `id`, `scope` (bill/event/category_default/global_default), targets mutually exclusive per scope (enforced by CHECK `ck_notification_rules_scope_target`), `advance_days` JSONB list (descending), `is_active`. Seed: one row with `scope=global_default` and `advance_days=[7,3,1,0]`.
@@ -147,7 +147,7 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 
 ## Implementation Roadmap
 
-### Current Status: Phase 6d — B5 accounts/incomes closed; B6 next
+### Current Status: Phase 6d — B8 lazy detection closed; B9 next
 
 | Phase | Focus | Done When |
 |---|---|---|
@@ -175,16 +175,19 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 
 ## Phase 6d (active) — Onboarding & self-registration
 
-Self-onboarding is the explicit P8 gate. B1–B5 are code-complete locally.
+Self-onboarding is the explicit P8 gate. B1–B8 are code-complete locally.
 
 - **B1** schema delta — `magic_link_tokens`, `recurring_incomes`, `lazy_detection_events` (migration 0016).
 - **B2** onboarding backend — `api/routers/onboarding.py`, `api/routers/recurring_incomes.py`, schemas + `api/services/finance/`.
 - **B3** opaque magic-link cookie auth — `<selector>.<verifier>` link format, bcrypt verifier hashes, single-use atomic consumption, 4h HttpOnly `fa_session` JWT cookie. Code in `api/routers/auth.py`, `api/services/auth/`. `current_user` resolves in order: `X-Shortcut-Token` → session cookie → dev `X-User-Id` shim.
 - **B4** SPA scaffold in `web/` (Vite/React/Tailwind/Zod/react-hook-form). Vite dev proxy, credentialed axios client, Azure Static Web Apps workflow. Browser smoke pending until SWA is provisioned and `AZURE_STATIC_WEB_APPS_API_TOKEN` is set.
 - **B5** `/accounts/new` and `/incomes/new` SPA CRUD + aliases `/onboarding/cuentas`, `/onboarding/ingresos`.
-- **B6 next** — debt form + amortization preview.
+- **B6** `/debts/new` SPA debt creation + alias `/onboarding/deudas`. The form covers French-amortization parameters, client-side cuota preview, Ley 7472 prepago warning, and server schedule pagination via `GET /api/v1/debts/{id}/schedule`.
+- **B7** `/bills/new` SPA recurring bills CRUD + alias `/onboarding/gastos`. Reuses existing Phase 4 `recurring_bills`; categories come from Phase 6d `CATEGORIES_CR`, and the backend keeps legacy bill-category strings compatible.
+- **B8** lazy detection in the write dispatcher for unknown account/bank hints. The extractor prompt now explicitly fills `account_hint`; deterministic matching uses threshold `0.85`; unknown hints return a create/link prompt and every hint path writes `lazy_detection_events` telemetry.
+- **B9 next** — conversational account-creation mini-flow in Redis, triggered by the B8 create path.
 
-Verification: B2+B3 focused tests `27 passed`; `web` build/lint green; B5 routes return 200 on local Vite dev.
+Verification: B2+B3+B6+B7+B8 focused tests `40 passed`; extractor/router/dispatcher smoke `33 passed`; `web` build/lint green from B7; `/onboarding/gastos` returns 200 on local Vite dev. Playwright E2E remains B11 per `docs/phase-6d-decisions.md`.
 
 ---
 

@@ -214,17 +214,36 @@ async def test_log_expense_multiple_accounts_ambiguous_hint_clarifies(monkeypatc
 
 
 async def test_log_expense_multiple_accounts_hint_resolves(monkeypatch):
-    a = _FakeAccount(name="BAC")
+    a = _FakeAccount(name="Cuenta BAC ahorros")
     b = _FakeAccount(name="BCR")
-    _stub_accounts(monkeypatch, [a, b], a)  # resolve_account found "BAC"
+    _stub_accounts(monkeypatch, [a, b], None)
     result = await td.dispatch(
-        extraction=_extraction(account_hint="bac"),
+        extraction=_extraction(account_hint="BAC"),
         user=_user(),
         today=date(2026, 4, 20),
         db=object(),
     )
     assert isinstance(result, td.ProposeAction)
     assert result.payload["account_id"] == str(a.id)
+    assert result.telemetry_events[0].resolution == "linked_existing"
+    assert result.telemetry_events[0].fuzzy_match_score >= 0.85
+
+
+async def test_log_expense_unknown_account_hint_prompts_lazy_creation(monkeypatch):
+    cash = _FakeAccount(name="Efectivo")
+    _stub_accounts(monkeypatch, [cash], None)
+    result = await td.dispatch(
+        extraction=_extraction(account_hint="BAC"),
+        user=_user(),
+        today=date(2026, 4, 20),
+        db=object(),
+    )
+    assert isinstance(result, td.LazyDetectionPrompt)
+    assert "BAC" in result.message_es
+    assert "crear" in result.message_es
+    assert "link" in result.message_es
+    assert result.telemetry_events[0].hint_type == "bank"
+    assert result.telemetry_events[0].resolution == "pending"
 
 
 # ── log_expense: currency defaulting ──────────────────────────────────────────

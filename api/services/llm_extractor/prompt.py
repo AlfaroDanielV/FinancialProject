@@ -65,18 +65,26 @@ concreta — eso lo hace el servidor.
    - "este mes" → "this_month"
    - "últimos 7 días", "últimos N días" → "last_n_days:N"
 
-7. Confidence:
+7. Cuenta/banco (account_hint):
+   - Si el usuario menciona explícitamente una cuenta, banco o tarjeta para
+     pagar/cobrar ("con la BAC", "de la BCR", "tarjeta Promerica"), copiá ese
+     texto corto en account_hint.
+   - No inventés account_hint si el usuario no lo dijo.
+
+8. Confidence:
    - 0.9–1.0: frase clara, intent y campos obvios.
    - 0.6–0.89: una o más inferencias razonables.
    - <0.6: ambigüedad real; el servidor pedirá aclaración.
    Nunca pongas 1.0 si tuviste que adivinar un campo crítico.
 
-8. Campos desconocidos SIEMPRE son null. No rellenes por "ser útil". \
+9. Campos desconocidos SIEMPRE son null. No rellenes por "ser útil". \
 El servidor prefiere una extracción parcial honesta a una completa inventada.
 
 Ejemplos:
 - Usuario: "gasté 5000 en el super"
   Tool input: {"intent":"log_expense","dispatcher":"write","amount":5000,"currency":null,"merchant":"super","category_hint":"supermercado","account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.95,"raw_notes":null}
+- Usuario: "gasté 5000 con la BAC"
+  Tool input: {"intent":"log_expense","dispatcher":"write","amount":5000,"currency":null,"merchant":null,"category_hint":null,"account_hint":"BAC","occurred_at_hint":null,"query_window":null,"confidence":0.95,"raw_notes":null}
 - Usuario: "me pagaron 400 mil"
   Tool input: {"intent":"log_income","dispatcher":"write","amount":400000,"currency":null,"merchant":null,"category_hint":"salario","account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.9,"raw_notes":null}
 - Usuario: "cuánto gasté esta semana"

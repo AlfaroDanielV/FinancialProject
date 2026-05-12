@@ -48,6 +48,12 @@ VARIABLE_RATE_NOTICE = (
 )
 
 
+def _canonical_debt_type(debt_type: str) -> str:
+    if debt_type == "credit_card_balance":
+        return "credit_card"
+    return debt_type
+
+
 @router.post("", response_model=DebtResponse, status_code=201)
 async def create_debt(
     payload: DebtCreate,
@@ -58,7 +64,7 @@ async def create_debt(
         user_id=user.id,
         account_id=payload.account_id,
         name=payload.name,
-        debt_type=payload.debt_type,
+        debt_type=_canonical_debt_type(payload.debt_type),
         lender=payload.lender,
         original_amount=payload.original_amount,
         current_balance=payload.current_balance,
@@ -359,20 +365,10 @@ async def list_payments(
     return list(result.scalars().all())
 
 
-@router.get("/{debt_id}/amortization", response_model=AmortizationSchedule)
-async def amortization_schedule(
-    debt_id: uuid.UUID,
-    projected_rate: float | None = Query(default=None, ge=0, le=1),
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(current_user),
-):
-    result = await db.execute(
-        select(Debt).where(Debt.id == debt_id, Debt.user_id == user.id)
-    )
-    debt = result.scalar_one_or_none()
-    if not debt:
-        raise HTTPException(status_code=404, detail="Deuda no encontrada.")
-
+def _amortization_response(
+    debt: Debt,
+    projected_rate: float | None,
+) -> AmortizationSchedule:
     balance = float(debt.current_balance)
     annual_rate = float(projected_rate if projected_rate is not None else debt.interest_rate)
     monthly_payment = float(debt.minimum_payment)
@@ -399,7 +395,7 @@ async def amortization_schedule(
         annual_rate=annual_rate,
         monthly_payment=monthly_payment,
         due_day=debt.payment_due_day,
-        start_date=date.today(),
+        start_date=debt.start_date or date.today(),
         includes_insurance=debt.includes_insurance,
         insurance_monthly=insurance,
     )
@@ -439,6 +435,38 @@ async def amortization_schedule(
         variable_rate_notice=notice,
         schedule=rows,
     )
+
+
+@router.get("/{debt_id}/schedule", response_model=AmortizationSchedule)
+async def debt_schedule(
+    debt_id: uuid.UUID,
+    projected_rate: float | None = Query(default=None, ge=0, le=1),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    result = await db.execute(
+        select(Debt).where(Debt.id == debt_id, Debt.user_id == user.id)
+    )
+    debt = result.scalar_one_or_none()
+    if not debt:
+        raise HTTPException(status_code=404, detail="Deuda no encontrada.")
+    return _amortization_response(debt, projected_rate)
+
+
+@router.get("/{debt_id}/amortization", response_model=AmortizationSchedule)
+async def amortization_schedule(
+    debt_id: uuid.UUID,
+    projected_rate: float | None = Query(default=None, ge=0, le=1),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    result = await db.execute(
+        select(Debt).where(Debt.id == debt_id, Debt.user_id == user.id)
+    )
+    debt = result.scalar_one_or_none()
+    if not debt:
+        raise HTTPException(status_code=404, detail="Deuda no encontrada.")
+    return _amortization_response(debt, projected_rate)
 
 
 @router.post("/{debt_id}/early-payoff", response_model=EarlyPayoffResponse)

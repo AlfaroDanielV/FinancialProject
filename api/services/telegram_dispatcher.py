@@ -19,12 +19,22 @@ from typing import Any, Optional, Union
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.user import User
+from .dispatch.lazy_detection import classify_hint_type, match_account_hint
 from .accounts import resolve_account, list_active
 from .llm_extractor import ExtractionResult, Intent
 from .transactions import window_bounds
 
 
 # ── result variants ───────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class LazyDetectionTelemetry:
+    hint_type: str
+    hint_text: str
+    fuzzy_match_score: float | None
+    resolution: str
+    matched_account_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -39,6 +49,7 @@ class ProposeAction:
     action_type: str  # "log_expense" | "log_income"
     payload: dict[str, Any]
     summary_es: str
+    telemetry_events: list[LazyDetectionTelemetry] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -50,6 +61,19 @@ class AskClarification:
     question_es: str
     awaiting_field: str  # "amount" | "account" | "intent" | "currency"
     partial: dict[str, Any] = field(default_factory=dict)
+    telemetry_events: list[LazyDetectionTelemetry] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class LazyDetectionPrompt:
+    """The user mentioned an account/bank we cannot confidently link.
+
+    B8 only asks the action question. B9 owns the conversational account
+    creation state machine that handles the user's next "crear" response.
+    """
+
+    message_es: str
+    telemetry_events: list[LazyDetectionTelemetry] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -85,6 +109,7 @@ class Reject:
 DispatcherResult = Union[
     ProposeAction,
     AskClarification,
+    LazyDetectionPrompt,
     ConfirmResponse,
     UndoRequest,
     ShowHelp,
@@ -200,18 +225,51 @@ async def _dispatch_log(
     resolved_currency = extraction.currency or user.currency
     currency_defaulted = extraction.currency is None
 
-    # 3. Account resolution. None is acceptable when the user has zero
-    # accounts configured (the txn goes to account_id=null). Ambiguous
-    # matches with multiple accounts → clarify.
+    # 3. Account resolution. Explicit hints go through Phase 6d B8 lazy
+    # detection: unknown account/bank names prompt account creation instead
+    # of silently falling back to another account.
     accounts = await list_active(user, db)
-    account = await resolve_account(user, extraction.account_hint, db)
-    account_ambiguous = (
-        len(accounts) > 1 and account is None and bool(extraction.account_hint)
-    )
-    account_required_but_not_chosen = (
-        len(accounts) > 1 and account is None and not extraction.account_hint
-    )
-    if account_ambiguous or account_required_but_not_chosen:
+    account = None
+    telemetry_events: list[LazyDetectionTelemetry] = []
+
+    if extraction.account_hint:
+        match = match_account_hint(extraction.account_hint, accounts)
+        hint_type = classify_hint_type(extraction.account_hint)
+        telemetry_events.append(
+            LazyDetectionTelemetry(
+                hint_type=hint_type,
+                hint_text=extraction.account_hint,
+                fuzzy_match_score=match.score,
+                resolution=(
+                    "linked_existing" if match.status == "matched" else "pending"
+                ),
+                matched_account_id=match.account.id if match.account else None,
+            )
+        )
+        if match.status == "matched":
+            account = match.account
+        elif match.status == "ambiguous":
+            names = ", ".join(a.name for a in accounts)
+            return AskClarification(
+                question_es=(f"¿De qué cuenta? Opciones: {names}."),
+                awaiting_field="account",
+                partial=extraction.model_dump(mode="json"),
+                telemetry_events=telemetry_events,
+            )
+        else:
+            return LazyDetectionPrompt(
+                message_es=(
+                    "No tengo registrada una cuenta llamada "
+                    f"{extraction.account_hint}. ¿La creamos? Decime crear "
+                    'para hacerlo acá rápido, o link para abrirlo en el SPA.'
+                ),
+                telemetry_events=telemetry_events,
+            )
+    else:
+        account = await resolve_account(user, None, db)
+
+    account_required_but_not_chosen = len(accounts) > 1 and account is None
+    if account_required_but_not_chosen:
         names = ", ".join(a.name for a in accounts)
         return AskClarification(
             question_es=(
@@ -262,6 +320,7 @@ async def _dispatch_log(
         action_type=payload["action_type"],
         payload=payload,
         summary_es=summary,
+        telemetry_events=telemetry_events,
     )
 
 

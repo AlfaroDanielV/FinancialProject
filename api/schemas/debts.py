@@ -4,8 +4,24 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
-VALID_DEBT_TYPES = {"mortgage", "credit_card", "auto_loan", "personal_loan", "student_loan", "other"}
-DebtTypeEnum = Literal["mortgage", "credit_card", "auto_loan", "personal_loan", "student_loan", "other"]
+VALID_DEBT_TYPES = {
+    "mortgage",
+    "credit_card",
+    "credit_card_balance",
+    "auto_loan",
+    "personal_loan",
+    "student_loan",
+    "other",
+}
+DebtTypeEnum = Literal[
+    "mortgage",
+    "credit_card",
+    "credit_card_balance",
+    "auto_loan",
+    "personal_loan",
+    "student_loan",
+    "other",
+]
 RateTypeEnum = Literal["fixed", "variable"]
 StrategyEnum = Literal["increase_payment", "lump_sum", "aguinaldo", "reduce_term", "reduce_payment"]
 

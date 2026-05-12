@@ -4,13 +4,18 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from ..data.categories_cr import CATEGORIES_CR
 from ..models.enums import BillCategory, BillFrequency, BillOccurrenceStatus
+
+VALID_RECURRING_BILL_CATEGORIES = set(CATEGORIES_CR) | {
+    category.value for category in BillCategory
+}
 
 
 class RecurringBillCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     provider: Optional[str] = Field(None, max_length=255)
-    category: BillCategory
+    category: str = Field(..., min_length=1, max_length=50)
     amount_expected: Optional[float] = Field(None, gt=0)
     currency: str = Field("CRC", min_length=3, max_length=3)
     is_variable_amount: bool = False
@@ -26,6 +31,8 @@ class RecurringBillCreate(BaseModel):
 
     @model_validator(mode="after")
     def _validate(self):
+        if self.category not in VALID_RECURRING_BILL_CATEGORIES:
+            raise ValueError("category no está en las categorías disponibles")
         if self.frequency == BillFrequency.CUSTOM and not self.recurrence_rule:
             raise ValueError(
                 "recurrence_rule es requerido cuando frequency='custom'"
@@ -45,7 +52,7 @@ class RecurringBillCreate(BaseModel):
 class RecurringBillUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     provider: Optional[str] = Field(None, max_length=255)
-    category: Optional[BillCategory] = None
+    category: Optional[str] = Field(None, min_length=1, max_length=50)
     amount_expected: Optional[float] = Field(None, gt=0)
     currency: Optional[str] = Field(None, min_length=3, max_length=3)
     is_variable_amount: Optional[bool] = None
@@ -59,6 +66,15 @@ class RecurringBillUpdate(BaseModel):
     is_active: Optional[bool] = None
     notes: Optional[str] = None
     linked_loan_id: Optional[uuid.UUID] = None
+
+    @model_validator(mode="after")
+    def _validate(self):
+        if (
+            self.category is not None
+            and self.category not in VALID_RECURRING_BILL_CATEGORIES
+        ):
+            raise ValueError("category no está en las categorías disponibles")
+        return self
 
 
 class RecurringBillResponse(BaseModel):

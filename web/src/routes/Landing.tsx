@@ -102,7 +102,9 @@ export default function Landing() {
       ? "Cuenta guardada"
       : created === "income"
         ? "Ingreso guardado"
-        : null;
+        : created === "bill"
+          ? "Gasto fijo guardado"
+          : null;
 
   return (
     <div className="space-y-6">

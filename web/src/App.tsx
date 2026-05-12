@@ -36,7 +36,9 @@ export default function App() {
               <Route path="/incomes/new" element={<IncomesNew />} />
               <Route path="/onboarding/ingresos" element={<IncomesNew />} />
               <Route path="/debts/new" element={<DebtsNew />} />
+              <Route path="/onboarding/deudas" element={<DebtsNew />} />
               <Route path="/bills/new" element={<BillsNew />} />
+              <Route path="/onboarding/gastos" element={<BillsNew />} />
             </Routes>
           )}
         </div>

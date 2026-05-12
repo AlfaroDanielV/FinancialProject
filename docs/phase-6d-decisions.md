@@ -490,3 +490,74 @@ B5 implementa las pantallas existentes del scaffold (`/accounts/new` y
   `/accounts/new` y `/incomes/new` responden 200 en el dev server Vite;
   backend B2+B3 sigue verde con `27 passed`. No hay Playwright todavía; E2E
   real queda para B11 según §9.7.
+
+### 9.12 B6 debts SPA → create + preview + schedule
+
+B6 implementa la pantalla de deudas en el SPA existente (`/debts/new`) y el
+alias de onboarding (`/onboarding/deudas`). La pantalla queda centrada en
+captura inicial, no en edición avanzada.
+
+- **Formulario:** cubre `mortgage`, `personal_loan`,
+  `credit_card_balance`, `auto_loan`, `student_loan` y `other`; el backend
+  acepta el alias `credit_card_balance` y lo persiste como el tipo canónico
+  `credit_card` por compatibilidad con el enum existente.
+- **Amortización:** `web/src/lib/amortization.ts` comparte la fórmula PMT
+  francesa con el backend para preview local de cuota. El schedule definitivo
+  se pide al servidor con `GET /api/v1/debts/{id}/schedule`.
+- **Tabla:** el SPA muestra resumen total y una tabla paginada de 12 cuotas
+  por página, calculada desde la respuesta del servidor.
+- **Ley 7472:** el form muestra warning cuando el usuario registra comisión de
+  prepago con dos o más cuotas pagadas. Es warning, no bloqueo, porque B6 no
+  modela pagos individuales.
+- **Casos bancarios:** `tests/test_phase_6d_b6_debts.py` fija fixtures de
+  cuota nivelada estilo BAC/Promerica para proteger la fórmula contra drift.
+  Comparación con estados de cuenta reales queda para B12 dogfooding.
+- **Status B6:** `npm run lint`, `npm run build`, route smoke
+  `/debts/new -> 200`, focused B6 `7 passed`, y regresión B2+B3+B6
+  `34 passed`. No hay Playwright todavía; E2E real queda para B11 según §9.7.
+
+### 9.13 B7 recurring bills SPA → CRUD sobre Phase 4 `recurring_bills`
+
+B7 implementa la pantalla de gastos fijos en el SPA existente (`/bills/new`) y
+el alias de onboarding (`/onboarding/gastos`). Se reutiliza `recurring_bills`;
+no se crea `recurring_expenses`.
+
+- **Formulario/list:** create + list + edit inline + soft delete contra
+  `POST/GET/PATCH/DELETE /api/v1/recurring-bills`.
+- **Frecuencias B7:** el SPA ofrece `monthly`, `biweekly`, `annual` y
+  `custom`. El backend conserva las frecuencias Phase 4 existentes para
+  compatibilidad con datos previos.
+- **Categorías:** el dropdown usa `GET /api/v1/categories` (`CATEGORIES_CR`
+  locked en §9.5). El endpoint de `recurring_bills` ahora acepta esas
+  categorías CR y mantiene compatibles los valores legacy de `BillCategory`.
+  Esto resuelve el drift entre la resolución B1 y el contrato Phase 4 antiguo.
+- **Custom:** `frequency=custom` exige `recurrence_rule` RRULE; el form lo pide
+  sólo cuando hace falta.
+- **Status B7:** `npm run lint`, `npm run build`, route smoke
+  `/onboarding/gastos -> 200`, focused B7 `4 passed`, y regresión
+  B2+B3+B6+B7 `38 passed`. Playwright E2E queda para B11 según §9.7.
+
+### 9.14 B8 lazy detection → account/bank hints in write dispatcher
+
+B8 implementa lazy detection para menciones explícitas de cuenta o banco en el
+write dispatcher. La extracción sigue siendo LLM-only para estructura; la
+resolución y decisión son determinísticas.
+
+- **Extractor:** el prompt Haiku ahora instruye explícitamente llenar
+  `account_hint` cuando el usuario diga "con la BAC", "de la BCR", "tarjeta
+  Promerica", etc. El schema ya tenía el campo desde Phase 5b.
+- **Matcher:** `api/services/dispatch/lazy_detection.py` usa matching
+  determinístico con threshold `0.85`, variante whitespace-stripped y guard
+  contra hints genéricos como `banco`, `cuenta` o `tarjeta`.
+- **Write dispatcher:** si el hint matchea una cuenta existente, el flujo sigue
+  normal y linkea esa cuenta. Si no matchea, responde:
+  `No tengo registrada una cuenta llamada X. ¿La creamos? Decime crear... o link...`
+  sin crear transacción todavía.
+- **No-hint:** mensajes como `gasté 5000` conservan el comportamiento previo:
+  default si hay una cuenta clara, aclaración si hay varias.
+- **Telemetría:** cada hint explícito registra `lazy_detection_events` con
+  `hint_type`, `hint_text`, `fuzzy_match_score`, `resolution` y
+  `matched_account_id` cuando aplica.
+- **Status B8:** focused B8 DB `2 passed`, dispatcher unit `21 passed`,
+  extractor/router/dispatcher smoke `33 passed`, y regresión
+  B2+B3+B6+B7+B8 `40 passed`.

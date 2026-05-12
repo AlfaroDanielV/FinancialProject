@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
 from ..dependencies import current_user
-from ..models.enums import BillCategory
 from ..models.recurring_bill import RecurringBill
 from ..models.user import User
 from ..schemas.recurring_bills import (
@@ -39,7 +38,7 @@ async def create_recurring_bill(
         user_id=user.id,
         name=payload.name,
         provider=payload.provider,
-        category=payload.category.value,
+        category=payload.category,
         amount_expected=payload.amount_expected,
         currency=payload.currency,
         is_variable_amount=payload.is_variable_amount,
@@ -63,7 +62,7 @@ async def create_recurring_bill(
 
 @router.get("", response_model=list[RecurringBillResponse])
 async def list_recurring_bills(
-    category: Optional[BillCategory] = Query(default=None),
+    category: Optional[str] = Query(default=None),
     is_active: Optional[bool] = Query(default=None),
     account_id: Optional[uuid.UUID] = Query(default=None),
     provider: Optional[str] = Query(default=None),
@@ -72,7 +71,7 @@ async def list_recurring_bills(
 ):
     stmt = select(RecurringBill).where(RecurringBill.user_id == user.id)
     if category is not None:
-        stmt = stmt.where(RecurringBill.category == category.value)
+        stmt = stmt.where(RecurringBill.category == category)
     if is_active is not None:
         stmt = stmt.where(RecurringBill.is_active.is_(is_active))
     if account_id is not None:
@@ -111,7 +110,7 @@ async def update_recurring_bill(
     schedule_changed = bool(_SCHEDULE_FIELDS & update_data.keys())
 
     for field, value in update_data.items():
-        if field in ("category", "frequency") and value is not None:
+        if field == "frequency" and value is not None:
             setattr(bill, field, value.value if hasattr(value, "value") else value)
         else:
             setattr(bill, field, value)
