@@ -21,6 +21,19 @@ export function useAuth() {
   return useContext(AuthContext);
 }
 
+// Phase 6e B12: defensive client-side check on the `?path=` query param.
+// The backend already validates `target_path` shape at mint time, but the
+// SPA should also refuse anything that looks like a protocol-relative
+// URL, an absolute URL, or a non-relative path — that defends against a
+// future change in the magic-link URL builder.
+function isSafeRelativePath(value: string | null): boolean {
+  if (!value) return false;
+  if (!value.startsWith("/")) return false;
+  if (value.startsWith("//")) return false;
+  if (value.includes("://")) return false;
+  return true;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ kind: "loading" });
   const [searchParams, setSearchParams] = useSearchParams();
@@ -38,6 +51,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // probe /onboarding/status to verify the cookie is still valid.
   useEffect(() => {
     const token = searchParams.get("token");
+    const targetPath = searchParams.get("path");
     let cancelled = false;
 
     async function boot() {
@@ -46,12 +60,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const resp = await api.post("/auth/magic-link/exchange", { token });
           const user = ExchangeResponse.parse(resp.data);
           if (cancelled) return;
-          // Strip ?token from the URL so a refresh doesn't re-attempt
-          // the exchange (which would 401 since the link is single-use).
-          const next = new URLSearchParams(searchParams);
-          next.delete("token");
-          setSearchParams(next, { replace: true });
+          // Phase 6e B12: honour `?path=` when present and valid. Server
+          // already validates `target_path` shape; this is a defensive
+          // client-side check so we never navigate to a foreign URL or
+          // protocol-relative location.
+          const safePath = isSafeRelativePath(targetPath) ? targetPath! : null;
           setState({ kind: "authenticated", user });
+          if (safePath) {
+            // Replace the URL atomically with the target; this drops
+            // `?token` and `?path` in one go.
+            navigate(safePath, { replace: true });
+          } else {
+            // Strip `?token` (and `?path` if present-but-invalid) so a
+            // refresh doesn't re-attempt the now-consumed exchange.
+            const next = new URLSearchParams(searchParams);
+            next.delete("token");
+            next.delete("path");
+            setSearchParams(next, { replace: true });
+          }
         } catch {
           if (cancelled) return;
           setState({ kind: "unauthenticated" });

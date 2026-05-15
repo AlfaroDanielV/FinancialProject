@@ -57,6 +57,9 @@ class Transaction(Base):
         String(20), nullable=False, default="confirmed"
     )
     is_duplicate: Mapped[bool] = mapped_column(Boolean, default=False)
+    archived: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), default=datetime.utcnow
     )

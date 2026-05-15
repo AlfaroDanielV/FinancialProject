@@ -57,7 +57,7 @@ Telegram-first.
 | **Messaging** | Telegram Bot API (aiogram v3) | NOT WhatsApp |
 | **Email** | Gmail API | OAuth2, per-bank parsers |
 | **LLM** | Anthropic API (Haiku for extraction, Sonnet for queries) | Not self-hosted |
-| **SPA** | Vite + React + Tailwind + Zod | Phase 6d onboarding + Phase 6e Centro Financiero |
+| **SPA** | Vite + React + Tailwind + Zod + TanStack Query + Recharts | Phase 6d onboarding + Phase 6e Centro Financiero |
 | **Transaction Capture** | iPhone Shortcuts → POST webhook | `X-Shortcut-Token` header |
 | **Containerization** | Docker Compose (dev), Azure Container Apps (prod) | |
 | **Settings** | Pydantic `BaseSettings` | Reads from `.env` |
@@ -105,7 +105,7 @@ finance-agent/
 │   └── history.py              # query_history Redis
 ├── workers/                    # gmail_daily.py, insights_nightly.py, insights_lifecycle.py
 ├── web/                        # Phase 6d onboarding SPA (Vite/React)
-├── migrations/versions/        # Hand-written Alembic (0001 → 0016)
+├── migrations/versions/        # Hand-written Alembic (0001 → 0017)
 ├── tests/                      # pytest suite
 ├── scripts/                    # Phase smoke scripts (phase5a/5b/6b/6c/etc.)
 ├── docs/phase-*/               # Per-phase operational docs (privacy, deployment, etc.)
@@ -130,6 +130,7 @@ All tables use UUID primary keys via `gen_random_uuid()`. Timestamps are `TIMEST
 - **Phase 6b tables** — `gmail_credentials`, `gmail_sender_whitelist`, `bank_notification_samples`, `gmail_messages_seen`, `gmail_ingestion_runs`, `gmail_discovery_runs` (migrations 0011, 0012, 0015)
 - **Phase 6c tables** — `user_insights`, `user_insights_audit` (migrations 0013, 0014)
 - **Phase 6d tables** — `magic_link_tokens`, `recurring_incomes`, `lazy_detection_events` (migration 0016)
+- **Phase 6e tables/views** — `goal_contributions`, `transfers`, `user_categories`, `currency_rates`, `transactions.transfer_id`, `transactions.category_id`, `users.display_currency`, `accounts.archived`, `magic_link_tokens.target_path`, `mv_monthly_summary_by_user`, `mv_yearly_summary_by_user` (migration 0017); `transactions.archived` + partial index `ix_transactions_user_date_active` (migration 0018); `debts.archived` (migration 0019); `recurring_incomes.archived` (migration 0020)
 
 ### Phase 4 tables (recurring bills + calendar alerts)
 
@@ -168,7 +169,7 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 | **6b** ✅ | Gmail ingestion + reconciliation | See `11_Phases/Phase-6b-Gmail-Ingestion.md` |
 | **6c** ✅ | User memory + behavioral profiling | See `11_Phases/Phase-6c-User-Memory.md`. Awaiting production `INSIGHTS_DISPATCHER_ENABLED=true` flip. |
 | **6d** ✅ | Onboarding & self-registration | Closed in B13; see "Phase 6d (closed)" below |
-| **6e** 🚧 | Centro Financiero SPA (full) | Active; B1-B3 implemented, B4 accounts module next |
+| **6e** 🚧 | Centro Financiero SPA (full) | Active; B1-B13 implemented, B14 privacy + E2E next (install + Lighthouse gate on B13 still pending) |
 | **P7** | Affordability / pushback engine | Deterministic affordability checks + LLM explanation wrapper |
 | **P8** | Beta users | Onboard a second person via Telegram with accurate reports within a week |
 | **P9** | SaaS hardening | Multi-tenant auth, billing, compliance, observability |
@@ -240,7 +241,7 @@ debts, recurring incomes, recurring bills, transactions, and insights. It must
 preserve Telegram-first product direction: the web surface is for structured
 review and editing, not a replacement for the bot.
 
-Current block status: B1-B3 implemented; B4 accounts module is next.
+Current block status: B1-B13 implemented (B7 + B10 sign-offs received 2026-05-15; B13 install + Lighthouse gate still pending); B14 privacy export/delete UI + E2E is next.
 
 - **B1** decisions + architecture doc expanded in `docs/phase-6e-decisions.md`.
   Daniel approved the B1 recommendations by moving forward on 2026-05-12.
@@ -254,6 +255,164 @@ Current block status: B1-B3 implemented; B4 accounts module is next.
   upcoming payments, top active goals, top memory insights, partial-onboarding
   CTAs, and quick links. Recharts is code-split into
   `DashboardCharts` so the initial bundle remains under the 200KB gzip budget.
+- **B4** accounts module full. Backend: per-account balance computation in
+  `api/services/accounts.py::compute_account_balances`; `AccountResponse`
+  carries `current_balance` and `month_start_balance`; `AccountUpdate` rejects
+  immutable `currency`/`initial_balance`; `GET /api/v1/transactions` accepts
+  `account_id`, `category_id`, `from_date`, `to_date`, `kind`
+  (`all|income|expense|transfer`), `q`; `PATCH /api/v1/transactions/{id}` edits
+  `amount`/`merchant`/`description`/`category[_id]`/`transaction_date` and
+  hard-rejects shadow rows + transfer legs with 409. SPA: `/accounts` is now
+  `AccountsIndex` (list + archived toggle + transfer modal); `/accounts/:id`
+  is `AccountDetail` (balance header, inline edit, filtered tx list with edit
+  modal, archive/restore); `/accounts/new` is the slimmed creation flow. Both
+  new routes lazy-load. Shadow rows show "Pendiente" with no edit button —
+  approval still flows through `/aprobar_shadow` in the bot.
+- **B5** global transactions module. Backend: migration `0018` adds
+  `transactions.archived BOOLEAN` plus partial index
+  `ix_transactions_user_date_active`; `GET /api/v1/transactions` grew filters
+  `account_ids[]`, `category_ids[]`, `currency`, `min_amount`, `max_amount`,
+  `sort_by` (`date|amount|category`), `sort_dir`, `include_archived`,
+  `cursor`; response carries `next_cursor` (date sort only); new
+  `GET /api/v1/transactions/export` streams CSV with a 50,000-row hard cap
+  (413 when exceeded); new `POST /api/v1/transactions/bulk/{archive,restore,
+  categorize}` are all-or-nothing and 409 on missing/shadow/transfer rows;
+  `PATCH` now rejects archived rows. Balance + dashboard queries
+  exclude `archived=true` rows. SPA: `/transactions` is `TransactionsIndex`
+  (filter bar, multi-account/category selects, sort presets, bulk-select with
+  bulk-archive + bulk-categorize, CSV export); shared
+  `web/src/components/transactions/TransactionEditModal.tsx` extracted from
+  AccountDetail so both routes use one edit modal. Initial bundle stayed
+  ~119.50KB gzip.
+- **B6** recurring bills + calendar. Backend: new
+  `POST /api/v1/recurring-bills/{id}/mark-paid` body
+  `{amount_paid?, paid_at?, account_id?, category_id?, description?,
+  idempotency_key}` — auto-resolves the next pending/overdue/partially_paid
+  occurrence, creates a manual transaction, and links via the existing
+  `recurrence.link_transaction_to_occurrence`. Redis-backed idempotency keyed
+  on `bill_mark_paid:{user_id}:{bill_id}:{key}` (TTL 10 min); replays return
+  `idempotent_replay=true` without duplicating the transaction. PATCH on
+  `is_active` false→true now regenerates occurrences (resume after pause).
+  Pause = `PATCH is_active=false` (occurrences stay); Archive = existing
+  DELETE (cancels future pending). SPA: `/bills` is now `BillsIndex` (lazy,
+  calendar via `react-day-picker` with category-coded dots + 60-day urgency
+  list view); `BillActionsModal` handles mark-paid + pause/resume/archive
+  from both views. Initial bundle stayed ~119.58KB gzip.
+- **B7** debts + amortization + early-payoff calculator. Backend: migration
+  `0019` adds `debts.archived BOOLEAN`; `PATCH /debts/{id}` is narrowed via
+  `model_config={"extra": "forbid"}` to `name`, `payment_due_day`,
+  `account_id`, `notes`, `is_active`, `archived` (extras → 422); all
+  financial fields are immutable post-creation. New
+  `GET /debts/{id}/payoff-scenarios?lump_sum=&extra_monthly=` returns
+  per-scenario savings + Ley 7472 penalty info; 422 when neither param.
+  DELETE flips both `is_active` and `archived`; `debt_overview` filters
+  archived. SPA: `/debts` is `DebtsIndex` (lazy, total/monthly/DTI metrics
+  with color grade); `/debts/:id` is `DebtDetail` (lazy, header + three
+  tabs: amortización table from existing `/schedule`, browser-side
+  Calculadora cancelación, server-blessed Escenarios Ley 7472).
+  `web/src/lib/amortization.ts` grew `earlyPayoffLumpSum`,
+  `earlyPayoffExtraMonthly`, `calculatePrepaymentPenalty` mirroring the
+  backend service. Initial bundle ~120.46KB gzip. Daniel statement-parity
+  sign-off received 2026-05-15 — gate closed.
+- **B8** recurring incomes module. Backend: migration `0020` adds
+  `recurring_incomes.archived BOOLEAN`; `PATCH` narrowed via
+  `extra="forbid"` to `name`/`amount`/`frequency`/`next_payment_date`/
+  `notes`/`is_active`/`archived` (extras → 422, including `currency` and
+  `base_salary_link_id`); `GET /recurring-incomes` query param renamed
+  `include_inactive` → `include_archived`; `DELETE` flips both flags. New
+  `POST /recurring-incomes/{salary_id}/derive-cycles` atomically creates
+  both `aguinaldo` and `salario_escolar` from a single salary, idempotent
+  on recall (returns existing rows with `created_*=false`), 400 when the
+  target is not `income_type='salary'`. SPA: `/incomes` is `IncomesIndex`
+  (lazy, CR-cycle nudge banner when active CRC salary exists but
+  aguinaldo/salario_escolar missing, inline-edit per row with derived
+  amounts read-only, Pausar/Reanudar/Archivar/Restaurar actions); the
+  existing `IncomesNew.tsx` at `/incomes/new` was patched to drop
+  `currency` from its inline PATCH body (otherwise the B8 schema
+  tightening would 422 it). Initial bundle ~120.50KB gzip.
+- **B9** goals module. No schema changes. Backend: new
+  `GET /api/v1/goals/{id}/contributions` returns the full list sorted
+  `occurred_at desc`; new `GET /api/v1/goals/{id}/forecast` computes
+  months-to-target at the last 3 complete calendar months' average pace
+  (`has_enough_data=false` when zero contributions in the window;
+  already-achieved → `months_to_target=0`). SPA: `/goals` is
+  `GoalsIndex` (lazy, status + currency filters); `/goals/:id` is
+  `GoalDetail` (lazy, progress header, linked-account read-only saldo
+  snapshot, contribution history, forecast banner, actions for
+  pausar/reanudar/marcar cumplida/abandonar, AddContributionModal);
+  `/goals/new` is `GoalsNew` (lazy, creation form with
+  linked_account_id optional). Initial bundle ~120.78KB gzip.
+- **B10** memoria SPA. No schema changes. Backend: new
+  `GET /api/v1/users/me/insights` returns active rows grouped by
+  `GROUP_ORDER`; new `PATCH /api/v1/users/me/insights/{id}` accepts a
+  typed `content` payload validated through the `InsightContent`
+  discriminated union, rejects computed types + content/type
+  mismatches with 400, sets `source='user_override'` + `user_locked=true`
+  + `confidence=1.00` and emits a `locked` audit; new
+  `DELETE /api/v1/users/me/insights/{id}` and
+  `DELETE /api/v1/users/me/insights/group/{group}` reuse the existing
+  `delete_insights` service with distinct `deletion_reason` strings.
+  SPA: `/memoria` is `MemoryIndex` (lazy) — collapsible per-group
+  sections, per-row Edit modal that dispatches by `insight_type` to
+  enum radios (risk_posture/decision_style/financial_literacy) or
+  text (stated_preference/stated_goal/archetype), per-row + per-group
+  delete with confirms, "Borrar toda mi memoria" two-step UX matching
+  the bot's `/olvidar todo`, "Descargar mi memoria" triggers the
+  export endpoint. The `ModulePlaceholder` helper was removed — every
+  Centro Financiero route ships real content now. Memoria-parity
+  sign-off vs the bot's `/memoria` received 2026-05-15.
+- **B11** categories management SPA. No backend or schema changes —
+  Phase 6e B2 already ships the CRUD with auto-seeding, transaction
+  counts, the "default cannot be archived" 400 guard, and active-name
+  uniqueness. SPA: `/categories` is `CategoriesIndex` (lazy) with an
+  inline "Nueva categoría" form, per-row inline edit (name / kind /
+  color via `<input type="color">` / icon text), per-row Archivar
+  (disabled with tooltip on defaults) / Restaurar. Icon UX is a plain
+  text input (no library) — logged as future polish. New SPA helper
+  `web/src/api/categories.ts`; the older read-only
+  `fetchUserCategories` in `web/src/api/accounts.ts` stays for other
+  routes that just need the list. No bot extractor changes — LLM
+  emits free-text `category_hint`, not an enum drawn from the API.
+- **B12** bot ↔ SPA deep linking. No schema changes — Phase 6d B3
+  already shipped `magic_link_tokens.target_path` (migration `0017`)
+  and `generate_link(purpose='edit_session', target_path=...)`. New
+  `bot/deep_link.py::mint_edit_session_url` wraps `generate_link` with
+  swallow-on-fail semantics. `BotReply` grew a `url_buttons: list[
+  UrlButton]` field; `bot/handlers.py::_kb` renders both callback and
+  URL buttons. Two callsites now offer SPA deep links: post-commit
+  ("Ver en Centro Financiero" → `/transactions?highlight={id}`) and
+  `/memoria` end ("Editar en SPA" → `/memoria`). `NudgeButton` got an
+  optional `url` field + `bot/nudges_send.py::_kb` renders it — the
+  third callsite (high-DTI nudge → "Ver tus deudas") needs a new
+  evaluator type before it can fire, logged as a Phase 5d-adjacent
+  follow-up. SPA `web/src/lib/auth.tsx` honours `?path=` after the
+  magic-link exchange via `isSafeRelativePath` validation +
+  `navigate(safePath, { replace: true })`.
+- **B13** PWA + mobile polish. SPA-only block. New devDeps:
+  `vite-plugin-pwa`, `workbox-window`, `@types/node`, `cross-env`.
+  `web/vite.config.ts` configures the manifest (name, theme/background
+  colors, 192/512/maskable icons) and `generateSW` mode with the
+  spec's three caching strategies: app shell (precached + revalidate),
+  API responses (`NetworkFirst`, 4s timeout, 24h fallback), images
+  (`CacheFirst`, 7d TTL). Icons live in `web/public/icons/`, generated
+  by `scripts/generate_pwa_icons.py` (stdlib-only PNG synthesis;
+  placeholder design, swap for real brand assets later).
+  `web/index.html` got `viewport-fit=cover`, `theme-color`, Apple home-
+  screen meta, and `apple-touch-icon`. New shell components under
+  `web/src/components/shell/`: `OfflineBanner` (banner-only — does NOT
+  block mutations), `InstallBanner` (gated to ≥ 3rd visit via
+  `localStorage`; hidden on iOS Safari), `BottomNav` (mobile-only
+  persistent nav: Inicio / Cuentas / Deudas / Movimientos / Más, with
+  `pb-[env(safe-area-inset-bottom)]` for iPhone home-indicator
+  clearance). `App.tsx` wires safe-area-inset padding for both top
+  (notch) and bottom (nav + home indicator). Build script gained
+  `cross-env NODE_OPTIONS=--experimental-global-webcrypto` so Node 18
+  can run workbox-build (Node 20+ makes the flag a no-op). Initial
+  bundle 122.82KB gzip (workbox-window runtime); SW + manifest emit
+  at build time. **Install + Lighthouse PWA ≥ 80 sign-off is still
+  pending — requires real iOS Safari + Android Chrome testing.**
+  Pull-to-refresh, swipe-to-archive, and "block mutations when
+  offline" deferred (decisions in §20.5).
 
 **B2 endpoints:** `POST/GET/PATCH/DELETE /api/v1/goals[/{id}]`;
 `POST /api/v1/goals/{id}/contributions`; legacy
@@ -280,6 +439,79 @@ passed with `PYTHONPYCACHEPREFIX=/tmp/phase6e-pycache`.
 (`index` JS gzip ~119KB, `DashboardCharts` chunk gzip ~106KB), Python compile
 passed, `tests/test_phase_6e_b2_backend.py` passed (`4 passed`), and the 6d
 onboarding/auth regression slice passed (`34 passed`).
+
+**B4 verification:** focused tests `tests/test_phase_6e_b4_accounts.py` plus
+the 6e B2 + 6d regression slice passed (`43 passed`). `npm run lint` passed,
+`npm run build` passed (`index` gzip ~119KB unchanged, new `AccountsIndex`
+chunk gzip ~2.6KB, new `AccountDetail` chunk gzip ~4KB). Python compile passed.
+`alembic current` returned `0017 (head)` — no schema change in B4.
+
+**B5 verification:** focused tests `tests/test_phase_6e_b5_transactions.py`
+plus the 6e B4 + B2 + 6d regression slice passed (`52 passed`).
+`npm run lint` passed, `npm run build` passed (`index` gzip ~119.50KB stable,
+new `TransactionsIndex` chunk gzip ~3.43KB, new shared
+`TransactionEditModal` chunk gzip ~1.89KB, `AccountDetail` shrank to ~3.18KB
+after modal extraction). Python compile passed. `alembic current` returned
+`0018 (head)` after migration `0018_phase6e_b5_transactions_archived.py`.
+
+**B6 verification:** focused tests `tests/test_phase_6e_b6_bills.py` plus the
+6e B5 + B4 + B2 + 6d regression slice passed (`58 passed`). `npm run lint`
+passed, `npm run build` passed (`index` gzip ~119.58KB stable, new
+`BillsIndex` chunk gzip ~24.16KB including react-day-picker, BillsIndex CSS
+gzip ~1.68KB). Python compile passed. `alembic current` still `0018 (head)` —
+no schema change in B6. New SPA dep: `react-day-picker` (locked in decision
+3.5).
+
+**B7 verification:** focused tests `tests/test_phase_6e_b7_debts.py` plus the
+6e B6 + B5 + B4 + B2 + 6d regression slice passed (`66 passed`). `npm run lint`
+passed, `npm run build` passed (`index` gzip ~120.46KB still under budget,
+new `DebtsIndex` chunk gzip ~1.96KB, new `DebtDetail` chunk gzip ~4.26KB).
+Python compile passed. `alembic current` returned `0019 (head)` after
+`0019_phase6e_b7_debts_archived.py`. Daniel statement-parity sign-off
+received on 2026-05-15.
+
+**B8 verification:** focused tests `tests/test_phase_6e_b8_incomes.py` plus the
+6e B7 + B6 + B5 + B4 + B2 + 6d regression slice passed (`72 passed`).
+`npm run lint` passed, `npm run build` passed (`index` gzip ~120.50KB stable,
+new `IncomesIndex` chunk gzip ~3.60KB). Python compile passed. `alembic
+current` returned `0020 (head)` after
+`0020_phase6e_b8_recurring_incomes_archived.py`.
+
+**B9 verification:** focused tests `tests/test_phase_6e_b9_goals.py` plus the
+6e B8 + B7 + B6 + B5 + B4 + B2 + 6d B2 regression slice passed (`58 passed`).
+`npm run lint` passed, `npm run build` passed (`index` gzip ~120.78KB still
+under budget, new `GoalsIndex` chunk gzip ~1.53KB, new `GoalsNew` chunk gzip
+~1.59KB, new `GoalDetail` chunk gzip ~2.96KB). `alembic current` still `0020
+(head)` — no schema change in B9.
+
+**B10 verification:** focused tests `tests/test_phase_6e_b10_insights.py` plus
+the 6e B9 + B8 + B7 + B6 + B5 + B4 + B2 regression slice passed (`50 passed`).
+`npm run lint` passed, `npm run build` passed (`index` gzip ~120.77KB stable,
+new `MemoryIndex` chunk gzip ~3.99KB). `alembic current` still `0020 (head)` —
+no schema change in B10. Memoria-parity sign-off vs the bot's `/memoria`
+received 2026-05-15.
+
+**B11 verification:** focused tests `tests/test_phase_6e_b11_categories.py`
+plus the full 6e slice (B10 + B9 + B8 + B7 + B6 + B5 + B4 + B2) passed
+(`53 passed`). `npm run lint` passed, `npm run build` passed (`index` gzip
+~120.83KB stable, new `CategoriesIndex` chunk gzip ~2.77KB). `alembic current`
+still `0020 (head)` — no backend changes in B11.
+
+**B12 verification:** focused tests `tests/test_phase_6e_b12_deep_link.py`
+plus the 6e B11 + B10 + B9 + B8 + B7 + B2 + 6d B2 slice passed (`54 passed`).
+`npm run lint` passed, `npm run build` passed (`index` gzip ~120.89KB
+stable; no new SPA chunks — the auth path change rolls into `index`).
+Python compile passed. `alembic current` still `0020 (head)` — no schema
+change in B12.
+
+**B13 verification:** `npm run lint` passed; `npm run build` passed and
+emitted `dist/sw.js`, `dist/workbox-*.js`, and `dist/manifest.webmanifest`
+(workbox precache: 30 entries / 1016.97 KiB). Initial `index` JS gzip
+~122.82KB (workbox-window runtime). Backend regression slice (B12 + B11 +
+B10 + B9 + B8 + B7 + B2) passed (`39 passed`); no backend changes in B13.
+`alembic current` still `0020 (head)`. Install + Lighthouse PWA ≥ 80
+sign-off still pending — requires real iOS Safari + Android Chrome
+testing.
 
 ---
 
@@ -479,6 +711,9 @@ Pre-Phase-5a vars `WEBHOOK_SECRET` and `SHORTCUT_TOKEN` were removed; tokens now
 - **Phase 5d: `upcoming_bill` can't re-nudge while status=dismissed.** By design — user said no.
 - **Phase 5d: multi-tier notifications per bill produce N distinct nudges.** Rate limit caps delivery; a future fix collapses them before insert.
 - **Phase 6a splitter is wired but mostly no-op** — `app/queries/llm_client` uses a low `max_tokens` cap. Add a >3900-char real-response e2e before raising the cap.
+- **Phase 6e B4: `accounts.is_active` and `accounts.archived` are mirrored.** Per Phase 6e §5.4 `archived` is canonical, but the bot's `services/accounts.py::list_active` and the `accounts(user_id, name) WHERE is_active` partial unique index still read `is_active`. The `accounts` router writes both on archive/restore to keep them in sync. Cleanup target: drop `is_active`, point all readers + the partial index at `archived`. Defer until B5 or a dedicated cleanup block.
+- **Phase 6e B5: materialized dashboard views don't yet exclude `transactions.archived=true`.** Live current-month dashboard queries and `compute_account_balances` correctly exclude archived rows in-code, so the user-visible balances stay right. But `mv_monthly_summary_by_user` / `mv_yearly_summary_by_user` (migration 0017) were defined before the archive column existed and will count archived rows after the nightly refresh. Impact is bounded: archived rows are rare and these views only feed historical-month summaries. Cleanup target: a small migration that drops + recreates both views with `archived = false` in the WHERE clause.
+- **Phase 6e B13: SPA build needs `NODE_OPTIONS=--experimental-global-webcrypto` on Node 18** because `workbox-build` (via `serialize-javascript`) reads `globalThis.crypto`. The npm `build` script wraps with `cross-env` so it's transparent locally and in CI; the flag becomes a no-op on Node 20+. Cleanup target: drop the `cross-env` wrapper once CI guarantees Node 20+. Also: PWA icons in `web/public/icons/` are placeholder PNGs generated by `scripts/generate_pwa_icons.py` (a navy disc with a blue dot). Swap for real brand assets before any public-facing release.
 
 ---
 

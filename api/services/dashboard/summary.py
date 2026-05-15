@@ -112,6 +112,7 @@ async def _balance_total(db: AsyncSession, user_id: uuid.UUID) -> Decimal:
         select(func.coalesce(func.sum(Transaction.amount), 0)).where(
             Transaction.user_id == user_id,
             Transaction.status == "confirmed",
+            Transaction.archived.is_(False),
         )
     )
     return Decimal(initial_result.scalar_one() or 0) + Decimal(
@@ -154,6 +155,7 @@ async def _category_breakdown(
             Transaction.transaction_date < window.end_exclusive,
             Transaction.status == "confirmed",
             Transaction.transfer_id.is_(None),
+            Transaction.archived.is_(False),
         )
         .group_by(category_label)
         .order_by(
@@ -242,6 +244,7 @@ async def get_dashboard_summary(
             Transaction.transaction_date >= window.start,
             Transaction.transaction_date < window.end_exclusive,
             Transaction.status == "confirmed",
+            Transaction.archived.is_(False),
         )
     )
     row = result.one()

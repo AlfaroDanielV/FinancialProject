@@ -17,7 +17,9 @@ from ..models.user import User
 from ..schemas.goals import (
     ContributeRequest,
     GoalContributionCreate,
+    GoalContributionResponse,
     GoalContributionResult,
+    GoalForecastResponse,
     GoalProgress,
     GoalResponse,
     GoalCreate,
@@ -273,3 +275,108 @@ async def delete_goal(
     await db.commit()
     await db.refresh(goal)
     return goal
+
+
+@router.get(
+    "/{goal_id}/contributions",
+    response_model=list[GoalContributionResponse],
+)
+async def list_goal_contributions(
+    goal_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """Phase 6e B9 — list all contributions for a goal, most recent first."""
+    await _get_goal(db, user_id=user.id, goal_id=goal_id)
+    result = await db.execute(
+        select(GoalContribution)
+        .where(GoalContribution.goal_id == goal_id)
+        .order_by(GoalContribution.occurred_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+def _month_start(d: date) -> date:
+    return date(d.year, d.month, 1)
+
+
+def _add_months(d: date, months: int) -> date:
+    year = d.year + (d.month - 1 + months) // 12
+    month = (d.month - 1 + months) % 12 + 1
+    return date(year, month, 1)
+
+
+@router.get("/{goal_id}/forecast", response_model=GoalForecastResponse)
+async def goal_forecast(
+    goal_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """Phase 6e B9 — months-to-target at the last 3 months' contribution pace.
+
+    Avg pace is computed over the last 3 complete calendar months. Goals
+    with no contributions in that window return `has_enough_data=false`
+    (we don't pretend a forecast we can't back). Already-achieved goals
+    return zeros.
+    """
+    goal = await _get_goal(db, user_id=user.id, goal_id=goal_id)
+    target = Decimal(goal.target_amount)
+    current = Decimal(goal.current_amount or 0)
+    remaining = max(target - current, Decimal("0"))
+
+    if remaining == 0:
+        return GoalForecastResponse(
+            goal_id=goal.id,
+            target_amount=target,
+            current_amount=current,
+            remaining=Decimal("0"),
+            avg_monthly_contribution=Decimal("0"),
+            months_to_target=0,
+            projected_completion_date=None,
+            has_enough_data=True,
+            lookback_months=3,
+        )
+
+    today = date.today()
+    window_start = _add_months(_month_start(today), -3)
+    window_end = _month_start(today)
+
+    result = await db.execute(
+        select(GoalContribution.amount).where(
+            GoalContribution.goal_id == goal_id,
+            GoalContribution.occurred_at
+            >= datetime.combine(window_start, datetime.min.time(), tzinfo=timezone.utc),
+            GoalContribution.occurred_at
+            < datetime.combine(window_end, datetime.min.time(), tzinfo=timezone.utc),
+        )
+    )
+    amounts = [Decimal(row) for row in result.scalars().all()]
+    total = sum(amounts, Decimal("0"))
+    avg_monthly = (total / Decimal("3")).quantize(Decimal("0.01"))
+
+    if avg_monthly <= 0:
+        return GoalForecastResponse(
+            goal_id=goal.id,
+            target_amount=target,
+            current_amount=current,
+            remaining=remaining,
+            avg_monthly_contribution=Decimal("0"),
+            months_to_target=None,
+            projected_completion_date=None,
+            has_enough_data=False,
+            lookback_months=3,
+        )
+
+    months = int(math.ceil(float(remaining / avg_monthly)))
+    projected = _add_months(_month_start(today), months)
+    return GoalForecastResponse(
+        goal_id=goal.id,
+        target_amount=target,
+        current_amount=current,
+        remaining=remaining,
+        avg_monthly_contribution=avg_monthly,
+        months_to_target=months,
+        projected_completion_date=projected,
+        has_enough_data=True,
+        lookback_months=3,
+    )

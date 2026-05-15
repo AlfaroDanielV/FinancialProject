@@ -49,12 +49,51 @@ class TransactionResponse(BaseModel):
     transaction_date: date
     source: str
     parse_status: str
+    status: str
     is_duplicate: bool
+    archived: bool = False
     created_at: datetime
 
     model_config = {"from_attributes": True}
 
 
 class TransactionListResponse(BaseModel):
+    """Phase 6e B5 — list response with optional cursor.
+
+    `next_cursor` is set when more rows exist past this page; `null` when
+    the page exhausts the result set. Callers that paginate with `offset`
+    can ignore it; callers that paginate with `cursor` should pass the
+    returned value back as `cursor` on the next request.
+    """
+
     total: int
     items: list[TransactionResponse]
+    next_cursor: Optional[str] = None
+
+
+class TransactionUpdate(BaseModel):
+    """Phase 6e B4 — editable fields on an existing transaction.
+
+    Account, transfer, source, status are immutable post-creation. Shadow
+    rows (Phase 6b status='shadow') are blocked at the router layer.
+    """
+
+    amount: Optional[float] = None
+    merchant: Optional[str] = Field(None, max_length=255)
+    description: Optional[str] = Field(None, max_length=2000)
+    category: Optional[str] = Field(None, max_length=100)
+    category_id: Optional[uuid.UUID] = None
+    transaction_date: Optional[date] = None
+
+
+class TransactionBulkArchive(BaseModel):
+    transaction_ids: list[uuid.UUID] = Field(..., min_length=1, max_length=500)
+
+
+class TransactionBulkCategorize(BaseModel):
+    transaction_ids: list[uuid.UUID] = Field(..., min_length=1, max_length=500)
+    category_id: Optional[uuid.UUID] = None
+
+
+class TransactionBulkResponse(BaseModel):
+    updated: int

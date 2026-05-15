@@ -1,4 +1,5 @@
 import uuid
+from typing import Iterable
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -15,8 +16,36 @@ from ..schemas.account import (
     AccountResponse,
     AccountUpdate,
 )
+from ..services.accounts import compute_account_balances
 
 router = APIRouter(prefix="/api/v1/accounts", tags=["accounts"])
+
+
+async def _accounts_with_balances(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    accounts: Iterable[Account],
+) -> list[AccountResponse]:
+    accounts_list = list(accounts)
+    balances = await compute_account_balances(
+        db,
+        user_id=user_id,
+        account_ids=[acc.id for acc in accounts_list],
+    )
+    responses: list[AccountResponse] = []
+    for acc in accounts_list:
+        balance = balances.get(acc.id)
+        response = AccountResponse.model_validate(acc)
+        if balance is not None:
+            response = response.model_copy(
+                update={
+                    "current_balance": balance.current,
+                    "month_start_balance": balance.month_start,
+                }
+            )
+        responses.append(response)
+    return responses
 
 
 @router.post("", response_model=AccountResponse, status_code=201)
@@ -48,7 +77,10 @@ async def create_account(
             detail="Ya tenés una cuenta activa con ese nombre.",
         )
     await db.refresh(account)
-    return account
+    [response] = await _accounts_with_balances(
+        db, user_id=user.id, accounts=[account]
+    )
+    return response
 
 
 @router.get("", response_model=list[AccountResponse])
@@ -66,7 +98,8 @@ async def list_accounts(
     stmt = stmt.order_by(Account.created_at.desc())
 
     result = await db.execute(stmt)
-    return list(result.scalars().all())
+    accounts = list(result.scalars().all())
+    return await _accounts_with_balances(db, user_id=user.id, accounts=accounts)
 
 
 @router.get("/{account_id}", response_model=AccountResponse)
@@ -84,7 +117,10 @@ async def get_account(
     account = result.scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="Cuenta no encontrada.")
-    return account
+    [response] = await _accounts_with_balances(
+        db, user_id=user.id, accounts=[account]
+    )
+    return response
 
 
 @router.patch("/{account_id}", response_model=AccountResponse)
@@ -105,6 +141,16 @@ async def update_account(
         raise HTTPException(status_code=404, detail="Cuenta no encontrada.")
 
     update_data = payload.model_dump(exclude_unset=True)
+    if "account_type" in update_data:
+        if update_data["account_type"] not in VALID_ACCOUNT_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "account_type must be one of: "
+                    f"{', '.join(sorted(VALID_ACCOUNT_TYPES))}"
+                ),
+            )
+
     for field, value in update_data.items():
         setattr(account, field, value)
 
@@ -117,7 +163,10 @@ async def update_account(
             detail="Ya tenés una cuenta activa con ese nombre.",
         )
     await db.refresh(account)
-    return account
+    [response] = await _accounts_with_balances(
+        db, user_id=user.id, accounts=[account]
+    )
+    return response
 
 
 @router.delete("/{account_id}", response_model=AccountResponse)
@@ -140,4 +189,7 @@ async def delete_account(
     account.archived = True
     await db.commit()
     await db.refresh(account)
-    return account
+    [response] = await _accounts_with_balances(
+        db, user_id=user.id, accounts=[account]
+    )
+    return response

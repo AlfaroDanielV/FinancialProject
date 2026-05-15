@@ -102,3 +102,22 @@ class GoalProgress(BaseModel):
 
 class ContributeRequest(GoalContributionCreate):
     """Legacy request body for POST /goals/{id}/contribute."""
+
+
+class GoalForecastResponse(BaseModel):
+    """Phase 6e B9 — simple "at this pace, you arrive in X months" forecast.
+
+    `has_enough_data` is False when there are zero contributions in the last
+    3 full calendar months (we don't extrapolate from nothing). Already-
+    achieved goals return `months_to_target=0` and `remaining=0`.
+    """
+
+    goal_id: uuid.UUID
+    target_amount: Decimal
+    current_amount: Decimal
+    remaining: Decimal
+    avg_monthly_contribution: Decimal
+    months_to_target: Optional[int]
+    projected_completion_date: Optional[date]
+    has_enough_data: bool
+    lookback_months: int = 3

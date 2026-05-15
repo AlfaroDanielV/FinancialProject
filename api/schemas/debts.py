@@ -57,28 +57,23 @@ class DebtCreate(BaseModel):
 
 
 class DebtUpdate(BaseModel):
+    """Phase 6e B7 — narrowed whitelist.
+
+    Financial fields (`original_amount`, `current_balance`, `interest_rate`,
+    `minimum_payment`, `term_months`, rate fields, insurance fields,
+    `prepayment_penalty_pct`, `payments_made`) are immutable post-creation. To
+    record a refinance, create a new debt. To reconcile balance against a real
+    statement, record a payment via `POST /debts/{id}/payments`.
+    """
+
+    model_config = {"extra": "forbid"}
+
     name: Optional[str] = Field(None, min_length=1)
-    debt_type: Optional[DebtTypeEnum] = None
-    original_amount: Optional[float] = Field(None, gt=0)
-    current_balance: Optional[float] = Field(None, gt=0)
-    interest_rate: Optional[float] = Field(None, ge=0, le=1)
-    minimum_payment: Optional[float] = Field(None, gt=0)
     payment_due_day: Optional[int] = Field(None, ge=1, le=31)
     account_id: Optional[uuid.UUID] = None
-    lender: Optional[str] = None
-    term_months: Optional[int] = Field(None, gt=0)
-    start_date: Optional[date] = None
-    maturity_date: Optional[date] = None
-    currency: Optional[str] = None
     notes: Optional[str] = None
     is_active: Optional[bool] = None
-    rate_type: Optional[RateTypeEnum] = None
-    rate_reference: Optional[str] = None
-    rate_spread: Optional[float] = Field(None, ge=0, le=1)
-    prepayment_penalty_pct: Optional[float] = Field(None, ge=0, le=0.05)
-    payments_made: Optional[int] = Field(None, ge=0)
-    includes_insurance: Optional[bool] = None
-    insurance_monthly: Optional[float] = Field(None, ge=0)
+    archived: Optional[bool] = None
 
 
 class DebtResponse(BaseModel):
@@ -106,6 +101,7 @@ class DebtResponse(BaseModel):
     includes_insurance: bool
     insurance_monthly: Optional[float]
     is_active: bool
+    archived: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -121,6 +117,7 @@ class DebtSummary(BaseModel):
     minimum_payment: float
     payment_due_day: int
     is_active: bool
+    archived: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -250,6 +247,32 @@ class EarlyPayoffResponse(BaseModel):
     monthly_impact: float
     strategy: str
     currency: str
+    variable_rate_notice: Optional[str] = None
+
+
+class PayoffScenarioResult(BaseModel):
+    """Phase 6e B7 — single payoff scenario summary for the SPA tabs."""
+
+    months_saved: int
+    interest_saved: float
+    total_saved: float
+    new_payoff_date: Optional[date]
+    new_total_months: int
+    new_total_interest: float
+    prepayment_penalty_applies: bool
+    prepayment_penalty_amount: float
+
+
+class PayoffScenariosResponse(BaseModel):
+    """Phase 6e B7 — aggregate response for the calculator + Ley 7472 tabs."""
+
+    debt_id: uuid.UUID
+    currency: str
+    payments_made: int
+    prepayment_penalty_pct: float
+    original: ScheduleSummary
+    lump_sum: Optional[PayoffScenarioResult] = None
+    extra_monthly: Optional[PayoffScenarioResult] = None
     variable_rate_notice: Optional[str] = None
 
 

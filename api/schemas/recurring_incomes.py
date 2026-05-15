@@ -45,14 +45,23 @@ class RecurringIncomeCreate(BaseModel):
 
 
 class RecurringIncomeUpdate(BaseModel):
+    """Phase 6e B8 — narrow whitelist with extra='forbid'.
+
+    `income_type`, `currency`, and `base_salary_link_id` are immutable.
+    Per the router's Resolución 9.8 note, the user re-creates the derived
+    row to relink it to a different salary.
+    """
+
+    model_config = {"extra": "forbid"}
+
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     amount: Optional[Decimal] = Field(
         None, gt=0, max_digits=14, decimal_places=2
     )
-    currency: Optional[IncomeCurrencyEnum] = None
     frequency: Optional[IncomeFrequencyEnum] = None
     next_payment_date: Optional[date] = None
     is_active: Optional[bool] = None
+    archived: Optional[bool] = None
     notes: Optional[str] = None
 
 
@@ -67,8 +76,22 @@ class RecurringIncomeResponse(BaseModel):
     next_payment_date: date
     base_salary_link_id: Optional[uuid.UUID]
     is_active: bool
+    archived: bool = False
     notes: Optional[str]
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class CRCycleDeriveResponse(BaseModel):
+    """Phase 6e B8 — both CR-cycle derived incomes from one salary.
+
+    Idempotent: if either row already exists for the same base salary,
+    that row is returned unchanged and only the missing one is created.
+    """
+
+    aguinaldo: RecurringIncomeResponse
+    salario_escolar: RecurringIncomeResponse
+    created_aguinaldo: bool
+    created_salario_escolar: bool

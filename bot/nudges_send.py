@@ -27,18 +27,25 @@ def _callback_data(nudge_id, verb: str) -> str:
 
 
 def _kb(message: NudgeMessage) -> InlineKeyboardMarkup | None:
+    """Render the nudge keyboard. URL buttons (Phase 6e B12) and callback
+    buttons (Phase 5d) coexist; each gets its own row.
+    """
     if not message.buttons:
         return None
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=b.label, callback_data=_callback_data(message.nudge_id, b.verb)
-                )
-            ]
-            for b in message.buttons
-        ]
-    )
+    rows: list[list[InlineKeyboardButton]] = []
+    for b in message.buttons:
+        if b.url is not None:
+            rows.append([InlineKeyboardButton(text=b.label, url=b.url)])
+        else:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=b.label,
+                        callback_data=_callback_data(message.nudge_id, b.verb),
+                    )
+                ]
+            )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def telegram_send_fn(message: NudgeMessage) -> bool:

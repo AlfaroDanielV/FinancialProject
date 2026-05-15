@@ -185,10 +185,10 @@ export default function IncomesNew() {
     if (!derived && amount === null) return;
 
     try {
+      // Phase 6e B8: `currency` is immutable; do not send it.
       const resp = await api.patch(`/recurring-incomes/${income.id}`, {
         name: values.name.trim(),
         amount,
-        currency: values.currency,
         frequency: values.frequency,
         next_payment_date: values.next_payment_date,
         notes: values.notes?.trim() || null,

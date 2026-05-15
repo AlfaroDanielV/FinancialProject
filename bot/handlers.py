@@ -100,14 +100,18 @@ def register(dp: Dispatcher) -> None:
 
 
 def _kb(reply: BotReply) -> Optional[InlineKeyboardMarkup]:
-    if not reply.buttons:
+    if not reply.buttons and not reply.url_buttons:
         return None
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=b.label, callback_data=b.callback_data)]
-            for b in reply.buttons
-        ]
+    rows: list[list[InlineKeyboardButton]] = []
+    rows.extend(
+        [InlineKeyboardButton(text=b.label, callback_data=b.callback_data)]
+        for b in reply.buttons
     )
+    rows.extend(
+        [InlineKeyboardButton(text=b.label, url=b.url)]
+        for b in reply.url_buttons
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _setup_kb(reply: OnboardingReply) -> Optional[InlineKeyboardMarkup]:

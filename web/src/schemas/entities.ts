@@ -35,11 +35,100 @@ export const Account = z.object({
   currency: CurrencySchema,
   initial_balance: z.string(),
   is_active: z.boolean(),
+  archived: z.boolean().optional().default(false),
   created_at: z.string(),
+  current_balance: z.string().nullable().optional(),
+  month_start_balance: z.string().nullable().optional(),
 });
 export type Account = z.infer<typeof Account>;
 
 export const AccountList = z.array(Account);
+
+export const Transaction = z.object({
+  id: z.string().uuid(),
+  user_id: z.string().uuid(),
+  account_id: z.string().uuid().nullable(),
+  transfer_id: z.string().uuid().nullable().optional(),
+  category_id: z.string().uuid().nullable().optional(),
+  amount: z.number(),
+  currency: z.string(),
+  merchant: z.string().nullable(),
+  description: z.string().nullable(),
+  category: z.string().nullable(),
+  subcategory: z.string().nullable(),
+  transaction_date: z.string(),
+  source: z.string(),
+  parse_status: z.string(),
+  status: z.string(),
+  is_duplicate: z.boolean(),
+  archived: z.boolean().optional().default(false),
+  created_at: z.string(),
+});
+export type Transaction = z.infer<typeof Transaction>;
+
+export const TransactionList = z.object({
+  total: z.number().int(),
+  items: z.array(Transaction),
+  next_cursor: z.string().nullable().optional(),
+});
+export type TransactionList = z.infer<typeof TransactionList>;
+
+export const UserCategoryItem = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  kind: z.string(),
+  color: z.string(),
+  icon: z.string().nullable().optional(),
+  is_default: z.boolean(),
+  archived: z.boolean(),
+});
+export type UserCategoryItem = z.infer<typeof UserCategoryItem>;
+
+export const UserCategoryList = z.array(UserCategoryItem);
+
+export const GoalDetail = z.object({
+  id: z.string().uuid(),
+  user_id: z.string().uuid(),
+  name: z.string(),
+  target_amount: z.string(),
+  target_currency: CurrencySchema,
+  current_amount: z.string(),
+  target_date: z.string().nullable(),
+  deadline: z.string().nullable().optional(),
+  monthly_contribution: z.string().nullable(),
+  priority: z.number().int(),
+  status: z.string(),
+  linked_account_id: z.string().uuid().nullable(),
+  created_at: z.string(),
+});
+export type GoalDetail = z.infer<typeof GoalDetail>;
+
+export const GoalDetailList = z.array(GoalDetail);
+
+export const GoalContribution = z.object({
+  id: z.string().uuid(),
+  goal_id: z.string().uuid(),
+  transaction_id: z.string().uuid().nullable(),
+  amount: z.string(),
+  occurred_at: z.string(),
+  created_at: z.string(),
+});
+export type GoalContribution = z.infer<typeof GoalContribution>;
+
+export const GoalContributionList = z.array(GoalContribution);
+
+export const GoalForecast = z.object({
+  goal_id: z.string().uuid(),
+  target_amount: z.string(),
+  current_amount: z.string(),
+  remaining: z.string(),
+  avg_monthly_contribution: z.string(),
+  months_to_target: z.number().int().nullable(),
+  projected_completion_date: z.string().nullable(),
+  has_enough_data: z.boolean(),
+  lookback_months: z.number().int(),
+});
+export type GoalForecast = z.infer<typeof GoalForecast>;
 
 export const AccountForm = z
   .object({
@@ -96,6 +185,7 @@ export const RecurringIncome = z.object({
   next_payment_date: z.string(),
   base_salary_link_id: z.string().uuid().nullable(),
   is_active: z.boolean(),
+  archived: z.boolean().optional().default(false),
   notes: z.string().nullable(),
   created_at: z.string(),
   updated_at: z.string(),
@@ -295,10 +385,76 @@ export const Debt = z.object({
   includes_insurance: z.boolean(),
   insurance_monthly: z.number().nullable(),
   is_active: z.boolean(),
+  archived: z.boolean().optional().default(false),
   created_at: z.string(),
   updated_at: z.string(),
 });
 export type Debt = z.infer<typeof Debt>;
+
+export const DebtSummary = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  debt_type: DebtTypeSchema,
+  current_balance: z.number(),
+  interest_rate: z.number(),
+  minimum_payment: z.number(),
+  payment_due_day: z.number().int(),
+  is_active: z.boolean(),
+  archived: z.boolean().optional().default(false),
+});
+export type DebtSummary = z.infer<typeof DebtSummary>;
+
+export const DebtSummaryList = z.array(DebtSummary);
+
+export const DebtOverviewSchema = z.object({
+  total_debt: z.number(),
+  total_minimum_monthly: z.number(),
+  debts_by_type: z.record(z.string(), z.number()),
+  upcoming_payments: z.array(
+    z.object({
+      debt_id: z.string().uuid(),
+      name: z.string(),
+      debt_type: z.string(),
+      minimum_payment: z.number(),
+      payment_due_day: z.number().int(),
+      current_balance: z.number(),
+    }),
+  ),
+});
+export type DebtOverviewSchema = z.infer<typeof DebtOverviewSchema>;
+
+export const ScheduleSummary = z.object({
+  monthly_payment: z.number(),
+  total_months: z.number().int(),
+  total_interest: z.number(),
+  total_paid: z.number(),
+  payoff_date: z.string().nullable(),
+});
+export type ScheduleSummary = z.infer<typeof ScheduleSummary>;
+
+export const PayoffScenarioResult = z.object({
+  months_saved: z.number().int(),
+  interest_saved: z.number(),
+  total_saved: z.number(),
+  new_payoff_date: z.string().nullable(),
+  new_total_months: z.number().int(),
+  new_total_interest: z.number(),
+  prepayment_penalty_applies: z.boolean(),
+  prepayment_penalty_amount: z.number(),
+});
+export type PayoffScenarioResult = z.infer<typeof PayoffScenarioResult>;
+
+export const PayoffScenariosResponse = z.object({
+  debt_id: z.string().uuid(),
+  currency: CurrencySchema,
+  payments_made: z.number().int(),
+  prepayment_penalty_pct: z.number(),
+  original: ScheduleSummary,
+  lump_sum: PayoffScenarioResult.nullable(),
+  extra_monthly: PayoffScenarioResult.nullable(),
+  variable_rate_notice: z.string().nullable().optional(),
+});
+export type PayoffScenariosResponse = z.infer<typeof PayoffScenariosResponse>;
 
 export const AmortizationRow = z.object({
   month_number: z.number().int(),

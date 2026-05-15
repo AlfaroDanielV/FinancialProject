@@ -19,12 +19,9 @@ class AccountCreate(BaseModel):
 
 class AccountUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
+    account_type: Optional[str] = Field(None, min_length=1, max_length=50)
     is_active: Optional[bool] = None
     archived: Optional[bool] = None
-    currency: Optional[CurrencyEnum] = None
-    initial_balance: Optional[Decimal] = Field(
-        None, max_digits=14, decimal_places=2
-    )
 
 
 class AccountResponse(BaseModel):
@@ -37,5 +34,7 @@ class AccountResponse(BaseModel):
     is_active: bool
     archived: bool
     created_at: datetime
+    current_balance: Optional[Decimal] = None
+    month_start_balance: Optional[Decimal] = None
 
     model_config = {"from_attributes": True}

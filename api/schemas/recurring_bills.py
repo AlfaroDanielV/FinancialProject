@@ -137,6 +137,30 @@ class SkipRequest(BaseModel):
     notes: Optional[str] = None
 
 
+class BillMarkPaidRequest(BaseModel):
+    """Phase 6e B6 — convenience mark-paid at the recurring-bill level.
+
+    Auto-resolves the next pending/overdue/partially_paid occurrence,
+    creates a manual transaction, and links it. `idempotency_key` lets the
+    SPA prevent double-clicks (Redis-backed, 10 min TTL).
+    """
+
+    amount_paid: Optional[float] = Field(None, gt=0)
+    paid_at: Optional[date] = None
+    account_id: Optional[uuid.UUID] = None
+    category_id: Optional[uuid.UUID] = None
+    description: Optional[str] = Field(None, max_length=500)
+    idempotency_key: str = Field(..., min_length=8, max_length=128)
+
+
+class BillMarkPaidResponse(BaseModel):
+    occurrence: BillOccurrenceResponse
+    transaction_id: uuid.UUID
+    amount_delta_pct: Optional[float] = None
+    warning: Optional[str] = None
+    idempotent_replay: bool = False
+
+
 # ── status enum re-export for routers ─────────────────────────────────────────
 
 __all__ = [
@@ -147,5 +171,7 @@ __all__ = [
     "MarkPaidRequest",
     "MarkPaidResponse",
     "SkipRequest",
+    "BillMarkPaidRequest",
+    "BillMarkPaidResponse",
     "BillOccurrenceStatus",
 ]

@@ -1,5 +1,6 @@
 import uuid
 from datetime import date, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -23,6 +24,8 @@ from ..schemas.debts import (
     DebtUpdate,
     EarlyPayoffRequest,
     EarlyPayoffResponse,
+    PayoffScenarioResult,
+    PayoffScenariosResponse,
     PayoffStrategiesResponse,
     PayoffStrategyResult,
     SavingsSummary,
@@ -92,14 +95,15 @@ async def create_debt(
 
 @router.get("", response_model=list[DebtSummary])
 async def list_debts(
+    include_archived: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(current_user),
 ):
-    result = await db.execute(
-        select(Debt)
-        .where(Debt.user_id == user.id, Debt.is_active == True)  # noqa: E712
-        .order_by(Debt.created_at.desc())
-    )
+    stmt = select(Debt).where(Debt.user_id == user.id)
+    if not include_archived:
+        stmt = stmt.where(Debt.archived.is_(False))
+    stmt = stmt.order_by(Debt.created_at.desc())
+    result = await db.execute(stmt)
     return list(result.scalars().all())
 
 
@@ -109,7 +113,11 @@ async def debt_overview(
     user: User = Depends(current_user),
 ):
     result = await db.execute(
-        select(Debt).where(Debt.user_id == user.id, Debt.is_active == True)  # noqa: E712
+        select(Debt).where(
+            Debt.user_id == user.id,
+            Debt.is_active == True,  # noqa: E712
+            Debt.archived.is_(False),
+        )
     )
     debts = list(result.scalars().all())
 
@@ -300,6 +308,7 @@ async def delete_debt(
         raise HTTPException(status_code=404, detail="Deuda no encontrada.")
 
     debt.is_active = False
+    debt.archived = True
     await db.commit()
     await db.refresh(debt)
     return debt
@@ -550,5 +559,109 @@ async def early_payoff(
         monthly_impact=ep.monthly_impact,
         strategy=ep.strategy,
         currency=debt.currency,
+        variable_rate_notice=notice,
+    )
+
+
+@router.get("/{debt_id}/payoff-scenarios", response_model=PayoffScenariosResponse)
+async def debt_payoff_scenarios(
+    debt_id: uuid.UUID,
+    lump_sum: Optional[float] = Query(default=None, gt=0),
+    extra_monthly: Optional[float] = Query(default=None, gt=0),
+    lump_sum_month: int = Query(default=1, ge=1),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """Phase 6e B7 — aggregate payoff scenarios for the calculator + Ley 7472 tabs.
+
+    Pass `lump_sum`, `extra_monthly`, or both. Returns the original schedule
+    summary plus per-scenario savings (months/interest saved + Ley 7472
+    penalty info). 422 if neither param is provided.
+    """
+    if lump_sum is None and extra_monthly is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Pasá lump_sum o extra_monthly (o ambos).",
+        )
+
+    result = await db.execute(
+        select(Debt).where(Debt.id == debt_id, Debt.user_id == user.id)
+    )
+    debt = result.scalar_one_or_none()
+    if not debt:
+        raise HTTPException(status_code=404, detail="Deuda no encontrada.")
+
+    common = dict(
+        balance=float(debt.current_balance),
+        annual_rate=float(debt.interest_rate),
+        monthly_payment=float(debt.minimum_payment),
+        due_day=debt.payment_due_day,
+        start_date=date.today(),
+        includes_insurance=debt.includes_insurance,
+        insurance_monthly=float(debt.insurance_monthly) if debt.insurance_monthly else 0.0,
+        payments_made=debt.payments_made or 0,
+        prepayment_penalty_pct=float(debt.prepayment_penalty_pct or 0),
+    )
+
+    notice = None
+    if debt.rate_type == "variable":
+        ref = debt.rate_reference or "referencia"
+        notice = VARIABLE_RATE_NOTICE.format(ref=ref)
+
+    lump_result = None
+    extra_result = None
+    original_summary = None
+
+    if lump_sum is not None:
+        ep = early_payoff_lump_sum(
+            **common,
+            lump_sum_amount=lump_sum,
+            lump_sum_month=lump_sum_month,
+        )
+        original_summary = ep.original
+        lump_result = PayoffScenarioResult(
+            months_saved=ep.months_saved,
+            interest_saved=ep.interest_saved,
+            total_saved=ep.total_saved,
+            new_payoff_date=ep.new_payoff_date,
+            new_total_months=ep.proposed.total_months,
+            new_total_interest=ep.proposed.total_interest,
+            prepayment_penalty_applies=ep.prepayment_penalty_applies,
+            prepayment_penalty_amount=ep.prepayment_penalty_amount,
+        )
+
+    if extra_monthly is not None:
+        ep = early_payoff_increase_payment(
+            **common,
+            extra_monthly=extra_monthly,
+        )
+        if original_summary is None:
+            original_summary = ep.original
+        extra_result = PayoffScenarioResult(
+            months_saved=ep.months_saved,
+            interest_saved=ep.interest_saved,
+            total_saved=ep.total_saved,
+            new_payoff_date=ep.new_payoff_date,
+            new_total_months=ep.proposed.total_months,
+            new_total_interest=ep.proposed.total_interest,
+            prepayment_penalty_applies=ep.prepayment_penalty_applies,
+            prepayment_penalty_amount=ep.prepayment_penalty_amount,
+        )
+
+    assert original_summary is not None
+    return PayoffScenariosResponse(
+        debt_id=debt.id,
+        currency=debt.currency,
+        payments_made=debt.payments_made or 0,
+        prepayment_penalty_pct=float(debt.prepayment_penalty_pct or 0),
+        original=ScheduleSummary(
+            monthly_payment=original_summary.monthly_payment,
+            total_months=original_summary.total_months,
+            total_interest=original_summary.total_interest,
+            total_paid=original_summary.total_payments,
+            payoff_date=original_summary.payoff_date,
+        ),
+        lump_sum=lump_result,
+        extra_monthly=extra_result,
         variable_rate_notice=notice,
     )

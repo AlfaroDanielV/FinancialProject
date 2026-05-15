@@ -67,6 +67,9 @@ class RecurringIncome(Base):
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )
+    archived: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), default=datetime.utcnow

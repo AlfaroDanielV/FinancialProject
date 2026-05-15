@@ -62,8 +62,18 @@ log = logging.getLogger("nudges.delivery")
 
 @dataclass
 class NudgeButton:
+    """Phase 5d nudge action button.
+
+    Phase 6e B12 added the optional `url` field: when set, the renderer
+    emits a Telegram URL button instead of a callback button. URL buttons
+    bypass the act/dismiss/later state machine — they're for opening the
+    SPA via an `edit_session` magic link. `verb` stays required for
+    callback buttons; URL buttons can pass any sentinel ("link").
+    """
+
     label: str
-    verb: str  # 'act' | 'dismiss' | 'later'
+    verb: str  # 'act' | 'dismiss' | 'later' for callback buttons
+    url: str | None = None
 
 
 _BUTTONS: dict[str, list[NudgeButton]] = {
