@@ -62,6 +62,11 @@ jobs:
       BCRYPT_ROUNDS: "4"
       UV_CACHE_DIR: /tmp/uv-cache
       PYTHONDONTWRITEBYTECODE: "1"
+      # Required by migration 0006 to seed the initial user row.
+      # CI uses throwaway values — production uses real secrets via the Azure job.
+      LEGACY_USER_EMAIL: ci@example.com
+      LEGACY_USER_NAME: CI User
+      LEGACY_SHORTCUT_TOKEN: ci-shortcut-token-not-for-production
 
     steps:
       - uses: actions/checkout@v4
