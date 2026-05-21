@@ -188,25 +188,43 @@ Pick before you start. Fill in your real values; the rest of this doc
 uses these placeholders.
 
 ```bash
-# Edit these once. Re-source this file in any shell that runs az/gh.
-export AZ_SUB="<your-subscription-id>"
-export RG="ledger-cr-prod"
-export REGION="eastus2"
-export ACR="ledgercrcrprod"           # 5–50 alphanumeric, globally unique
-export PG="ledger-cr-pg"
-export PG_DB="finance"
-export PG_ADMIN="financeadmin"
-export REDIS="ledger-cr-redis"
-export ENV_CAE="ledger-cr-env"        # Container Apps Environment
-export APP_API="ledger-cr-api"        # the api/bot Container App
-export JOB_GMAIL="ledger-cr-gmail-daily"
-export JOB_MIGRATE="ledger-cr-migrate"
-export KV="ledger-cr-kv"              # 3–24 chars, globally unique
-export SWA="ledger-cr-spa"            # Static Web App
-export DOMAIN_ROOT="tudominio.cr"     # your parent domain
-export DOMAIN_API="api.centro.${DOMAIN_ROOT}"
-export DOMAIN_SPA="centro.${DOMAIN_ROOT}"
-export DOMAIN_COOKIE=".centro.${DOMAIN_ROOT}"  # parent for cross-origin cookie
+  # ── Paste this entire block into your terminal once per session ──────────────
+  export AZ_SUB="93b621b4-486f-4275-b5e2-c298cc787663"
+  export RG="finance-prod-rg"
+  export REGION="eastus2"
+  export ACR="financeprodacratemporalcr22143"
+  export PG="finance-prod-pg"
+  export PG_DB="finance"
+  export PG_ADMIN="financeadmin"
+  export PG_PASSWORD="iMhqUIZWJNFqr1XYgtuPSjHm"
+  export REDIS="atemp-cr-finance-prd-redis"
+  export ENV_CAE="finance-prod-env"
+  export APP_API="finance-api"
+  export CA_NAME="finance-api"
+  export JOB_GMAIL="ledger-cr-gmail-daily"
+  export JOB_MIGRATE="ledger-cr-migrate"
+  export KV="finance-kv-14537"
+  export SWA="ledger-cr-spa"
+  export DOMAIN_API="api.keystonefinance-atemporal.com"
+  export DOMAIN_SPA="app.keystonefinance-atemporal.com"
+  export DOMAIN_COOKIE=".keystonefinance-atemporal.com"
+
+  # Computed — derived from the above, no editing needed
+  export ACR_LOGIN="${ACR}.azurecr.io"
+  export SWA="ledger-cr-spa"
+  export DOMAIN_API="api.keystonefinance-atemporal.com"
+  export SWA="ledger-cr-spa"
+  export DOMAIN_API="api.keystonefinance-atemporal.com"
+  export DOMAIN_SPA="app.keystonefinance-atemporal.com"
+  export DOMAIN_COOKIE=".keystonefinance-atemporal.com"
+
+  # Computed — derived from the above, no editing needed
+  export ACR_LOGIN="${ACR}.azurecr.io"
+  export SUB="$AZ_SUB"
+
+  az account set --subscription "$AZ_SUB"
+  echo "All deployment vars set. ACR_LOGIN=$ACR_LOGIN  CA_NAME=$CA_NAME"
+  # ─────────────────────────────────────────────────────────────────────────────
 ```
 
 ```bash
@@ -327,7 +345,7 @@ Grant the Container App's managed identity `Key Vault Secrets User`:
 ```bash
 # Enable system-assigned identity on the app first (after §7)
 APP_PRINCIPAL=$(az containerapp identity assign \
-  -g "$RG" -n "$APP_API" --system-assigned \
+  -g "$RG" -n "$CA_NAME" --system-assigned \
   --query "principalId" -o tsv)
 KV_ID=$(az keyvault show -g "$RG" -n "$KV" --query "id" -o tsv)
 az role assignment create --role "Key Vault Secrets User" \
@@ -344,7 +362,7 @@ Repeat for the worker Job's managed identity (after §8).
 ACR_LOGIN=$(az acr show -n "$ACR" --query "loginServer" -o tsv)
 
 az containerapp create \
-  -g "$RG" -n "$APP_API" --environment "$ENV_CAE" \
+  -g "$RG" -n "$CA_NAME" --environment "$ENV_CAE" \
   --image "$ACR_LOGIN/centro-api:phase6e-b13" \
   --target-port 8000 --ingress external \
   --min-replicas 1 --max-replicas 3 \
@@ -353,7 +371,7 @@ az containerapp create \
   --registry-identity system
 
 # Switch to Key-Vault-backed secrets (run AFTER the role assignment in §6)
-az containerapp secret set -g "$RG" -n "$APP_API" --secrets \
+az containerapp secret set -g "$RG" -n "$CA_NAME" --secrets \
   "database-url=keyvaultref:https://${KV}.vault.azure.net/secrets/DATABASE-URL,identityref:system" \
   "redis-url=keyvaultref:https://${KV}.vault.azure.net/secrets/REDIS-URL,identityref:system" \
   "anthropic-api-key=keyvaultref:https://${KV}.vault.azure.net/secrets/ANTHROPIC-API-KEY,identityref:system" \
@@ -366,7 +384,7 @@ az containerapp secret set -g "$RG" -n "$APP_API" --secrets \
   "gmail-oauth-state-secret=keyvaultref:https://${KV}.vault.azure.net/secrets/GMAIL-OAUTH-STATE-SECRET,identityref:system"
 
 # Wire env vars (some are secretrefs, some literal)
-az containerapp update -g "$RG" -n "$APP_API" --set-env-vars \
+az containerapp update -g "$RG" -n "$CA_NAME" --set-env-vars \
   ENVIRONMENT=production \
   LOG_LEVEL=INFO \
   DATABASE_URL=secretref:database-url \
@@ -392,10 +410,10 @@ az containerapp update -g "$RG" -n "$APP_API" --set-env-vars \
   INSIGHTS_DISPATCHER_ENABLED=false
 
 # Custom domain (gets you the cookie domain you set above)
-az containerapp hostname add -g "$RG" -n "$APP_API" \
+az containerapp hostname add -g "$RG" -n "$CA_NAME" \
   --hostname "$DOMAIN_API"
 # Add the TXT + CNAME at your registrar, then:
-az containerapp hostname bind -g "$RG" -n "$APP_API" \
+az containerapp hostname bind -g "$RG" -n "$CA_NAME" \
   --hostname "$DOMAIN_API" --environment "$ENV_CAE"
 ```
 
@@ -412,13 +430,16 @@ container boot — production runs `alembic upgrade head` from a
 one-shot Job so a botched migration can't take down the API.
 
 ```bash
-# Create the job — same image as the api, different command
+# Create the job — same image as the api, different command.
+# NOTE: do NOT use --command "alembic upgrade head" — the CLI stores the
+# entire string as a single array element and the runtime can't exec it.
+# Create the job first (no --command flag), then PATCH the template via
+# az rest to set command + args as a proper JSON array.
 az containerapp job create \
   -g "$RG" -n "$JOB_MIGRATE" --environment "$ENV_CAE" \
   --image "$ACR_LOGIN/centro-api:phase6e-b13" \
   --trigger-type Manual \
   --replica-timeout 600 --replica-retry-limit 0 \
-  --command "alembic upgrade head" \
   --cpu 0.25 --memory 0.5Gi \
   --registry-server "$ACR_LOGIN" --registry-identity system \
   --secrets \
@@ -427,30 +448,111 @@ az containerapp job create \
     DATABASE_URL=secretref:database-url \
     ENVIRONMENT=production
 
-# Run it (blocks until done)
+# Patch the command via the REST API so the args array is correct.
+# This sets: command=["/bin/sh"]  args=["-c", "alembic upgrade head"]
+# (the Azure CLI --args flag joins values with commas into a single string,
+# which causes sh to fail with "Illegal option -,").
+SUB=$(az account show --query id -o tsv)
+ACR_IMAGE="$ACR_LOGIN/centro-api:phase6e-b13"
+az rest --method PATCH \
+  --url "https://management.azure.com/subscriptions/${SUB}/resourceGroups/${RG}/providers/Microsoft.App/jobs/${JOB_MIGRATE}?api-version=2024-03-01" \
+  --body "{
+    \"properties\": {
+      \"template\": {
+        \"containers\": [
+          {
+            \"name\": \"${JOB_MIGRATE}\",
+            \"image\": \"${ACR_IMAGE}\",
+            \"command\": [\"/bin/sh\"],
+            \"args\": [\"-c\", \"alembic upgrade head\"],
+            \"env\": [
+              {\"name\": \"DATABASE_URL\", \"secretRef\": \"database-url\"},
+              {\"name\": \"ENVIRONMENT\", \"value\": \"production\"}
+            ],
+            \"resources\": {\"cpu\": 0.25, \"memory\": \"0.5Gi\"}
+          }
+        ]
+      }
+    }
+  }" \
+  --query "properties.template.containers[0].{command:command,args:args}" -o json
+
+# Verify the stored format looks like: command=["/bin/sh"]  args=["-c","alembic upgrade head"]
+
+# Grant the migrate job's managed identity access to Key Vault.
+# Without this the job can't resolve the DATABASE-URL secret and will fail
+# immediately with a 403 before alembic even starts.
+MIGRATE_PRINCIPAL=$(az containerapp job identity assign \
+  -g "$RG" -n "$JOB_MIGRATE" --system-assigned \
+  --query "principalId" -o tsv)
+KV_ID=$(az keyvault show -g "$RG" -n "$KV" --query "id" -o tsv)
+az role assignment create --role "Key Vault Secrets User" \
+  --assignee "$MIGRATE_PRINCIPAL" --scope "$KV_ID"
+
+# Run it
 az containerapp job start -g "$RG" -n "$JOB_MIGRATE"
 az containerapp job execution list -g "$RG" -n "$JOB_MIGRATE" -o table
 ```
 
-Verify head:
+Verify head — check the job's console logs (Log Analytics), since
+`az containerapp exec` requires an interactive TTY and fails from scripts:
 
 ```bash
-az containerapp exec -g "$RG" -n "$APP_API" --command \
-  "alembic current"
-# expect: 0020 (head)
+# The migration logs to stderr; last line should show 0020 or "already at head".
+# Replace the workspace ID with your own (from: az containerapp env show -g "$RG"
+# -n "$ENV_CAE" --query "properties.appLogsConfiguration.logAnalyticsConfiguration.customerId" -o tsv)
+LA_WS=$(az containerapp env show -g "$RG" -n "$ENV_CAE" \
+  --query "properties.appLogsConfiguration.logAnalyticsConfiguration.customerId" -o tsv)
+az monitor log-analytics query -w "$LA_WS" \
+  --analytics-query "ContainerAppConsoleLogs_CL
+    | where ContainerGroupName_s contains 'migrate'
+    | order by TimeGenerated asc
+    | project TimeGenerated, Stream_s, Log_s" \
+  -o table
+# expect: last rows show "Running upgrade … -> 0020" or "Context impl PostgresqlImpl / already at head"
 ```
 
 **Refresh the materialized views once after the first 0020 deploy**
 (Phase 6e B2 added them; the nightly insights worker maintains them
-afterwards):
+afterwards).
+
+`az containerapp exec` requires an interactive TTY so it can't be used
+from a script. Reuse the migrate job instead — patch its command to the
+refresh script, run it, then restore it:
 
 ```bash
-az containerapp exec -g "$RG" -n "$APP_API" --command \
-  "python -c 'import asyncio; from api.services.dashboard.materialized import refresh_dashboard_materialized_views; from api.database import AsyncSessionLocal; \
-   async def r():\
-     async with AsyncSessionLocal() as s:\
-       await refresh_dashboard_materialized_views(s); await s.commit()\
-   asyncio.run(r())'"
+# Base64-encode the refresh script to avoid all quoting issues
+REFRESH_ENCODED=$(python3 -c "
+import base64
+code = '''import asyncio
+from api.services.dashboard.materialized import refresh_dashboard_materialized_views
+from api.database import AsyncSessionLocal
+
+async def r():
+    async with AsyncSessionLocal() as s:
+        await refresh_dashboard_materialized_views(s)
+        await s.commit()
+
+asyncio.run(r())'''
+print(base64.b64encode(code.encode()).decode())
+")
+
+SUB=$(az account show --query id -o tsv)
+ACR_IMAGE="$ACR_LOGIN/centro-api:phase6e-b13"
+
+# 1. Patch job to run the refresh script
+az rest --method PATCH \
+  --url "https://management.azure.com/subscriptions/${SUB}/resourceGroups/${RG}/providers/Microsoft.App/jobs/${JOB_MIGRATE}?api-version=2024-03-01" \
+  --body "{\"properties\":{\"template\":{\"containers\":[{\"name\":\"${JOB_MIGRATE}\",\"image\":\"${ACR_IMAGE}\",\"command\":[\"/bin/sh\"],\"args\":[\"-c\",\"python3 -c \\\"import base64; exec(base64.b64decode('${REFRESH_ENCODED}').decode())\\\"\"],\"env\":[{\"name\":\"DATABASE_URL\",\"secretRef\":\"database-url\"},{\"name\":\"ENVIRONMENT\",\"value\":\"production\"}],\"resources\":{\"cpu\":0.25,\"memory\":\"0.5Gi\"}}]}}}"
+
+# 2. Run and wait
+az containerapp job start -g "$RG" -n "$JOB_MIGRATE"
+az containerapp job execution list -g "$RG" -n "$JOB_MIGRATE" -o table
+
+# 3. Restore job back to alembic upgrade head
+az rest --method PATCH \
+  --url "https://management.azure.com/subscriptions/${SUB}/resourceGroups/${RG}/providers/Microsoft.App/jobs/${JOB_MIGRATE}?api-version=2024-03-01" \
+  --body "{\"properties\":{\"template\":{\"containers\":[{\"name\":\"${JOB_MIGRATE}\",\"image\":\"${ACR_IMAGE}\",\"command\":[\"/bin/sh\"],\"args\":[\"-c\",\"alembic upgrade head\"],\"env\":[{\"name\":\"DATABASE_URL\",\"secretRef\":\"database-url\"},{\"name\":\"ENVIRONMENT\",\"value\":\"production\"}],\"resources\":{\"cpu\":0.25,\"memory\":\"0.5Gi\"}}]}}}"
 ```
 
 ---
@@ -458,6 +560,9 @@ az containerapp exec -g "$RG" -n "$APP_API" --command \
 ## 9. Gmail daily worker Container Apps Job
 
 ```bash
+# ACR_LOGIN may not be set if this is a fresh shell — recompute it.
+ACR_LOGIN=$(az acr show -n "$ACR" --query "loginServer" -o tsv)
+
 az containerapp job create \
   -g "$RG" -n "$JOB_GMAIL" --environment "$ENV_CAE" \
   --image "$ACR_LOGIN/centro-worker:phase6e-b13" \
@@ -467,17 +572,22 @@ az containerapp job create \
   --cpu 0.5 --memory 1.0Gi \
   --registry-server "$ACR_LOGIN" --registry-identity system
 
-# Wire its own secrets + identity (mirror §6 for this job)
+# Wire its own secrets + identity
 JOB_PRINCIPAL=$(az containerapp job identity assign \
   -g "$RG" -n "$JOB_GMAIL" --system-assigned \
   --query "principalId" -o tsv)
+# KV_ID may not be set if this is a fresh shell — recompute it.
+KV_ID=$(az keyvault show -g "$RG" -n "$KV" --query "id" -o tsv)
 az role assignment create --role "Key Vault Secrets User" \
   --assignee "$JOB_PRINCIPAL" --scope "$KV_ID"
 
+# Add KV secret refs — note TELEGRAM-BOT-TOKEN is included so the worker
+# can send Telegram notifications (see the notification note below).
 az containerapp job secret set -g "$RG" -n "$JOB_GMAIL" --secrets \
   "database-url=keyvaultref:https://${KV}.vault.azure.net/secrets/DATABASE-URL,identityref:system" \
   "redis-url=keyvaultref:https://${KV}.vault.azure.net/secrets/REDIS-URL,identityref:system" \
   "anthropic-api-key=keyvaultref:https://${KV}.vault.azure.net/secrets/ANTHROPIC-API-KEY,identityref:system" \
+  "telegram-bot-token=keyvaultref:https://${KV}.vault.azure.net/secrets/TELEGRAM-BOT-TOKEN,identityref:system" \
   "gmail-client-id=keyvaultref:https://${KV}.vault.azure.net/secrets/GMAIL-CLIENT-ID,identityref:system" \
   "gmail-client-secret=keyvaultref:https://${KV}.vault.azure.net/secrets/GMAIL-CLIENT-SECRET,identityref:system"
 
@@ -486,17 +596,52 @@ az containerapp job update -g "$RG" -n "$JOB_GMAIL" --set-env-vars \
   DATABASE_URL=secretref:database-url \
   REDIS_URL=secretref:redis-url \
   ANTHROPIC_API_KEY=secretref:anthropic-api-key \
+  TELEGRAM_BOT_TOKEN=secretref:telegram-bot-token \
+  TELEGRAM_MODE=webhook \
   SECRET_STORE_BACKEND=azure_kv \
   AZURE_KEY_VAULT_URL="https://${KV}.vault.azure.net/" \
   GMAIL_CLIENT_ID=secretref:gmail-client-id \
   GMAIL_CLIENT_SECRET=secretref:gmail-client-secret
 ```
 
-Smoke it once before waiting for the cron:
+> **Notification gap:** `workers/gmail_daily.py` currently never calls
+> `bot.app.start_bot()`, so `get_bot()` in the notifier always raises
+> `RuntimeError` and every Telegram notification is silently dropped with
+> `notifier_send_skipped reason=bot_not_initialized`. The worker will scan
+> and create shadow transactions correctly, but users won't receive the
+> "nuevas transacciones" Telegram message until `start_bot()` is added to
+> the worker's `main()`. The env vars above (`TELEGRAM_BOT_TOKEN`,
+> `TELEGRAM_MODE`) are wired in advance so that fix is a code-only change.
+
+Smoke it once before waiting for the cron. The job takes ~10–30 s to
+complete; wait before checking status:
 
 ```bash
-az containerapp job start -g "$RG" -n "$JOB_GMAIL"
-az containerapp job execution list -g "$RG" -n "$JOB_GMAIL" -o table
+EXEC=$(az containerapp job start -g "$RG" -n "$JOB_GMAIL" \
+  --query "name" -o tsv)
+echo "Execution: $EXEC"
+
+# Wait for terminal state
+until STATUS=$(az containerapp job execution show \
+  -g "$RG" -n "$JOB_GMAIL" --job-execution-name "$EXEC" \
+  --query "properties.status" -o tsv 2>/dev/null); \
+  [ "$STATUS" = "Succeeded" ] || [ "$STATUS" = "Failed" ]; do
+  echo "  $STATUS..."
+  sleep 5
+done
+echo "Final: $STATUS"
+
+# If Failed — read the container logs:
+LA_WS=$(az containerapp env show -g "$RG" -n "$ENV_CAE" \
+  --query "properties.appLogsConfiguration.logAnalyticsConfiguration.customerId" -o tsv)
+az monitor log-analytics query -w "$LA_WS" \
+  --analytics-query "ContainerAppConsoleLogs_CL
+    | where ContainerGroupName_s contains 'gmail-daily'
+    | order by TimeGenerated asc
+    | project TimeGenerated, Stream_s, Log_s" \
+  -o table
+# Succeeded: expect "daily_run_completed users=1" in the logs.
+# If users=0, Gmail OAuth hasn't been connected yet via /conectar_gmail in Telegram.
 ```
 
 ---
@@ -549,9 +694,13 @@ curl -s "$API/health" | jq
 curl -s "$API/health/ready" | jq
 # {"status":"ok","db":true,"redis":true}
 
-# Migrations
-az containerapp exec -g "$RG" -n "$APP_API" --command "alembic current"
-# expect: 0020 (head)
+# Migrations — az containerapp exec needs an interactive TTY; use log query instead.
+LA_WS=$(az containerapp env show -g "$RG" -n "$ENV_CAE" \
+  --query "properties.appLogsConfiguration.logAnalyticsConfiguration.customerId" -o tsv)
+az monitor log-analytics query -w "$LA_WS" \
+  --analytics-query "ContainerAppConsoleLogs_CL | where ContainerGroupName_s contains 'migrate' | order by TimeGenerated desc | take 5 | project TimeGenerated, Log_s" \
+  -o table
+# expect: last migration line shows "0020" or "already at head"
 
 # Telegram webhook registration — happens automatically on lifespan
 # startup when TELEGRAM_MODE=webhook + TELEGRAM_WEBHOOK_URL are set
@@ -646,8 +795,12 @@ Also try `/memoria` → "Editar en SPA" button.
 After every block deploy, walk through this in ~3 minutes:
 
 ```bash
-# 1. Migrations
-az containerapp exec -g "$RG" -n "$APP_API" --command "alembic current"
+# 1. Migrations — use log query; az containerapp exec requires an interactive TTY.
+LA_WS=$(az containerapp env show -g "$RG" -n "$ENV_CAE" \
+  --query "properties.appLogsConfiguration.logAnalyticsConfiguration.customerId" -o tsv)
+az monitor log-analytics query -w "$LA_WS" \
+  --analytics-query "ContainerAppConsoleLogs_CL | where ContainerGroupName_s contains 'migrate' | order by TimeGenerated desc | take 5 | project TimeGenerated, Log_s" \
+  -o table
 
 # 2. Health + readiness
 curl -s "$API/health/ready" | jq
@@ -665,7 +818,7 @@ az containerapp job execution list -g "$RG" -n "$JOB_GMAIL" \
   --query "[0].{status:properties.status,ended:properties.endTime}" -o tsv
 
 # 6. Tail logs for the last 5 minutes
-az containerapp logs show -g "$RG" -n "$APP_API" --follow false --tail 200
+az containerapp logs show -g "$RG" -n "$CA_NAME" --follow false --tail 200
 ```
 
 In Telegram, do one round-trip per block area: log a transaction
@@ -708,6 +861,7 @@ env:
   AZ_SUB: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
   RG:     ledger-cr-prod
   ACR:    ledgercrcrprod
+  KV:     ledger-cr-kv        # used in the Telegram webhook verify step
   TAG:    ${{ github.sha }}
 
 jobs:
@@ -740,8 +894,13 @@ jobs:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
       - name: Update migrate job image + run
         run: |
+          # Update image first (keep the /bin/sh -c args already set via az rest)
           az containerapp job update -g "$RG" -n ledger-cr-migrate \
             --image "$ACR.azurecr.io/centro-api:${TAG}"
+          # Re-patch args in case the update reset them (az rest is idempotent)
+          az rest --method PATCH \
+            --url "https://management.azure.com/subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${RG}/providers/Microsoft.App/jobs/ledger-cr-migrate?api-version=2024-03-01" \
+            --body "{\"properties\":{\"template\":{\"containers\":[{\"name\":\"ledger-cr-migrate\",\"image\":\"$ACR.azurecr.io/centro-api:${TAG}\",\"command\":[\"/bin/sh\"],\"args\":[\"-c\",\"alembic upgrade head\"],\"env\":[{\"name\":\"DATABASE_URL\",\"secretRef\":\"database-url\"},{\"name\":\"ENVIRONMENT\",\"value\":\"production\"}],\"resources\":{\"cpu\":0.25,\"memory\":\"0.5Gi\"}}]}}}"
           az containerapp job start -g "$RG" -n ledger-cr-migrate
           # Block until success; fail the workflow on non-zero exit.
 
@@ -816,7 +975,7 @@ Don't add this workflow until you've done one manual deploy following
 
 ```bash
 # Scale the API down — keeps the URL/cert but stops the meter
-az containerapp update -g "$RG" -n "$APP_API" \
+az containerapp update -g "$RG" -n "$CA_NAME" \
   --min-replicas 0 --max-replicas 0
 
 # Pause the Gmail daily job
