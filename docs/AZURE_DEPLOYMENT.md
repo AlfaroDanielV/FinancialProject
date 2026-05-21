@@ -1035,6 +1035,197 @@ is the recipe, not the state.
 
 ---
 
+## 20. Lessons learned (first Phase 6 deploy)
+
+Failures hit during the first production deploy on 2026-05-20/21 and
+what to do differently next time.
+
+---
+
+### L1 — Container Apps Job `--command` stores a single string, not an array
+
+**What broke:** `az containerapp job create --command "alembic upgrade head"`
+stores the entire phrase as one array element. The runtime tries to exec a
+binary named `"alembic upgrade head"` (spaces included) and fails immediately.
+
+**Fix:** Never use `--command` for multi-word commands. Create the job without
+`--command`, then PATCH via `az rest` to set the array correctly:
+```json
+"command": ["/bin/sh"],  "args": ["-c", "alembic upgrade head"]
+```
+
+**Why `--args "-c" "alembic upgrade head"` also breaks:** the CLI joins
+multiple `--args` values with a comma into one string (`-c,alembic upgrade
+head`), causing `sh` to fail with `Illegal option -,`. The only reliable path
+is `az rest --method PATCH` with the exact JSON array. See §8 for the full
+pattern.
+
+---
+
+### L2 — `az containerapp exec` requires an interactive TTY
+
+**What broke:** `az containerapp exec --command "alembic current"` fails with
+`Inappropriate ioctl for device` from any non-interactive shell (scripts, CI,
+Claude Code Bash tool). The Azure CLI calls `tty.setcbreak()` even for
+one-shot commands.
+
+**Fix:** Use Log Analytics to read output from one-shot operations:
+```bash
+az monitor log-analytics query -w "$LA_WS" \
+  --analytics-query "ContainerAppConsoleLogs_CL | where ..."
+```
+For anything that requires running a command against the live container, reuse
+the migrate job pattern (patch command → run → restore). See §8.
+
+---
+
+### L3 — `az containerapp update --set-env-vars` does not restart the container
+
+**What broke:** After setting `TELEGRAM_MODE=webhook`, the running container
+kept reading the old empty values. The bot never called `set_webhook()` so
+Telegram had no URL registered and `/start` did nothing.
+
+**Root cause:** Container Apps revisions are immutable. Updating env vars
+modifies the app-level config but does not automatically create a new revision
+or restart the running container. `az containerapp revision restart` also
+doesn't help — it restarts the container within the same revision and it still
+reads the same frozen values.
+
+**Fix:** Force a new revision with `--revision-suffix`:
+```bash
+az containerapp update -g "$RG" -n "$CA_NAME" \
+  --revision-suffix "$(date +%Y%m%d%H%M)" \
+  --set-env-vars TELEGRAM_MODE=webhook \
+    TELEGRAM_WEBHOOK_URL="https://${DOMAIN_API}/api/v1/telegram/webhook"
+```
+A new revision bakes the updated values in and starts fresh. Always use
+`--revision-suffix` when the update must take effect immediately.
+
+**How to confirm the bot started:** the app log line
+```
+bot.app: Telegram webhook registered at https://...
+```
+only tells you the API call returned without raising — it does NOT guarantee
+Telegram accepted and stored the URL. Always verify with:
+```bash
+curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo" | jq .result.url
+```
+If the URL is empty or `last_error_message` shows `401 Unauthorized`, see L6.
+
+---
+
+### L4 — Static Web Apps have no hostname until the first deployment
+
+**What broke:** `az staticwebapp hostname set` returned "CNAME Record is
+invalid" because `properties.defaultHostname` was empty — the SWA was
+provisioned but had no content deployed yet.
+
+**Fix:** Deploy the SPA first (`swa deploy web/dist --deployment-token ...`),
+get the hostname from the deploy output, add the CNAME at the registrar, wait
+for propagation, then run `az staticwebapp hostname set`.
+
+**CNAME value must be a bare hostname** — no `https://` prefix. Registrars
+reject anything that looks like a URL.
+
+---
+
+### L5 — Migration 0006 requires env vars that CI doesn't set
+
+**What broke:** The `phase-6d-e2e.yml` CI workflow runs `alembic upgrade head`
+but had no `LEGACY_USER_EMAIL`, `LEGACY_USER_NAME`, or `LEGACY_SHORTCUT_TOKEN`
+in its `env:` block. Migration 0006 raises `RuntimeError` without them.
+
+**Fix:** Add throwaway values to the CI workflow's `env:` block. These seed
+an ephemeral test-only database — the real values only matter for the Azure
+migrate job running against the production database.
+
+---
+
+### L6 — Telegram webhook `401 Unauthorized` after deploy
+
+**What broke:** After a successful deploy the bot log said "webhook registered"
+but `getWebhookInfo` showed `url: ""` or `last_error_message: "401 Unauthorized"`.
+Sending `/start` produced no response.
+
+**Root cause (two parts):**
+
+1. Container Apps can restart a revision mid-session (health-check hiccup, OOM,
+   cold-start scale-in). During shutdown the lifespan calls `delete_webhook()`.
+   If the next startup completes `set_webhook()` but then crashes before staying
+   alive, the webhook is gone again. The app log line appears before aiogram
+   confirms Telegram's response, so it is not a reliable receipt.
+
+2. The local `.env` file holds a *different* `TELEGRAM_WEBHOOK_SECRET` than the
+   Key Vault secret (`TELEGRAM-WEBHOOK-SECRET`). If you call `setWebhook`
+   manually using the local value, Telegram will reject every incoming update
+   with `401 Unauthorized` because the running container is comparing against
+   the KV value.
+
+**Fix — always re-register using the KV secret:**
+```bash
+KV_SECRET=$(az keyvault secret show --vault-name "$KV" \
+  -n "TELEGRAM-WEBHOOK-SECRET" --query "value" -o tsv)
+BOT_TOKEN=$(az keyvault secret show --vault-name "$KV" \
+  -n "TELEGRAM-BOT-TOKEN" --query "value" -o tsv)
+
+curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"url\": \"https://${DOMAIN_API}/api/v1/telegram/webhook\",
+    \"secret_token\": \"${KV_SECRET}\",
+    \"allowed_updates\": [\"message\",\"callback_query\"],
+    \"drop_pending_updates\": false
+  }" | jq
+
+# Verify immediately:
+curl -s "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo" | jq '{url:.result.url, pending:.result.pending_update_count, error:.result.last_error_message}'
+```
+
+A healthy response looks like `"url": "https://...", "pending": 0, "error": null`.
+The `pending_update_count` drops to 0 once queued updates are drained.
+
+---
+
+### L7 — SPA API calls go to the SWA origin, not the API (relative `baseURL`)
+
+**What broke:** After deploying the SPA, magic-link exchange (and every other
+API call) returned `405` or `404`. The exchange endpoint appeared to work in
+dev but silently failed in production.
+
+**Root cause:** `web/src/api/client.ts` used `baseURL: "/api/v1"` — a
+relative path. In development the Vite dev server proxies `/api/*` to
+`localhost:8000`, so every call works. In production the SPA is served from
+`app.keystonefinance-atemporal.com` (Azure Static Web Apps); the browser
+resolves the relative URL against that origin, so requests go to
+`https://app.keystonefinance-atemporal.com/api/v1/...` — a host that only
+serves static files. The SWA returns `405 Method Not Allowed`.
+
+**Fix:** Use a build-time Vite env variable for the API origin:
+
+`web/src/vite-env.d.ts`:
+```ts
+/// <reference types="vite/client" />
+interface ImportMetaEnv { readonly VITE_API_URL?: string; }
+interface ImportMeta { readonly env: ImportMetaEnv; }
+```
+
+`web/src/api/client.ts`:
+```ts
+const API_BASE = (import.meta.env.VITE_API_URL ?? "") + "/api/v1";
+export const api = axios.create({ baseURL: API_BASE, ... });
+```
+
+`web/.env.production`:
+```
+VITE_API_URL=https://api.keystonefinance-atemporal.com
+```
+
+The empty string fallback keeps the relative path working in dev (proxy still
+handles `/api/*`). The `.env.production` file is committed to the repo so the
+CI/CD build picks it up automatically without any workflow changes.
+
+---
+
 ## Quick reference card
 
 | What | Where |
