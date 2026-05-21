@@ -157,11 +157,10 @@ async def stop_bot() -> None:
             pass
         _state.polling_task = None
     if _state.bot is not None:
-        try:
-            if settings.telegram_mode.lower() == "webhook":
-                await _state.bot.delete_webhook()
-        except Exception:  # pragma: no cover - best effort shutdown
-            pass
+        # Do NOT delete the webhook on shutdown in webhook mode. The new
+        # revision registers it during its own startup; calling delete_webhook
+        # here races with that and leaves Telegram with no delivery URL until
+        # we re-register manually. Polling mode still cancels cleanly above.
         await _state.bot.session.close()
         _state.bot = None
     _state.dp = None

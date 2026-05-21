@@ -24,7 +24,7 @@ COPY pyproject.toml uv.lock ./
 
 # Install production deps into /app/.venv. --no-install-project skips the
 # project itself (we COPY the source in the next layer).
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --no-install-project --extra azure
 
 # Source. Anything excluded by .dockerignore is skipped.
 COPY . .
