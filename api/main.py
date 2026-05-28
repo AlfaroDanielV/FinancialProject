@@ -20,6 +20,7 @@ from .routers import (
     budgets,
     calendar,
     categories,
+    chat,
     custom_events,
     dashboard,
     debts,
@@ -139,6 +140,7 @@ app.include_router(admin_insights.router)
 app.include_router(recurring_incomes.router)
 app.include_router(onboarding.router)
 app.include_router(auth.router)
+app.include_router(chat.router)
 
 # Static pages for the OAuth callback redirect targets. Kept separate
 # from the router so adding a new HTML file doesn't require code changes.

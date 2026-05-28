@@ -10,6 +10,7 @@ JSON response.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -33,6 +34,7 @@ from api.services.llm_extractor import (
     LLMClient,
     LLMClientError,
     extract_finance_intent,
+    extract_vision,
 )
 from api.services.telegram_dispatcher import (
     AskClarification,
@@ -125,6 +127,7 @@ class BotReply:
 
 _CONFIRM_YES_WORDS = frozenset({"si", "sí", "dale", "ok", "okey", "listo", "va"})
 _CONFIRM_NO_WORDS = frozenset({"no", "cancelar", "cancela", "nel"})
+_NON_WORD_RE = re.compile(r"[^\w\s]", re.UNICODE)
 
 # Commands that bypass the LLM entirely — cheaper and deterministic.
 # Mirrors aiogram's Command() handlers so _simulate + real Telegram agree.
@@ -156,9 +159,9 @@ def _buttons_for(short_id: str) -> list[ConfirmButton]:
 
 
 def _text_is_confirmation(text: str) -> Optional[bool]:
-    """Plain-text confirmation fallback so the user doesn't have to tap
-    the keyboard if they don't want to. None = not a confirmation word."""
-    t = text.strip().lower().rstrip(".!")
+    """Plain-text confirmation fallback. Strips emoji and punctuation so
+    native-app button labels like 'Sí ✅' / 'No ❌' match the word sets."""
+    t = _NON_WORD_RE.sub("", text).strip().lower()
     if t in _CONFIRM_YES_WORDS:
         return True
     if t in _CONFIRM_NO_WORDS:
@@ -177,9 +180,16 @@ async def process_message(
     redis: Redis,
     llm_client: LLMClient,
     llm_model: str,
+    image_bytes: Optional[bytes] = None,
+    image_media_type: Optional[str] = None,
+    vision_model: Optional[str] = None,
 ) -> BotReply:
-    """One round-trip: text in, BotReply out. Side effects (Redis writes,
-    DB commits) happen as dispatcher branches fire."""
+    """One round-trip: text in (or image in), BotReply out. Side effects
+    (Redis writes, DB commits) happen as dispatcher branches fire.
+
+    When `image_bytes` is provided the text pipeline branches (commands,
+    account creation, clarification, pending-confirm) are skipped and vision
+    extraction runs instead, routing through the same write dispatcher."""
 
     # ── rate limit gate ──
     allowed = await check_and_increment_rate(user_id=user.id, redis=redis)
@@ -187,6 +197,23 @@ async def process_message(
         return BotReply(text=messages_es.RATE_LIMIT_HIT)
 
     today = _today_for(user)
+
+    # ── vision fast-path ──
+    # When the native app uploads a receipt photo, skip the text pipeline
+    # branches entirely (there is no text to parse for commands or pending
+    # confirms). Budget gate still applies; write dispatcher runs as normal.
+    if image_bytes is not None and image_media_type is not None:
+        return await _process_image(
+            user=user,
+            image_bytes=image_bytes,
+            image_media_type=image_media_type,
+            today=today,
+            db=db,
+            redis=redis,
+            llm_client=llm_client,
+            haiku_model=llm_model,
+            sonnet_model=vision_model or llm_model,
+        )
 
     # ── command short-circuits ──
     # Cheap deterministic routing for slash commands. Keeps /undo and /help
@@ -684,3 +711,53 @@ async def handle_nudge_callback(
         return BotReply(text=messages_es.NUDGE_ACK_DISMISS_SOFT)
 
     return BotReply(text=messages_es.NUDGE_EXPIRED)
+
+
+# ── vision helper ─────────────────────────────────────────────────────────────
+
+
+async def _process_image(
+    *,
+    user: User,
+    image_bytes: bytes,
+    image_media_type: str,
+    today: date,
+    db: AsyncSession,
+    redis: Redis,
+    llm_client: LLMClient,
+    haiku_model: str,
+    sonnet_model: str,
+) -> BotReply:
+    """Budget gate → vision extraction → write dispatcher. Skips all
+    text-pipeline branches (commands, account creation, clarification,
+    pending-confirm) because there is no user text to parse."""
+    tz_name = getattr(user, "timezone", None) or "America/Costa_Rica"
+    try:
+        await assert_within_budget(user_id=user.id, db=db, tz_name=tz_name)
+    except BudgetExceeded as e:
+        return BotReply(text=handle_query_error(e, user_id=user.id))
+
+    try:
+        extraction = await extract_vision(
+            user=user,
+            image_bytes=image_bytes,
+            image_media_type=image_media_type,
+            client=llm_client,
+            haiku_model=haiku_model,
+            sonnet_model=sonnet_model,
+            db=db,
+        )
+    except (LLMClientError, ValidationError) as e:
+        log.info(
+            "vision_extraction_failure user_id=%s err=%s", user.id, type(e).__name__
+        )
+        return BotReply(text=messages_es.EXTRACTOR_FAILED)
+
+    return await _route_extraction(
+        user=user,
+        text="",
+        extraction=extraction,
+        today=today,
+        db=db,
+        redis=redis,
+    )

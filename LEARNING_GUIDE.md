@@ -2,7 +2,7 @@
 
 > A self-study path from "I can read Python" to "I can build and maintain this project alone."
 > Pair this with `CLAUDE.md` (canonical architectural reference, kept current).
-> Last refresh: 2026-05-15 (Phase 6e B1-B13 implemented; B7 + B10 sign-offs received; B13 install/Lighthouse gate pending; B14 privacy + E2E next).
+> Last refresh: 2026-05-27 (Phase 6e closed at B13 — SPA frozen, retires at 6f B16. Phase 6f active: native iOS app (Expo SDK 54), B0–B3 implemented. Bearer-token auth + `/chat/message` + device-code `/login` all landed.)
 
 ---
 
@@ -22,19 +22,21 @@ This is a 3-part document:
 
 ## A.1 The big picture in 60 seconds
 
-You're looking at a **FastAPI + Postgres + Redis** backend with a **Telegram bot** as the primary interface and a **Vite + React SPA** as the read/edit "Centro Financiero" surface. The product captures financial transactions from four sources (manual API, iPhone Shortcut, Telegram bot, Gmail parser for BAC/Davivienda/Promerica), stores them in Postgres, and exposes:
+You're looking at a **FastAPI + Postgres + Redis** backend with a **Telegram bot** as the primary capture/query interface and a **React Native (Expo) native iOS app** as the primary UI surface (Phase 6f). The product captures financial transactions from four sources (manual API, iPhone Shortcut, Telegram bot / in-app chat, Gmail parser for BAC/Davivienda/Promerica), stores them in Postgres, and exposes:
 
-1. A chat interface where Claude (Haiku for extraction, Sonnet for queries) extracts intent from Spanish messages and answers via tool-use.
-2. A web SPA at `web/` for inspecting balances, editing transactions, paying recurring bills via a calendar, and reviewing user memory insights.
+1. A chat interface where Claude (Haiku for extraction, Sonnet for queries) extracts intent from Spanish messages and answers via tool-use — available both in Telegram and in the native app via `POST /api/v1/chat/message`.
+2. A frozen Vite + React SPA at `web/` (Phase 6e, closed at B13) that stays deployed until Phase 6f B16 retires it.
+3. A native iOS app at `mobile/` (Phase 6f, active) built in Expo SDK 54.
 
-Five top-level packages matter:
+Six top-level packages matter:
 
 | Package | Role | When you'll touch it |
 |---|---|---|
 | `api/` | FastAPI HTTP layer + ORM models + business services | Adding endpoints, schema changes, business logic |
 | `app/queries/` | Read-only conversational query layer (LLM + tools) | Adding a new "answerable question" the bot can handle |
 | `bot/` | Telegram pipeline (aiogram) — extractor → router → dispatcher → delivery | Bot behavior, Spanish messages, callback flows |
-| `web/` | Vite + React 18 + TypeScript + Tailwind + TanStack Query SPA | Centro Financiero screens (Phase 6d/6e) |
+| `mobile/` | Expo SDK 54 + React Native + TypeScript native iOS app | Phase 6f screens, in-app chat, receipt upload (B6+) |
+| `web/` | Vite + React 18 SPA — **frozen at Phase 6e B13, retires at 6f B16** | Bug-fixes only until retirement |
 | `workers/` | Background job entrypoints (Gmail daily, insights nightly + lifecycle) | Container Apps Jobs |
 
 Plus three support directories:
@@ -82,12 +84,13 @@ Stop here and run it: `docker compose up -d`, then `curl localhost:8000/health`.
 
 ### Step 3 — HTTP surface (understand the API)
 
-12. `api/dependencies.py` — `current_user` resolves in order: `X-Shortcut-Token` → Phase 6d `fa_session` cookie → `X-User-Id` dev shim. The strict `current_user_via_token` is what `POST /transactions/shortcut` and every `POST /jobs/*` use.
+12. `api/dependencies.py` — `current_user` resolves in order: `X-Shortcut-Token` → **Phase 6f bearer JWT** (`Authorization: Bearer <jwt>`) → Phase 6d `fa_session` cookie → `X-User-Id` dev shim. The strict `current_user_via_token` is what `POST /transactions/shortcut` and every `POST /jobs/*` use.
 13. `api/schemas/transaction.py` — Pydantic v2 request/response models. Notice the dual `ShortcutTransactionCreate` schema and the Phase 6e additions: `TransactionUpdate`, `TransactionListResponse.next_cursor`, and the bulk request bodies.
 14. `api/routers/transactions.py` — the most-developed router. Pattern to copy. Phase 6e B4/B5 grew it with filters, cursor pagination, CSV export, and bulk archive/categorize endpoints.
 15. `api/routers/users.py` — registration + token rotation.
 16. `api/routers/jobs.py` — the three Phase 4 batch jobs + Phase 5d evaluator/delivery jobs + Phase 6c insights compute trigger.
-17. `api/routers/auth.py` — Phase 6d magic-link exchange that issues the `fa_session` cookie. Uses opaque `<selector>.<verifier>` tokens, bcrypt-hashed verifiers, single-use atomic consumption.
+17. `api/routers/auth.py` — Phase 6d magic-link exchange (issues `fa_session` cookie for SPA + JWT body for native) plus Phase 6f `POST /auth/device-code/exchange` (native-only, no cookie). Both terminate in `issue_session_jwt`; the resulting JWT is interchangeable in `current_user`. Device-code codes are minted/consumed by `api/services/auth/device_code.py` (Redis, TTL 5 min, alphabet `[A-HJ-NP-Z2-9]`).
+17b. `api/routers/chat.py` — Phase 6f B2. `POST /api/v1/chat/message` calls `bot/pipeline.py::process_message()` directly and returns a serialized `BotReply`. This is how the native app's in-app chat reuses the entire bot pipeline without duplication.
 18. `api/routers/onboarding.py`, `api/routers/recurring_incomes.py` — Phase 6d hybrid SPA flow.
 19. `api/routers/dashboard.py` — Phase 6e B2/B3 dashboard summary, daily cash-flow, category breakdown.
 20. `api/routers/goals.py`, `api/routers/transfers.py`, `api/routers/categories.py` — Phase 6e B2 entities.
@@ -137,7 +140,9 @@ The bot package keeps growing as new flows land — count it as ~25 modules now 
 39. `bot/memory_handlers.py` — Phase 6c `/memoria`, `/olvidar`, `/editar_memoria`, `/recalcular_memoria`.
 40. `bot/onboarding_handlers.py`, `bot/onboarding_welcome.py`, `bot/account_creation.py` — Phase 6d hybrid SPA + lazy-account-creation Redis flow.
 
-### Step 5b — SPA (understand the web surface)
+### Step 5b — SPA (understand the web surface — frozen at Phase 6e B13)
+
+> **The SPA is feature-frozen.** No new routes or features. Bug-fixes only until Phase 6f B16 retires `web/`. Read this section for context, not as a template for new work — use Step 5c (native app) for that.
 
 The Centro Financiero SPA lives entirely under `web/`. It's React 18 + TypeScript + Tailwind + TanStack Query, lazy-loaded route chunks, no Redux. Read in this order:
 
@@ -159,6 +164,31 @@ The Centro Financiero SPA lives entirely under `web/`. It's React 18 + TypeScrip
 56. `web/src/routes/CategoriesIndex.tsx` — Phase 6e B11 categories management. No backend changes — Phase 6e B2 (`api/routers/categories.py`) already shipped the CRUD with auto-seeding, transaction counts, and the "default cannot be archived" 400 guard. The SPA renders an inline create form on top of the list and per-row inline edit (name / kind / color via native `<input type="color">` / icon text). Defaults render Archivar as disabled.
 57. `bot/deep_link.py` + `web/src/lib/auth.tsx` (`?path=` handling) — Phase 6e B12 bot ↔ SPA deep linking. The bot helper wraps `api.services.auth.magic_link.generate_link` (which already supported `purpose='edit_session'` + `target_path` from Phase 6d B3) with swallow-on-fail. `BotReply` and `NudgeMessage` both grew URL-button support, so any bot or nudge reply can attach a single-use SPA deep link. Two callsites wired: post-commit ("Ver en Centro Financiero") and `/memoria` end ("Editar en SPA"). The SPA's `AuthProvider` validates `?path=` client-side via `isSafeRelativePath` and `navigate(safePath, { replace: true })` after exchange.
 58. `web/vite.config.ts` (VitePWA) + `web/public/icons/` + `web/src/components/shell/` — Phase 6e B13 PWA + mobile polish. The build emits `dist/sw.js`, `dist/workbox-*.js`, and `dist/manifest.webmanifest` with the three locked caching strategies (shell precache, API `NetworkFirst` 4s/24h, images `CacheFirst` 7d). Icons are placeholder PNGs synthesized by `scripts/generate_pwa_icons.py` (stdlib-only — no Pillow). Shell components: `OfflineBanner` (`useOnlineState` hook, banner-only — mutations are NOT blocked), `InstallBanner` (`useInstallPrompt` hook, gated to ≥ 3rd visit via localStorage), `BottomNav` (mobile-only, hidden at `sm:` and above, safe-area-inset padding for the iPhone home indicator). On Node 18 the build needs `NODE_OPTIONS=--experimental-global-webcrypto` for `workbox-build`; the npm script wraps with `cross-env` so it's transparent.
+
+### Step 5c — Native iOS App (understand the Phase 6f mobile surface)
+
+The native app lives entirely under `mobile/`. It's Expo SDK 54 (managed workflow), TypeScript, React Navigation 7, TanStack Query 5, React Hook Form + Zod, and Axios with a bearer-token interceptor. iOS-only in Phase 6f. Read in this order:
+
+59. `mobile/package.json` — pinned deps. Critical: `expo@~54.0.34`, `expo-secure-store` (JWT storage), `expo-web-browser` + `expo-linking` (magic-link fallback), `@react-navigation/native` + `@react-navigation/bottom-tabs`.
+60. `mobile/.env.local` — **not checked in.** Contains `EXPO_PUBLIC_API_BASE_URL=http://<LAN-IP>:8000`. The Expo client appends `/api/v1` to this. See `docs/LOCAL_DEV.md §8` for setup.
+61. `mobile/src/api/client.ts` — Axios instance with bearer-token interceptor (`Authorization: Bearer <jwt>`). Reads JWT from `expo-secure-store`. 401 → clears token + navigates to Login.
+62. `mobile/src/screens/Login.tsx` — device-code login flow. User gets a 6-char code from `/login` in Telegram, types it here. Auto-submits at 6 valid chars → `POST /auth/device-code/exchange` → JWT stored in Secure Store.
+63. `mobile/src/navigation/` — 5-tab bottom navigator (Home / Chat / Accounts / Transactions / More). Lazy screens via React Navigation stack navigators nested in each tab.
+64. `mobile/src/hooks/useMagicLinkListener.tsx` — silent fallback mounted in `App.tsx`. Listens for `ledgercr://exchange?token=...` deep links so a future bot-sent magic link can sign in automatically without the user typing the code.
+
+**Auth flow to understand (B3 final shape):**
+1. Operator runs `/login` (or `/iniciar`) in Telegram.
+2. Bot replies with a 6-char code.
+3. Operator types it in the Login screen; app auto-submits at 6 valid chars.
+4. `POST /auth/device-code/exchange` returns `{token, expires_at, user_id, email, full_name}`.
+5. JWT stored in `expo-secure-store`. All subsequent API calls send `Authorization: Bearer <jwt>`.
+6. Backend resolves the caller via the second branch in `api/dependencies.py::current_user`.
+
+**Key hard rules for Phase 6f code:**
+- The chat screen calls `POST /chat/message` — it does NOT replicate the extractor or dispatcher. `bot/pipeline.py::process_message()` runs on the server.
+- The bearer JWT is decoded by the *same* `decode_session_jwt` the cookie path uses. No second secret.
+- All user-facing copy stays Spanish (voseo, CR), same as the bot.
+- Redis state keys keep the `telegram:` prefix — the native chat reuses them unchanged.
 
 ### Step 6 — Query layer (understand how questions are answered)
 
@@ -202,12 +232,13 @@ Pin these in your head — they show up everywhere:
 - **The LLM never decides whether to act.** Extractor produces structured JSON; deterministic Python code routes and commits. The query dispatcher is the *only* LLM-on-the-hot-path component.
 - **Redis is the source of truth for durable bot state.** aiogram FSM is for transient in-handler bookkeeping only.
 - **Migrations are hand-written.** No `--autogenerate`. Every schema change → new numbered file.
-- **Auth resolves in this order: `X-Shortcut-Token` → `fa_session` cookie (Phase 6d) → `X-User-Id` dev shim** (`api/dependencies.py::current_user`). The strict variant ignores the dev shim.
+- **Auth resolves in this order: `X-Shortcut-Token` → bearer JWT (Phase 6f) → `fa_session` cookie (Phase 6d) → `X-User-Id` dev shim** (`api/dependencies.py::current_user`). The strict variant ignores the dev shim. Both the magic-link and device-code paths issue identical JWTs through `issue_session_jwt`.
 - **Two dimensions of "this row is gone": `status` and `archived`.** `status` (confirmed/shadow/pending_review) is the Phase 6b ingestion lifecycle; `archived` is the Phase 6e user-driven soft-delete. Balance + dashboard exclude both `status != 'confirmed'` and `archived = true`. The materialized views currently miss the `archived` predicate (logged in CLAUDE.md tech debt).
-- **Bot is the primary input; SPA is the read/edit surface.** Don't put a "log a transaction" form on the SPA homepage. Manual entry is a fallback with a bot advisory.
+- **Bot and native in-app chat are both primary input.** The native app's chat calls `POST /chat/message` which runs `bot/pipeline.py::process_message()` server-side — there is no second extractor or dispatcher. The SPA is frozen.
 - **Insights never inline in the system prompt.** Sonnet reads user memory through the `get_user_context` tool and nothing else (Phase 6c).
 - **Cache breakpoint limit is 4.** Apply `cache_control` only on the last tool, not all of them. Exceeding silently breaks caching.
-- **The Centro Financiero SPA is a separate deploy** to Azure Static Web Apps (workflow under `.github/workflows/`). Its dev URL is `http://localhost:5173`; Telegram inline-button URLs reject `localhost` so local SPA testing needs an HTTPS tunnel.
+- **The Centro Financiero SPA is a separate deploy** to Azure Static Web Apps (workflow under `.github/workflows/`). Its dev URL is `http://localhost:5173`. It is frozen at Phase 6e B13 and retires at Phase 6f B16. Telegram inline-button URLs reject `localhost` so local SPA testing still needs an HTTPS tunnel for the magic-link flow.
+- **The native iOS app (Phase 6f) runs via Expo Go** on the operator's iPhone during development. Set `EXPO_PUBLIC_API_BASE_URL` to the machine's LAN IP in `mobile/.env.local` so the phone can reach the API. See `docs/LOCAL_DEV.md §8`.
 
 ---
 
@@ -248,7 +279,7 @@ Recipes you'll repeat dozens of times. Bookmark this section.
 ## B.5 "I want to add a new migration"
 
 ```bash
-# 1. Copy the latest migration as a template (current head: 0020)
+# 1. Copy the latest migration as a template (current head: 0020 — no schema changes in Phase 6f B1-B3)
 cp migrations/versions/0020_phase6e_b8_recurring_incomes_archived.py \
    migrations/versions/0021_<your_change>.py
 
@@ -312,7 +343,7 @@ bash scripts/test_phase_6d.sh   # focused 6d verification (pytest + npm)
 
 If `phase5b_smoke.sh` passes against `_simulate`, the entire bot pipeline (minus a real Telegram connection) is healthy.
 
-To poke the SPA locally:
+To poke the SPA locally (frozen — read-only):
 
 ```bash
 # 5. Boot the SPA (separate terminal)
@@ -320,7 +351,19 @@ npm --prefix web install        # first time only
 npm --prefix web run dev        # http://localhost:5173, Vite proxies /api to :8000
 ```
 
-Telegram inline-button URLs reject `localhost`, so testing the magic-link → SPA flow against a real bot needs an HTTPS tunnel (cloudflared / ngrok) for `SPA_BASE_URL`.
+To run the native iOS app locally (Phase 6f active work):
+
+```bash
+# 6. Set the LAN IP so the phone can reach the API
+echo "EXPO_PUBLIC_API_BASE_URL=http://$(hostname -I | awk '{print $1}'):8000" > mobile/.env.local
+
+# 7. Boot Expo dev server (separate terminal)
+cd mobile && npx expo start
+
+# 8. Scan the QR with Expo Go on iPhone — or press 'i' for iOS Simulator
+```
+
+Full walkthrough (including Expo Go sideload, `/login` device-code test) is in `docs/LOCAL_DEV.md §8`.
 
 ## B.8 "I want to change the LLM prompt"
 
@@ -544,11 +587,46 @@ LLM-engineering books age in months, not years. Treat any book older than ~12 mo
 - **Jack Herrington** — patterns videos. His Suspense + lazy-loading walkthroughs map directly onto the `<Suspense>` blocks in `web/src/App.tsx`.
 - **TanStack channel on YouTube** — short videos by Tanner Linsley on Query semantics.
 
-### Things to *not* learn yet
+### Things to *not* learn yet (for the SPA)
 
 - **Next.js / Remix** — different runtime + routing model. The SPA is plain Vite SPA + React Router; learning Next would conflate concerns.
 - **CSS-in-JS (Emotion, styled-components)** — rejected; Tailwind is the standard.
 - **Redux** — rejected; TanStack Query owns server state, Zustand is allowed for lightweight client state but isn't used yet.
+
+---
+
+## C.9c Native App: Expo + React Native (Phase 6f)
+
+**Why this matters here:** The entire `mobile/` package. Phase 6f makes the native iOS app the primary UI surface. Expo managed workflow means no native Xcode build steps until you need a custom native module (not planned until P8).
+
+### Primary sources
+
+- **docs.expo.dev** — the canonical reference. Read "Get Started" → "Develop" → "Deploy." The "Managed workflow" path is what this project uses.
+- **reactnative.dev** — core React Native primitives (`View`, `Text`, `ScrollView`, `FlatList`, `Pressable`). Expo wraps but does not hide these.
+- **reactnavigation.org** — React Navigation 7 docs. The project uses `@react-navigation/bottom-tabs` + `@react-navigation/native-stack`.
+- **docs.expo.dev/versions/latest/sdk/secure-store** — `expo-secure-store` is how the JWT is stored. Read the async API.
+- **tanstack.com/query/v5** — same TanStack Query used in the SPA; the mental model transfers.
+
+### Books
+
+There are no mature Expo SDK 54–specific books. Use the official docs as the textbook.
+
+1. **"React Native in Action" — Nader Dabit** — foundational React Native concepts. Some APIs are dated; focus on the mental model chapters.
+2. **"Fullstack React Native" — Devin Abbott** — project-driven; builds several screens end-to-end.
+
+### Videos
+
+- **Simon Grimm (galaxies.dev)** — the best Expo-specific YouTube channel. Covers navigation, auth patterns, and TanStack Query integration.
+- **Theo (t3.gg)** — covers React Native tooling decisions (managed vs bare, EAS Build); opinionated and current.
+- **Expo's official YouTube channel** — short feature walkthroughs by the Expo team.
+
+### Things specific to this project's stack
+
+- **`expo-secure-store`** replaces `localStorage` / cookies for the JWT. Always await it; it's async even for reads.
+- **`expo-linking`** handles the `ledgercr://` deep link scheme (B15). Register the scheme in `app.json` under `scheme`.
+- **`expo-image-picker`** is planned for B6 (receipt photo upload). Read the permissions model before touching it.
+- **Metro bundler** (not Vite). TypeScript config lives in `tsconfig.json` at `mobile/`; it extends Expo's base config.
+- **No Tailwind in the native app.** Use React Native `StyleSheet` objects or `StyleSheet.create`. The SPA's Tailwind knowledge does not transfer (though the design tokens should stay consistent).
 
 ---
 
@@ -608,9 +686,10 @@ If you can read Python loops and functions but everything in this repo looks lik
 | 8 | aiogram v3 | Official docs + read `bot/handlers.py` and `bot/pipeline.py` |
 | 9 | Architecture | "Architecture Patterns with Python" |
 | 9–10 | React + TanStack Query | react.dev + TanStack Query docs + read `web/src/routes/Dashboard.tsx` |
-| 10+ | Postgres mastery | "The Art of PostgreSQL" + run `EXPLAIN ANALYZE` on this app's slow queries |
+| 10–11 | React Native + Expo | docs.expo.dev + Simon Grimm's channel + read `mobile/src/screens/Login.tsx` and `mobile/src/navigation/` |
+| 11+ | Postgres mastery | "The Art of PostgreSQL" + run `EXPLAIN ANALYZE` on this app's slow queries |
 
-After week 4 you can add a CRUD endpoint solo. After week 8, you can extend the bot. After week 10, you can ship a SPA route end-to-end (schema → API helper → route → tests). Beyond that, you can confidently rework the architecture.
+After week 4 you can add a CRUD endpoint solo. After week 8, you can extend the bot. After week 10, you can ship a native app screen end-to-end (API helper → screen → navigation registration → test on device). Beyond that, you can confidently rework the architecture.
 
 ---
 
@@ -624,6 +703,9 @@ These are dead ends for *this* project. Save them for later or never:
 - **Vector databases / RAG** — explicitly excluded by `CLAUDE.md` ("What NOT to Build").
 - **Self-hosted LLM tutorials** — same reason.
 - **WhatsApp Baileys tutorials** — banned by Meta; this project uses Telegram + (eventually) the official WhatsApp Cloud API.
+- **Expo EAS Build / TestFlight** — not needed until P8. The Phase 6f dev distribution is Expo Go sideloaded onto the operator's iPhone.
+- **React Native Web** — not used. The SPA is a separate Vite + React project; they don't share components.
+- **Expo Router** — this project uses React Navigation (not Expo Router's file-based routing). Don't conflate the two.
 
 ---
 
@@ -634,9 +716,10 @@ Once you're up to speed, this keeps the project healthy:
 1. `git log --since="1 week"` — review what changed.
 2. `pytest -q` — confirm the suite is green. Use the focused phase slices (e.g. the B5/B6 verification command in `docs/phase-6e-decisions.md`) when you only changed one phase's code.
 3. Run `scripts/phase5b_smoke.sh`, `docs/curl/phase-5d.sh`, and `scripts/test_phase_6d.sh` against a clean DB.
-4. `npm --prefix web run lint && npm --prefix web run build` — watch the `index` chunk; it should stay around 119–120 KB gzip.
-5. Skim Anthropic's changelog (docs.anthropic.com → release notes) — model deprecations and new tool-use features land regularly.
-6. Skim aiogram + react-day-picker GitHub releases for breaking changes.
+4. `npm --prefix web run lint && npm --prefix web run build` — SPA is frozen; `index` chunk should stay ~122 KB gzip (workbox-window). Any jump means an accidental import crept into the SPA.
+5. For the native app: `cd mobile && npx expo-doctor` — checks that installed deps match the SDK 54 compatible range. Run before upgrading any `mobile/` dependency.
+6. Skim Anthropic's changelog (docs.anthropic.com → release notes) — model deprecations and new tool-use features land regularly.
+7. Skim aiogram + Expo SDK GitHub releases for breaking changes. Expo SDK bumps require operator iPhone's Expo Go to be updated first.
 7. Review the **Technical Debt** section of `CLAUDE.md`. Pick one item if you have spare cycles.
 
 ---

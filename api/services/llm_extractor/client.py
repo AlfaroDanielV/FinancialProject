@@ -42,7 +42,7 @@ class LLMClient(Protocol):
     async def extract(
         self,
         *,
-        user_message: str,
+        user_message: str | list[dict[str, Any]],
         prior_turns: list[dict[str, str]],
         system_prompt: str,
         tool: dict[str, Any],
@@ -63,7 +63,7 @@ class AnthropicLLMClient:
     async def extract(
         self,
         *,
-        user_message: str,
+        user_message: str | list[dict[str, Any]],
         prior_turns: list[dict[str, str]],
         system_prompt: str,
         tool: dict[str, Any],
@@ -85,6 +85,8 @@ class AnthropicLLMClient:
         messages: list[dict[str, Any]] = []
         for turn in prior_turns:
             messages.append({"role": turn["role"], "content": turn["content"]})
+        # user_message is either a plain string or a list of Anthropic content
+        # blocks (e.g. [{type:"image",...}, {type:"text",...}] for vision).
         messages.append({"role": "user", "content": user_message})
 
         try:
@@ -147,15 +149,19 @@ class FixtureLLMClient:
     async def extract(
         self,
         *,
-        user_message: str,
+        user_message: str | list[dict[str, Any]],
         prior_turns: list[dict[str, str]],
         system_prompt: str,
         tool: dict[str, Any],
         model: str,
         timeout_s: float,
     ) -> RecordedLLMResponse:
-        if user_message in self._by_message:
-            return self._by_message[user_message]
+        # Vision calls pass a list (content blocks) — not hashable, skip lookup.
+        try:
+            if user_message in self._by_message:
+                return self._by_message[user_message]
+        except TypeError:
+            pass
         if self._default is not None:
             return self._default
         raise LLMClientError(

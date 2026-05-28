@@ -248,6 +248,29 @@ async def on_help(message: Message) -> None:
     await message.answer(reply.text)
 
 
+@router.message(Command("login", "iniciar"))
+async def on_login(message: Message) -> None:
+    """Phase 6f B3 — mint a 6-character device-login code.
+
+    Reply to the same chat that issued the command (Telegram sends the
+    code only to the paired Telegram account). The native app exchanges
+    the code for a JWT via `POST /api/v1/auth/device-code/exchange`.
+    """
+    if message.from_user is None:
+        return
+    from api.services.auth.device_code import request_device_code
+
+    async with AsyncSessionLocal() as db:
+        user = await user_by_telegram_id(
+            telegram_user_id=message.from_user.id, db=db
+        )
+        if user is None:
+            await message.answer(messages_es.PAIR_PROMPT)
+            return
+        code = await request_device_code(user=user, redis=get_redis())
+    await message.answer(messages_es.LOGIN_CODE_REPLY.format(code=code))
+
+
 @router.message(Command("cancel"))
 async def on_cancel(message: Message) -> None:
     if message.from_user is None:

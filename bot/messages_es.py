@@ -413,6 +413,15 @@ CANCELLED = "Cancelado."
 CONTEXT_CLEARED = "Listo, contexto limpio."
 
 
+# ── /login (Phase 6f B3) ─────────────────────────────────────────────────────
+
+LOGIN_CODE_REPLY = (
+    "<b>Tu código para Ledger CR:</b>\n\n"
+    "<code>{code}</code>\n\n"
+    "Pegalo en la app antes de 5 minutos. Es de un solo uso."
+)
+
+
 # ── /memoria, /olvidar, /editar_memoria (Phase 6c B7) ───────────────────────
 
 MEMORIA_FOOTER = (

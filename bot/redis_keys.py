@@ -31,6 +31,18 @@ def pairing_key(code: str) -> str:
     return f"telegram:pairing:{code}"
 
 
+# Phase 6f B3: device-login codes minted by /login in the Telegram bot,
+# consumed by the native app via POST /api/v1/auth/device-code/exchange.
+# Different namespace from `telegram:pairing:*` because pairing binds a
+# Telegram account to a user; device login authenticates an already-paired
+# user on a new device. TTL is the same 5 min — same alphabet, same length.
+DEVICE_CODE_TTL_S = 300
+
+
+def device_code_key(code: str) -> str:
+    return f"auth:device_code:{code}"
+
+
 def pending_key(user_id: uuid.UUID | str) -> str:
     return f"telegram:pending:{user_id}"
 

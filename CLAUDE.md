@@ -37,9 +37,12 @@ A personal finance agent that automates transaction capture, parses bank emails,
 3. **Product** — Multi-tenant SaaS sold to individuals and couples via Telegram bot, API-backed LLM, chat-native UX
 
 The product is **not** a dashboard-first app. It is a financial assistant
-that lives in a messaging thread. The SPA exists for onboarding and the
-Phase 6e Centro Financiero read/edit surface; transaction capture remains
-Telegram-first.
+that lives in a messaging thread. In Phase 6f the primary surface becomes a
+native iOS app (Expo) that combines an in-app chat (transaction capture +
+queries + receipt photo upload) with structured read/edit screens for
+accounts, transactions, debts, goals, etc. The Phase 6e SPA is frozen at
+B13 and retires at Phase 6f B16. Telegram stays alive as a backup capture
+surface.
 
 ---
 
@@ -57,7 +60,8 @@ Telegram-first.
 | **Messaging** | Telegram Bot API (aiogram v3) | NOT WhatsApp |
 | **Email** | Gmail API | OAuth2, per-bank parsers |
 | **LLM** | Anthropic API (Haiku for extraction, Sonnet for queries) | Not self-hosted |
-| **SPA** | Vite + React + Tailwind + Zod + TanStack Query + Recharts | Phase 6d onboarding + Phase 6e Centro Financiero |
+| **SPA (frozen)** | Vite + React + Tailwind + Zod + TanStack Query + Recharts | Phase 6d onboarding + Phase 6e Centro Financiero; frozen at 6e B13, retires at 6f B16 |
+| **Native app** | Expo (managed) + React Native + TypeScript + React Navigation + TanStack Query + RHF + Zod | Phase 6f iOS-first; in-app chat reuses `bot/pipeline.py::process_message()` |
 | **Transaction Capture** | iPhone Shortcuts → POST webhook | `X-Shortcut-Token` header |
 | **Containerization** | Docker Compose (dev), Azure Container Apps (prod) | |
 | **Settings** | Pydantic `BaseSettings` | Reads from `.env` |
@@ -104,8 +108,9 @@ finance-agent/
 │   ├── tools/                  # get_user_context, compare_periods, etc.
 │   └── history.py              # query_history Redis
 ├── workers/                    # gmail_daily.py, insights_nightly.py, insights_lifecycle.py
-├── web/                        # Phase 6d onboarding SPA (Vite/React)
-├── migrations/versions/        # Hand-written Alembic (0001 → 0017)
+├── web/                        # Phase 6d/6e SPA (Vite/React) — frozen at 6e B13; retires at 6f B16
+├── mobile/                     # Phase 6f native iOS app (Expo, React Native) — created at 6f B1
+├── migrations/versions/        # Hand-written Alembic (0001 → 0020)
 ├── tests/                      # pytest suite
 ├── scripts/                    # Phase smoke scripts (phase5a/5b/6b/6c/etc.)
 ├── docs/phase-*/               # Per-phase operational docs (privacy, deployment, etc.)
@@ -152,7 +157,7 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 
 ## Implementation Roadmap
 
-### Current Status: Phase 6e — Centro Financiero SPA active
+### Current Status: Phase 6f — Native iOS App (Expo) active. Phase 6e SPA closed at B13.
 
 | Phase | Focus | Done When |
 |---|---|---|
@@ -169,7 +174,8 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 | **6b** ✅ | Gmail ingestion + reconciliation | See `11_Phases/Phase-6b-Gmail-Ingestion.md` |
 | **6c** ✅ | User memory + behavioral profiling | See `11_Phases/Phase-6c-User-Memory.md`. Awaiting production `INSIGHTS_DISPATCHER_ENABLED=true` flip. |
 | **6d** ✅ | Onboarding & self-registration | Closed in B13; see "Phase 6d (closed)" below |
-| **6e** 🚧 | Centro Financiero SPA (full) | Active; B1-B13 implemented, B14 privacy + E2E next (install + Lighthouse gate on B13 still pending) |
+| **6e** ✅ | Centro Financiero SPA | Closed at B13. B14/B15 dropped; privacy export/delete absorbed into Phase 6f B14. SPA frozen pending retirement at 6f B16. |
+| **6f** 🚧 | Native iOS app (Expo) | Active; B0-B3 implemented (2026-05-26). Replaces SPA. Adds in-app chat (reuses `bot/pipeline.py::process_message()`) and receipt photo upload via Claude vision (B6). Auth via Telegram `/login` 6-char device code (B3). See `docs/phase-6f-decisions.md`. Local testing: `docs/LOCAL_DEV.md §8`. |
 | **P7** | Affordability / pushback engine | Deterministic affordability checks + LLM explanation wrapper |
 | **P8** | Beta users | Onboard a second person via Telegram with accurate reports within a week |
 | **P9** | SaaS hardening | Multi-tenant auth, billing, compliance, observability |
@@ -233,7 +239,7 @@ Verification: B11 focused tests `3 passed`; B8+B9+B10+B11+dispatcher/routing com
 
 ---
 
-## Phase 6e (active) — Centro Financiero SPA
+## Phase 6e (closed) — Centro Financiero SPA
 
 Phase 6e expands the existing `web/` onboarding SPA into the full Centro
 Financiero surface. Initial scope is read/edit workflows for existing accounts,
@@ -513,6 +519,187 @@ B10 + B9 + B8 + B7 + B2) passed (`39 passed`); no backend changes in B13.
 sign-off still pending — requires real iOS Safari + Android Chrome
 testing.
 
+**Phase 6e closure (2026-05-22):** Operator concluded the SPA UX is not
+acceptable for daily use (bot ↔ web context-switching, magic-link round-trip
+on mobile, web-feel vs native-feel). Phase 6e closes at B13. B14 (privacy
+export/delete UI) and B15 (polish) are dropped on the SPA side — privacy
+export/delete is absorbed into Phase 6f B14 on the native app. The SPA stays
+deployed but frozen until Phase 6f reaches parity and retires `web/` at 6f
+B16. Decision note: `~/Finance_project/30_Projects/Finance-Agent/05_Decisions/Decision - Native iOS App Replaces SPA.md`.
+
+---
+
+## Phase 6f (active) — Native iOS App (Expo)
+
+Phase 6f replaces the frozen Phase 6e SPA with a React Native (Expo, managed
+workflow) iOS app. Reaches parity with the SPA's read/edit surface and adds
+two capabilities the SPA did not have: an in-app chat that reuses the
+existing `bot/pipeline.py::process_message()` so the operator no longer
+needs Telegram for daily capture or queries, and receipt photo upload routed
+through Claude vision.
+
+**Canonical source of truth:** `docs/phase-6f-decisions.md` (locked decisions,
+architecture, block-by-block status). This section is a high-level summary.
+
+**Stack:** Expo SDK 54 + Node 20 LTS, TypeScript, React Navigation 7,
+TanStack Query 5, React Hook Form + Zod, Axios with bearer-token
+interceptor, `expo-secure-store`, `expo-image-picker` (B6),
+`expo-web-browser`, `expo-linking`. iOS-only. SDK version must match
+App Store Expo Go release.
+
+**Workspace:** new `mobile/` directory at repo root, sibling to `web/`,
+`api/`, `bot/`. SPA `web/` remains in tree until Phase 6f B16.
+
+**Backend additions (landed in B2 + B3):**
+- `POST /api/v1/auth/magic-link/exchange` extended to ALSO return
+  `{token, expires_at, user_id, email, full_name}` in the response body
+  (the existing `fa_session` cookie set is unchanged for SPA
+  backwards-compat). — B2
+- `api/dependencies.py::current_user` gains a 4th resolution branch:
+  `Authorization: Bearer <jwt>`. New order — `X-Shortcut-Token` → bearer
+  JWT → cookie → dev `X-User-Id` shim. — B2
+- New router `api/routers/chat.py`: `POST /chat/message` (calls
+  `bot/pipeline.py::process_message()` directly, returns serialized
+  `BotReply`). — B2
+- `POST /chat/image` (multipart) routes through
+  `api/services/llm_extractor/vision.py` (Haiku → Sonnet retry on
+  confidence < 0.65). Same `ExtractionResult` the text path produces;
+  write dispatcher runs identically. Image stored base64-inline in
+  `llm_extractions.extraction["image_b64"]` (4MB cap pre-base64;
+  Azure Blob is P8 work). `python-multipart` added as dep. — B6
+- New service `api/services/auth/device_code.py` mints + atomically
+  consumes 6-character alphanumeric Redis-backed codes (alphabet
+  `[A-HJ-NP-Z2-9]`, TTL 5 min, `auth:device_code:{code}` key). Bot
+  command `/login` (alias `/iniciar`) replies with the code. New
+  endpoint `POST /api/v1/auth/device-code/exchange` returns the same
+  shape as magic-link exchange but does NOT set a cookie (native-only).
+  Suspended users return 401 (not 403) to avoid leaking account state.
+  — B3
+- `bot/pipeline.py::process_message()` is NOT modified. It is already
+  channel-agnostic.
+
+**Auth flow (native, B3 final shape):**
+1. Operator runs `/login` in Telegram.
+2. Bot replies with a 6-character code (`<code>` in monospace).
+3. Operator types/pastes the code in the app's Login screen.
+4. App auto-submits at 6 valid chars, calls
+   `POST /auth/device-code/exchange`, gets a session JWT.
+5. JWT stored in `expo-secure-store`. Subsequent calls send
+   `Authorization: Bearer <jwt>`.
+6. `useMagicLinkListener` stays mounted in `App.tsx` as a silent
+   fallback so a future bot `ledgercr://exchange?token=...` deep link
+   (B15) still auto-signs in.
+
+**Distribution:** Expo dev build via Expo Go sideloaded onto operator's
+iPhone. No TestFlight, no App Store, no Apple Developer Program
+enrollment until P8.
+
+**Nudges + shadow approvals:** Telegram-only delivery during Phase 6f.
+`users.expo_push_token` column is added in B15 as schema-only prep for P8.
+
+**Block plan (B0 → B16):**
+
+- **B0 ✅ (2026-05-22):** decisions + scaffolding docs (this section,
+  vault decision note, `docs/phase-6f-decisions.md`, vault
+  `Phase-6f-Native-iOS-App.md`, Roadmap update). No code shipped.
+- **B1 ✅ (2026-05-22, reved same day):** Expo workspace at `mobile/`,
+  pinned to SDK 54 + Node 20. iPhone device test confirmed 2026-05-23.
+- **B2 ✅ (2026-05-23):** backend bearer-token auth + `POST /chat/message`.
+  10 focused tests + 27 regression tests green.
+- **B3 ✅ (2026-05-26):** native auth shell + 5-tab nav. Original
+  magic-link UI replaced mid-block by **device-code login** (`/login`
+  → 6-char code → JWT). 8 focused tests green. Operator iPhone login
+  confirmed.
+- **B4 ✅ (2026-05-27):** Chat UI screen. `mobile/src/screens/Chat.tsx`
+  — inverted-bottom FlatList, `KeyboardAvoidingView`, user/bot bubbles,
+  confirm/cancel chips (tap posts label back through pipeline), URL chips
+  (`expo-web-browser`), loading spinner, empty-state hint.
+  `mobile/src/api/chat.ts` API helper. `AppNavigator` Chat tab wired to
+  real screen. `npx tsc --noEmit` clean; B2+B3 backend tests 18 passed.
+  Operator on-device query test confirmed.
+- **B5 ✅ (2026-05-27):** Write transaction capture parity. Bug fix:
+  `_text_is_confirmation` in `bot/pipeline.py` now strips emoji/punctuation
+  via `_NON_WORD_RE` before matching, so button labels like `"Sí ✅"` and
+  `"No ❌"` route correctly through the confirm/cancel path. Mobile: chips
+  disable after one tap (`usedChips` Set in `ChatScreen`). 3 new E2E tests
+  in `tests/test_phase_6f_b5_chat_write.py` (confirm-with-emoji, cancel-
+  with-emoji, plain-sí regression). 21 backend tests passed, TypeScript
+  clean. **Dogfood gate entered: operator commits to native-only capture
+  for 7 days (until 2026-06-03) before B6 starts.**
+- **B6 ✅ (2026-05-27):** Receipt photo upload. Backend: `api/services/llm_extractor/vision.py`
+  (`extract_vision()`, Haiku-first, Sonnet retry on confidence < 0.65); `POST /chat/image`
+  multipart endpoint (4MB cap, MIME whitelist jpeg/png/webp/gif); `process_message()` gains
+  `image_bytes`/`image_media_type`/`vision_model` params with vision fast-path that skips
+  text branches; `LLMClient` protocol widens `user_message` to `str | list[dict]` for
+  content blocks; `FixtureLLMClient` handles unhashable list safely. `python-multipart` dep
+  added. Mobile: `expo-image-picker` installed + permission strings in `app.json`;
+  camera icon (📷) in input bar; thumbnail bubble for sent receipts; `postChatImage()`
+  in `chat.ts`; shared `isPending` blocks both text and image mutations. 6 focused tests
+  in `tests/test_phase_6f_b6_vision.py`; 27 backend tests passed; TypeScript clean.
+- **B7 ✅ (2026-05-27):** Dashboard + full app retheme. New `mobile/src/theme.ts` design system:
+  warm parchment palette (`#F5F0E8` bg, earth tones), Bauhaus approach (form follows function,
+  details on demand via expandable sections, Feather icons from `@expo/vector-icons`, red used
+  only for expense/overdue). Dashboard (`DashboardScreen`): period picker (este mes / mes ant. /
+  año), total balance card, income/expense/net metrics row (Feather trending icons), expandable
+  category breakdown (proportional bar built from flex View — no chart lib), expandable upcoming
+  bills (from `/calendar/upcoming`). Login, Chat, PlaceholderScreen, AppNavigator all rethemed.
+  Tab bar uses Feather icons (home, message-circle, credit-card, list, more-horizontal).
+  `@expo/vector-icons` + `mobile/src/api/dashboard.ts` added. TypeScript clean, 27 backend tests passed.
+- **B8 ✅ (2026-05-27):** Accounts module. `mobile/src/api/accounts.ts` (full API
+  helper: AccountResponse, AccountCreate, AccountUpdate, TransactionListResponse,
+  ACCOUNT_TYPE_LABELS, fetchAccounts, fetchAccount, createAccount, updateAccount,
+  archiveAccount, fetchAccountTransactions). `mobile/src/navigation/AccountsNavigator.tsx`
+  (stack: AccountsList → AccountDetail → AccountCreate modal). `AccountsScreen`:
+  custom header, consolidated balance strip (sum active accounts), AccountCard with
+  current balance + month diff (green/red), archived toggle, pull-to-refresh.
+  `AccountDetailScreen`: balance hero, month diff, cursor-paginated transaction list
+  via `useInfiniteQuery`, archive/restore with Alert confirm. `AccountCreateScreen`:
+  name input, segmented type picker (4 types), CRC/USD currency toggle, initial
+  balance, POST on submit. AppNavigator Cuentas tab wired to `AccountsNavigator`.
+  TypeScript clean, 24 backend tests passed.
+- **B9 ✅ (2026-05-27):** Transactions module. `mobile/src/api/transactions.ts`
+  — canonical source for `TransactionResponse` + `TransactionListResponse` (moved
+  from `accounts.ts` which now re-exports them); `TransactionFilters` typed object
+  with `kind/accountId/includeArchived`; `DEFAULT_FILTERS` constant; `fetchTransactions`
+  with sort locked to `date desc` (backend only emits `next_cursor` on date sort —
+  switching sort would silently corrupt pagination); `archiveTransaction` /
+  `restoreTransaction` via `POST /transactions/bulk/{archive,restore}`.
+  `TransactionsNavigator`: stack TransactionsList → TransactionDetail.
+  `TransactionsScreen`: kind pills (Todo/Ingresos/Egresos) always visible; account
+  picker expands inline behind filter icon; `useInfiniteQuery` cursor-paginated
+  FlatList; pull-to-refresh; shadow rows show "Pendiente" badge. `TransactionDetailScreen`:
+  amount hero (colored by sign), full detail card (date, merchant, description,
+  category, account name from cache, source), archive/restore bottom bar, shadow rows
+  show read-only Telegram notice instead of archive button. CSV export and bulk-select
+  deferred (browser-native patterns, not mobile-native). TypeScript clean, 24 backend
+  tests passed.
+- **B10**: bills + calendar (parity with `/bills`).
+- **B11**: debts + amortization + payoff.
+- **B12**: incomes.
+- **B13**: goals.
+- **B14**: categories + memoria + privacy (the privacy export/delete originally
+  scoped to Phase 6e B14 lives here).
+- **B15**: polish + deep links from bot + Sentry + `users.expo_push_token`
+  schema prep.
+- **B16**: SPA retirement — `web/` deleted, Azure Static Web Apps workflow
+  removed, CLAUDE.md updated.
+
+**Hard rules for Phase 6f:**
+
+- The native chat must NOT introduce a parallel extractor or dispatcher. It
+  reuses `process_message()` directly. The LLM-never-writes-financial-data
+  rule is preserved because the same deterministic write dispatcher commits.
+- The bearer-token branch in `current_user` MUST decode through the same
+  JWT codec the cookie path uses. No second secret, no second token shape.
+- Receipt vision extraction MUST emit the same `ExtractionResult` Pydantic
+  shape as text extraction so the write dispatcher consumes it identically.
+- Redis keys keep the `telegram:` prefix. They are transport-neutral
+  historically; renaming would break existing Telegram clients and is not
+  worth the churn. Tech debt entry tracked.
+- All user-facing copy stays Spanish (voseo, CR).
+- `transaction_date` stays `DATE`. The in-app chat must reject intra-day
+  claims cleanly, same as the bot.
+
 ---
 
 ## Closed phases — hard rules to preserve
@@ -644,14 +831,14 @@ The LLM's system prompt enforces this separation:
 ## What NOT to Build (Until Phase 8 Is Done)
 
 - ❌ WhatsApp channel (use Telegram)
-- ❌ Web UI outside the active Phase 6e Centro Financiero scope. The product remains Telegram-first; the SPA is for structured review/editing.
+- ❌ Web UI outside the existing Phase 6e SPA. The SPA is frozen at B13; no further SPA work. Phase 6f replaces it with a native iOS app.
 - ❌ Investment portfolio analysis beyond manual tracking
 - ❌ ML-based categorization (rule-based first)
 - ❌ Family/household support
 - ❌ PDF bank statement import (email parsing first)
 - ❌ Vector database / RAG / semantic search
 - ❌ Fine-tuned models
-- ❌ Mobile app
+- ❌ Android app (iOS-only in Phase 6f; revisit at P8)
 - ❌ Multi-currency support
 - ❌ Self-hosted LLM infrastructure
 - ❌ LLM inside the write dispatcher — write dispatch stays deterministic forever
@@ -687,6 +874,15 @@ SECRET_STORE_BACKEND=env|file|azure_kv
 INSIGHTS_EXTRACTOR_ENABLED=false
 INSIGHTS_DISPATCHER_ENABLED=false
 
+# Magic-link / bearer-token session signing (Phase 6d B3 / 6f B2 + B3)
+# HMAC secret used by issue_session_jwt + decode_session_jwt for BOTH
+# the fa_session cookie and the Authorization: Bearer JWT body returned
+# from magic-link exchange and device-code exchange.
+MAGIC_LINK_SESSION_SECRET=<strong random>
+SESSION_COOKIE_TTL_S=14400      # 4 hours
+SESSION_COOKIE_SECURE=false     # true in production
+SESSION_COOKIE_DOMAIN=          # empty for localhost host-only cookie
+
 # Migration 0006 only — read by Alembic, NOT by the running app:
 LEGACY_USER_EMAIL=...
 LEGACY_USER_NAME=...
@@ -694,7 +890,18 @@ LEGACY_SHORTCUT_TOKEN=...
 DEFAULT_USER_ID=...             # optional, only to preserve a pre-5a row
 ```
 
+**Mobile env (Phase 6f) — lives in `mobile/.env.local`, NOT in the
+backend `.env`:**
+
+```
+EXPO_PUBLIC_API_BASE_URL=http://<dev-LAN-IP>:8000   # the Expo client appends /api/v1
+```
+
 Pre-Phase-5a vars `WEBHOOK_SECRET` and `SHORTCUT_TOKEN` were removed; tokens now live on `users.shortcut_token`.
+
+**Local testing reference:** `docs/LOCAL_DEV.md` is the canonical cookbook
+for running the stack locally — including §8 which walks through the
+iPhone + Expo flow end-to-end.
 
 ---
 
@@ -714,6 +921,12 @@ Pre-Phase-5a vars `WEBHOOK_SECRET` and `SHORTCUT_TOKEN` were removed; tokens now
 - **Phase 6e B4: `accounts.is_active` and `accounts.archived` are mirrored.** Per Phase 6e §5.4 `archived` is canonical, but the bot's `services/accounts.py::list_active` and the `accounts(user_id, name) WHERE is_active` partial unique index still read `is_active`. The `accounts` router writes both on archive/restore to keep them in sync. Cleanup target: drop `is_active`, point all readers + the partial index at `archived`. Defer until B5 or a dedicated cleanup block.
 - **Phase 6e B5: materialized dashboard views don't yet exclude `transactions.archived=true`.** Live current-month dashboard queries and `compute_account_balances` correctly exclude archived rows in-code, so the user-visible balances stay right. But `mv_monthly_summary_by_user` / `mv_yearly_summary_by_user` (migration 0017) were defined before the archive column existed and will count archived rows after the nightly refresh. Impact is bounded: archived rows are rare and these views only feed historical-month summaries. Cleanup target: a small migration that drops + recreates both views with `archived = false` in the WHERE clause.
 - **Phase 6e B13: SPA build needs `NODE_OPTIONS=--experimental-global-webcrypto` on Node 18** because `workbox-build` (via `serialize-javascript`) reads `globalThis.crypto`. The npm `build` script wraps with `cross-env` so it's transparent locally and in CI; the flag becomes a no-op on Node 20+. Cleanup target: drop the `cross-env` wrapper once CI guarantees Node 20+. Also: PWA icons in `web/public/icons/` are placeholder PNGs generated by `scripts/generate_pwa_icons.py` (a navy disc with a blue dot). Swap for real brand assets before any public-facing release.
+- **Phase 6f: dual auth path during cutover.** From Phase 6f B2 onward, `api/dependencies.py::current_user` resolves four sources: `X-Shortcut-Token` → bearer JWT (new in 6f) → `fa_session` cookie → dev `X-User-Id` shim. The cookie path and the SPA both stay alive until Phase 6f B16 retires `web/`. After B16: delete the cookie-set branch in `api/routers/auth.py::exchange_magic_link()`, drop `session_cookie_*` settings from `api/config.py`, delete the cookie resolution branch in `current_user`, and remove `withCredentials` from any remaining clients.
+- **Phase 6f: Redis state keys keep the `telegram:` prefix.** All durable bot state (`telegram:pending:{user_id}`, `telegram:clarification:{user_id}`, `telegram:account_creation:{user_id}`, `telegram:last_action:{user_id}`, etc.) is reused by the native chat without renaming because the prefix is historical, not semantic, and renaming would invalidate every Telegram user's in-flight state. Cleanup target: rename to `bot:` or `chat:` only when there is a separate migration window and a one-time copy step. Not before Phase 8.
+- **Phase 6f: receipt images stored base64-inline in `llm_extractions.raw_data`** (`raw_data->image_b64`, 4MB cap pre-base64). At 10 receipts/day per user that's a few MB/year per user — fine for the personal MVP. Cleanup target: move image bytes to Azure Blob with a signed-URL reference in `raw_data` during P8 hardening. Same migration should also redact base64 from any nightly logs or exports.
+- **Phase 6f B1: `mobile/` is pinned to Expo SDK 54** (`expo@~54.0.34`, `react@19.1.0`, `react-native@0.81.5`). Pinned because Apple's App Store ships only the latest Expo Go and Expo Go for SDK 54 is the version the operator's iPhone runs. When the App Store ships Expo Go for a newer SDK and the operator's device updates, bump `mobile/` to that SDK (or move to a custom dev build via EAS Build, which makes us SDK-independent — that's P8 prep). Node 20+ is required by SDK 53+; the host machine is on Node 20.20.2 via NodeSource apt.
+- **Phase 6f B3: two session-issuance endpoints coexist** (`POST /auth/magic-link/exchange` and `POST /auth/device-code/exchange`). Both terminate in `issue_session_jwt` and the resulting JWT is interchangeable downstream. Magic-link exchange ALSO sets the `fa_session` cookie for SPA backwards-compat; device-code exchange does NOT (native-only). When the SPA is retired at 6f B16, magic-link exchange can either be deleted (if `/setup` deep links land in B15 using `ledgercr://`) or kept and stripped of the cookie set. Cleanup target: pick one path post-B16.
+- **Phase 6f B3: `users.expo_push_token` column does NOT exist yet.** It will be added in B15 (schema-only — no APNs delivery worker in 6f). Nudges + shadow approvals continue to deliver only to Telegram during Phase 6f even when the operator uses the native app for everything else. P8 prerequisite: Apple Developer Program enrollment for APNs certificates.
 
 ---
 
