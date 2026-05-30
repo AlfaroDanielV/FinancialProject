@@ -3,9 +3,9 @@ import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 
 import { ChatScreen } from "../screens/Chat";
 import { DashboardScreen } from "../screens/Dashboard";
-import { PlaceholderScreen } from "../screens/PlaceholderScreen";
 import { AccountsNavigator } from "./AccountsNavigator";
 import { TransactionsNavigator } from "./TransactionsNavigator";
+import { MasNavigator } from "./MasNavigator";
 import { Colors, FontSize } from "../theme";
 
 type RootTabParamList = {
@@ -27,18 +27,6 @@ const TAB_ICONS: Record<string, FeatherName> = {
 };
 
 const Tab = createBottomTabNavigator<RootTabParamList>();
-
-
-
-function MasTab() {
-  return (
-    <PlaceholderScreen
-      title="Más"
-      upcomingBlock="B10 – B14"
-      description="Gastos fijos, deudas, ingresos, metas, categorías y memoria."
-    />
-  );
-}
 
 export function AppNavigator() {
   return (
@@ -96,7 +84,11 @@ export function AppNavigator() {
         component={TransactionsNavigator}
         options={{ headerShown: false }}
       />
-      <Tab.Screen name="Mas" component={MasTab} options={{ title: "Más" }} />
+      <Tab.Screen
+        name="Mas"
+        component={MasNavigator}
+        options={{ headerShown: false, title: "Más" }}
+      />
     </Tab.Navigator>
   );
 }

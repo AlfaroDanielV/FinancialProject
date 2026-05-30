@@ -4,6 +4,23 @@
 
 Strategic context and architectural decisions for FinancialProject live in:
 `~/Finance_project/30_Projects/Finance-Agent/`
+ Before touching code, review the vault context and the engineering source notes I just integrated.                                                                                                                             
+                                                                                                                                                                                                                                                 
+    Read in this order:                                                                                                                                                                                                                          
+                                                                                                                                                                                                                                                 
+    1. 30_Projects/Finance-Agent/README.md                                                                                                                                                                                                       
+    2. 30_Projects/Finance-Agent/00_Project-Brain.md                                                                                                                                                                                             
+    3. 30_Projects/Finance-Agent/04_Architecture.md                                                                                                                                                                                              
+    4. Relevant decision notes under:                                                                                                                                                                                                            
+       30_Projects/Finance-Agent/05_Decisions/                                                                                                                                                                                                   
+                                                                                                                                                                                                                                                 
+    Then read these source notes:                                                                                                                                                                                                                
+                                                                                                                                                                                                                                                 
+    - 10_Sources/Books/The Pragmatic Programmer - Principios y Filosofia de Ingenieria.md                                                                                                                                                        
+    - 10_Sources/Books/A Philosophy of Software Design.md                                                                                                                                                                                        
+    - 10_Sources/Books/Designing Data-Intensive Applications - Principios de Ingenieria de Sistemas.md                                                                                                                                           
+    - 10_Sources/Books/Clean Code - Principles of Software Craftsmanship for the Long-Term Vault.md                                                                                                                                              
+                                                                                                                                                                                                                                      
 
 **Always read before non-trivial work:**
 - `08_Code-Context/AGENT_CONTEXT.md` — operational rules and stack constraints
