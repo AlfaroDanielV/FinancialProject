@@ -192,7 +192,7 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 | **6c** ✅ | User memory + behavioral profiling | See `11_Phases/Phase-6c-User-Memory.md`. Awaiting production `INSIGHTS_DISPATCHER_ENABLED=true` flip. |
 | **6d** ✅ | Onboarding & self-registration | Closed in B13; see "Phase 6d (closed)" below |
 | **6e** ✅ | Centro Financiero SPA | Closed at B13. B14/B15 dropped; privacy export/delete absorbed into Phase 6f B14. SPA frozen pending retirement at 6f B16. |
-| **6f** 🚧 | Native iOS app (Expo) | Active; B0-B3 implemented (2026-05-26). Replaces SPA. Adds in-app chat (reuses `bot/pipeline.py::process_message()`) and receipt photo upload via Claude vision (B6). Auth via Telegram `/login` 6-char device code (B3). See `docs/phase-6f-decisions.md`. Local testing: `docs/LOCAL_DEV.md §8`. |
+| **6f** 🚧 | Native iOS app (Expo) | Active; B0–B14 implemented (B10–B14 verified 2026-05-30, operator on-device sign-off pending). B15 (polish + bot deep links + Sentry + `users.expo_push_token`) in progress. Replaces SPA. Adds in-app chat (reuses `bot/pipeline.py::process_message()`) and receipt photo upload via Claude vision (B6). Auth via Telegram `/login` 6-char device code (B3). See `docs/phase-6f-decisions.md`. Local testing: `docs/LOCAL_DEV.md §8`. |
 | **P7** | Affordability / pushback engine | Deterministic affordability checks + LLM explanation wrapper |
 | **P8** | Beta users | Onboard a second person via Telegram with accurate reports within a week |
 | **P9** | SaaS hardening | Multi-tenant auth, billing, compliance, observability |
@@ -690,14 +690,92 @@ enrollment until P8.
   show read-only Telegram notice instead of archive button. CSV export and bulk-select
   deferred (browser-native patterns, not mobile-native). TypeScript clean, 24 backend
   tests passed.
-- **B10**: bills + calendar (parity with `/bills`).
-- **B11**: debts + amortization + payoff.
-- **B12**: incomes.
-- **B13**: goals.
-- **B14**: categories + memoria + privacy (the privacy export/delete originally
-  scoped to Phase 6e B14 lives here).
-- **B15**: polish + deep links from bot + Sentry + `users.expo_push_token`
-  schema prep.
+- **B10 ✅ (2026-05-30):** Bills + calendar module. `mobile/src/api/bills.ts`
+  (`RecurringBillResponse`, `BillOccurrenceResponse`, `MarkPaidPayload`,
+  `FREQUENCY_LABELS`, `ACTIONABLE_STATUSES`, client-side `newIdempotencyKey()`;
+  `fetchRecurringBills`, `fetchBillOccurrences`, `markBillPaid`, `pauseBill`/
+  `resumeBill` via `PATCH is_active`, `archiveBill` via DELETE). `BillsScreen`
+  (occurrence/urgency list) + `BillDetailScreen` (mark-paid with a client-minted
+  idempotency key, pause/resume/archive). Reuses Phase 4 `/recurring-bills` +
+  `/bill-occurrences` and Phase 6e B6 `POST /recurring-bills/{id}/mark-paid`.
+- **B11 ✅ (2026-05-30):** Debts module. `mobile/src/api/debts.ts`
+  (`DebtSummary`, `DebtResponse`, `DebtOverview`, `AmortizationSchedule`,
+  `PayoffScenariosResponse`; `fetchDebts`, `fetchDebt`, `fetchDebtOverview`,
+  `fetchDebtSchedule`, `fetchPayoffScenarios`, `updateDebt`, `archiveDebt`).
+  `DebtsScreen` (overview metrics) + `DebtDetailScreen` (amortization table +
+  payoff calculator + Ley 7472 scenarios). Reuses Phase 6e B7 `/debts/overview`,
+  `/debts/{id}/schedule`, `/debts/{id}/payoff-scenarios`; PATCH stays on the
+  6-field whitelist (`extra="forbid"`).
+- **B12 ✅ (2026-05-30):** Incomes module. `mobile/src/api/incomes.ts`
+  (`RecurringIncomeResponse`, `IncomeType`, `DeriveCyclesResponse`;
+  `fetchRecurringIncomes`, `updateRecurringIncome`, pause/resume/archive,
+  `deriveIncomeCycles`). `IncomesScreen` with the CR-cycle (aguinaldo +
+  salario_escolar) derive flow. Reuses Phase 6e B8 `/recurring-incomes` +
+  `POST /recurring-incomes/{salary_id}/derive-cycles`.
+- **B13 ✅ (2026-05-30):** Goals module. `mobile/src/api/goals.ts`
+  (`GoalResponse`, `GoalContributionResponse`, `GoalForecastResponse`;
+  `fetchGoals`, `fetchGoal`, `fetchGoalContributions`, `fetchGoalForecast`,
+  `addGoalContribution`, pause/resume/markAchieved/abandon). `GoalsScreen`
+  (status filter) + `GoalDetailScreen` (progress + forecast + contribution
+  history). Reuses Phase 6e B9 `/goals/{id}/contributions` +
+  `/goals/{id}/forecast`.
+- **B14 ✅ (2026-05-30):** Categories + memoria (+ privacy). `categories.ts`
+  (CRUD + archive/restore, `PRESET_COLORS`) → `CategoriesScreen`; `memoria.ts`
+  (list, delete one/group/all, export) → `MemoryScreen`. The privacy
+  export/delete-all absorbed from Phase 6e B14 is satisfied by the memoria
+  export + "borrar todo" controls — there is **no** separate `PrivacySettings`
+  screen. **Parity gaps vs the SPA, deferred:** native memoria is read + delete
+  + export only — the per-type user-override edit (SPA's `PATCH
+  /users/me/insights/{id}`) still flows through the bot's `/editar_memoria`;
+  category `icon` is a free-text field (no picker library, matching the SPA).
+  Reuses Phase 6e B10/B11 endpoints; no backend changes.
+
+  All six B10–B14 modules are wired through
+  `mobile/src/navigation/MasNavigator.tsx` (hub `MasHubScreen` → per-module
+  native stacks) and reachable from the "Más" tab.
+
+  **Verification (2026-05-30):** `bash scripts/test_phase_6f.sh` green — mobile
+  `tsc --noEmit` clean; **72 backend tests pass** across B2/B3/B5/B6/B10–B14
+  (`test_phase_6f_b10_bills.py`, `_b11_debts.py`, `_b12_incomes.py`,
+  `_b13_goals.py`, `_b14_categories.py`, `_b14_memoria.py`). No schema changes —
+  B10–B14 reuse the Phase 6e backend; `alembic current` still `0020 (head)`.
+  Note: B10–B14 landed in a single bulk commit (`dcfc008`) without the per-block
+  iPhone confirmation the earlier 6f blocks recorded — **operator on-device
+  sign-off is still pending.** A `b14_memoria` test fixture (malformed
+  `spending_pattern` content) was corrected to valid `SpendingPatternContent`
+  during reconciliation.
+- **B15** 🚧 (partial, 2026-05-30): polish + deep links + Sentry +
+  `users.expo_push_token`. **Landed:**
+  - **`users.expo_push_token`** — migration `0021`, nullable `String(255)` on
+    `users`; model field added. Schema-only (no delivery worker; nudges stay
+    Telegram-only). `alembic current` → `0021 (head)`.
+  - **Bot `ledgercr://` deep link** — new `native_app_scheme` config
+    (default `ledgercr`); `bot/deep_link.py::mint_native_deep_link` mints the
+    same single-use `<selector>.<verifier>` magic-link token formatted as
+    `ledgercr://exchange?token=...[&path=...]` (reuses `purpose='edit_session'`;
+    swallow-on-fail → `None`). `/login` now appends the link below the 6-char
+    code (`LOGIN_DEEP_LINK_SUFFIX`); tapping it feeds the already-mounted
+    native `useMagicLinkListener` (B3). The 6-char code stays the primary path.
+  - **Sentry scaffold** — `mobile/src/lib/observability.ts`
+    (`initObservability`/`captureError`, env-gated on `EXPO_PUBLIC_SENTRY_DSN`)
+    + `mobile/src/components/ErrorBoundary.tsx` wrapping the app.
+    **Deliberately NOT importing `@sentry/react-native`** — the operator runs
+    Expo Go, which can't load Sentry's native module; an eager import would
+    red-screen the working app. Live Sentry lands with the EAS dev build at P8
+    (decision §3.8). The scaffold is the one-file swap point.
+  - Verification: `bash scripts/test_phase_6f.sh` green — mobile `tsc --noEmit`
+    clean; 103 backend tests pass (Phase 6f B2/B3/B5/B6/B10–B15 + 6d
+    regression). New tests: `tests/test_phase_6f_b15_deep_link.py` (mint→
+    exchange→JWT, `target_path` passthrough, single-use 401, expo_push_token
+    column).
+
+  **Deferred (the rest of B15):** rewiring the bot's "Ver en Centro Financiero"
+  buttons to native + a native path→screen router (gated on SPA coexistence
+  until B16 + inline URL buttons require https so `ledgercr://` can't be a
+  button — only tappable message text); universal links (`https://…/exchange`)
+  pending operator DNS/hostname; live `@sentry/react-native` (EAS dev build,
+  P8). **Operator on-device sign-off pending** for the `/login` deep-link
+  tappability in Telegram iOS.
 - **B16**: SPA retirement — `web/` deleted, Azure Static Web Apps workflow
   removed, CLAUDE.md updated.
 
@@ -900,6 +978,10 @@ SESSION_COOKIE_TTL_S=14400      # 4 hours
 SESSION_COOKIE_SECURE=false     # true in production
 SESSION_COOKIE_DOMAIN=          # empty for localhost host-only cookie
 
+# Native app deep links (Phase 6f B15) — custom URL scheme in mobile/app.json.
+# Bot mints `<scheme>://exchange?token=...` so a tap opens the native app.
+NATIVE_APP_SCHEME=ledgercr
+
 # Migration 0006 only — read by Alembic, NOT by the running app:
 LEGACY_USER_EMAIL=...
 LEGACY_USER_NAME=...
@@ -912,6 +994,7 @@ backend `.env`:**
 
 ```
 EXPO_PUBLIC_API_BASE_URL=http://<dev-LAN-IP>:8000   # the Expo client appends /api/v1
+EXPO_PUBLIC_SENTRY_DSN=                              # Phase 6f B15 scaffold; empty = console no-op in Expo Go
 ```
 
 Pre-Phase-5a vars `WEBHOOK_SECRET` and `SHORTCUT_TOKEN` were removed; tokens now live on `users.shortcut_token`.
@@ -943,7 +1026,7 @@ iPhone + Expo flow end-to-end.
 - **Phase 6f: receipt images stored base64-inline in `llm_extractions.raw_data`** (`raw_data->image_b64`, 4MB cap pre-base64). At 10 receipts/day per user that's a few MB/year per user — fine for the personal MVP. Cleanup target: move image bytes to Azure Blob with a signed-URL reference in `raw_data` during P8 hardening. Same migration should also redact base64 from any nightly logs or exports.
 - **Phase 6f B1: `mobile/` is pinned to Expo SDK 54** (`expo@~54.0.34`, `react@19.1.0`, `react-native@0.81.5`). Pinned because Apple's App Store ships only the latest Expo Go and Expo Go for SDK 54 is the version the operator's iPhone runs. When the App Store ships Expo Go for a newer SDK and the operator's device updates, bump `mobile/` to that SDK (or move to a custom dev build via EAS Build, which makes us SDK-independent — that's P8 prep). Node 20+ is required by SDK 53+; the host machine is on Node 20.20.2 via NodeSource apt.
 - **Phase 6f B3: two session-issuance endpoints coexist** (`POST /auth/magic-link/exchange` and `POST /auth/device-code/exchange`). Both terminate in `issue_session_jwt` and the resulting JWT is interchangeable downstream. Magic-link exchange ALSO sets the `fa_session` cookie for SPA backwards-compat; device-code exchange does NOT (native-only). When the SPA is retired at 6f B16, magic-link exchange can either be deleted (if `/setup` deep links land in B15 using `ledgercr://`) or kept and stripped of the cookie set. Cleanup target: pick one path post-B16.
-- **Phase 6f B3: `users.expo_push_token` column does NOT exist yet.** It will be added in B15 (schema-only — no APNs delivery worker in 6f). Nudges + shadow approvals continue to deliver only to Telegram during Phase 6f even when the operator uses the native app for everything else. P8 prerequisite: Apple Developer Program enrollment for APNs certificates.
+- **Phase 6f B15: `users.expo_push_token` column exists (migration 0021) but no worker reads it.** Schema-only prep — nudges + shadow approvals continue to deliver only to Telegram during Phase 6f even when the operator uses the native app for everything else. No Expo push token is written by the app yet, and there is no APNs delivery worker. P8 prerequisites: Apple Developer Program enrollment for APNs certificates + an Expo push token registration call in the app + a delivery worker.
 
 ---
 

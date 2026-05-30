@@ -20,7 +20,16 @@ echo "== Phase 6f mobile typecheck =="
 echo "== Phase 6f backend focused tests =="
 uv run pytest -p no:cacheprovider -q \
   tests/test_phase_6f_b2_chat.py \
-  tests/test_phase_6f_b3_device_code.py
+  tests/test_phase_6f_b3_device_code.py \
+  tests/test_phase_6f_b5_chat_write.py \
+  tests/test_phase_6f_b6_vision.py \
+  tests/test_phase_6f_b10_bills.py \
+  tests/test_phase_6f_b11_debts.py \
+  tests/test_phase_6f_b12_incomes.py \
+  tests/test_phase_6f_b13_goals.py \
+  tests/test_phase_6f_b14_categories.py \
+  tests/test_phase_6f_b14_memoria.py \
+  tests/test_phase_6f_b15_deep_link.py
 
 echo "== Phase 6f backend regression slice (magic-link + onboarding) =="
 # Phase 6d auth + onboarding tests guard the SPA cookie path that 6f

@@ -421,6 +421,10 @@ LOGIN_CODE_REPLY = (
     "Pegalo en la app antes de 5 minutos. Es de un solo uso."
 )
 
+# Phase 6f B15 — appended to LOGIN_CODE_REPLY when the native deep link mints
+# OK. Tapping it opens the app and signs in without typing the code.
+LOGIN_DEEP_LINK_SUFFIX = "\n\nO abrí la app directamente:\n{deep_link}"
+
 
 # ── /memoria, /olvidar, /editar_memoria (Phase 6c B7) ───────────────────────
 

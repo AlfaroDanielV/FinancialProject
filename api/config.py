@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     session_cookie_secure: bool = False  # dev=false, prod=true
     bcrypt_rounds: int = 12
 
+    # Native app deep links (Phase 6f B15). Custom URL scheme registered in
+    # mobile/app.json. A `<scheme>://exchange?token=...` link opens the app and
+    # the silent `useMagicLinkListener` exchanges the token for a session JWT.
+    native_app_scheme: str = "ledgercr"
+
     @property
     def is_dev(self) -> bool:
         return self.environment == "development"

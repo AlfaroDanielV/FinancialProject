@@ -259,6 +259,7 @@ async def on_login(message: Message) -> None:
     if message.from_user is None:
         return
     from api.services.auth.device_code import request_device_code
+    from bot.deep_link import mint_native_deep_link
 
     async with AsyncSessionLocal() as db:
         user = await user_by_telegram_id(
@@ -268,7 +269,13 @@ async def on_login(message: Message) -> None:
             await message.answer(messages_es.PAIR_PROMPT)
             return
         code = await request_device_code(user=user, redis=get_redis())
-    await message.answer(messages_es.LOGIN_CODE_REPLY.format(code=code))
+        # Phase 6f B15 — additive tap-to-open path. The 6-char code stays the
+        # primary instruction; if minting the deep link fails we just omit it.
+        deep_link = await mint_native_deep_link(db, user_id=user.id)
+    reply = messages_es.LOGIN_CODE_REPLY.format(code=code)
+    if deep_link:
+        reply += messages_es.LOGIN_DEEP_LINK_SUFFIX.format(deep_link=deep_link)
+    await message.answer(reply)
 
 
 @router.message(Command("cancel"))

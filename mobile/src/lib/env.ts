@@ -8,9 +8,14 @@ function readBaseUrl(): string {
   return fallbackBaseUrl;
 }
 
+function readSentryDsn(): string {
+  return process.env.EXPO_PUBLIC_SENTRY_DSN ?? "";
+}
+
 export const env = {
   apiBaseUrl: readBaseUrl(),
   apiPrefix: "/api/v1",
+  sentryDsn: readSentryDsn(),
 } as const;
 
 export type Env = typeof env;

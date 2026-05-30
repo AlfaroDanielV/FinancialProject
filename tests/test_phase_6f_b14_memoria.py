@@ -82,7 +82,13 @@ async def test_list_insights_grouped(db_with_user):
             session,
             user_id,
             insight_type="spending_pattern",
-            content={"type": "spending_pattern", "category": "Alimentación", "avg_monthly": 150000},
+            content={
+                "type": "spending_pattern",
+                "category": "Alimentación",
+                "monthly_avg_crc": 150000,
+                "trend_pct_3mo": 8.0,
+                "volatility_score": 0.3,
+            },
         )
 
         transport = ASGITransport(app=app)
@@ -109,7 +115,13 @@ async def test_export_insights_returns_json(db_with_user):
             session,
             user_id,
             insight_type="spending_pattern",
-            content={"type": "spending_pattern", "category": "Transporte", "avg_monthly": 50000},
+            content={
+                "type": "spending_pattern",
+                "category": "Transporte",
+                "monthly_avg_crc": 50000,
+                "trend_pct_3mo": -3.0,
+                "volatility_score": 0.2,
+            },
         )
 
         transport = ASGITransport(app=app)
@@ -135,7 +147,13 @@ async def test_delete_one_insight(db_with_user):
             session,
             user_id,
             insight_type="spending_pattern",
-            content={"type": "spending_pattern", "category": "Ocio", "avg_monthly": 30000},
+            content={
+                "type": "spending_pattern",
+                "category": "Ocio",
+                "monthly_avg_crc": 30000,
+                "trend_pct_3mo": 1.5,
+                "volatility_score": 0.4,
+            },
         )
 
         transport = ASGITransport(app=app)
@@ -169,13 +187,25 @@ async def test_delete_group_insights(db_with_user):
             session,
             user_id,
             insight_type="spending_pattern",
-            content={"type": "spending_pattern", "category": "Salud", "avg_monthly": 40000},
+            content={
+                "type": "spending_pattern",
+                "category": "Salud",
+                "monthly_avg_crc": 40000,
+                "trend_pct_3mo": 0.0,
+                "volatility_score": 0.1,
+            },
         )
         await _seed_insight(
             session,
             user_id,
             insight_type="spending_pattern",
-            content={"type": "spending_pattern", "category": "Ropa", "avg_monthly": 25000},
+            content={
+                "type": "spending_pattern",
+                "category": "Ropa",
+                "monthly_avg_crc": 25000,
+                "trend_pct_3mo": 5.0,
+                "volatility_score": 0.5,
+            },
         )
 
         transport = ASGITransport(app=app)
@@ -199,7 +229,13 @@ async def test_delete_all_insights(db_with_user):
             session,
             user_id,
             insight_type="spending_pattern",
-            content={"type": "spending_pattern", "category": "Viajes", "avg_monthly": 80000},
+            content={
+                "type": "spending_pattern",
+                "category": "Viajes",
+                "monthly_avg_crc": 80000,
+                "trend_pct_3mo": -2.0,
+                "volatility_score": 0.25,
+            },
         )
 
         transport = ASGITransport(app=app)
