@@ -72,9 +72,30 @@ export async function fetchTransactions(
 }
 
 export async function archiveTransaction(id: string): Promise<void> {
-  await api.post("/transactions/bulk/archive", { ids: [id] });
+  // Body field is `transaction_ids` (TransactionBulkArchive), not `ids`.
+  await api.post("/transactions/bulk/archive", { transaction_ids: [id] });
 }
 
 export async function restoreTransaction(id: string): Promise<void> {
-  await api.post("/transactions/bulk/restore", { ids: [id] });
+  await api.post("/transactions/bulk/restore", { transaction_ids: [id] });
+}
+
+/** Editable fields on a confirmed, non-archived, non-transfer transaction. */
+export interface TransactionUpdate {
+  amount?: number;
+  merchant?: string | null;
+  description?: string | null;
+  category?: string | null;
+  transaction_date?: string; // YYYY-MM-DD
+}
+
+export async function updateTransaction(
+  id: string,
+  payload: TransactionUpdate,
+): Promise<TransactionResponse> {
+  const { data } = await api.patch<TransactionResponse>(
+    `/transactions/${id}`,
+    payload,
+  );
+  return data;
 }

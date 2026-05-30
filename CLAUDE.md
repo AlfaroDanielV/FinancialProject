@@ -777,7 +777,29 @@ enrollment until P8.
   P8). **Operator on-device sign-off pending** for the `/login` deep-link
   tappability in Telegram iOS.
 - **B16**: SPA retirement — `web/` deleted, Azure Static Web Apps workflow
-  removed, CLAUDE.md updated.
+  removed, CLAUDE.md updated. **Gated on:** 4+ weeks operator daily native-only
+  use + closing the parity backlog below.
+
+**B16 readiness — native↔SPA parity backlog (audit 2026-05-30):** before `web/`
+can be deleted, the native app must cover what the SPA does. Audit of SPA routes
+vs native screens/API:
+- **Transactions edit** — ✅ **closed 2026-05-30.** Fixed a shipped bug:
+  `archiveTransaction`/`restoreTransaction` posted `{ ids }` but the
+  `TransactionBulkArchive` schema needs `transaction_ids` (was 422-ing — archive
+  was broken in the native app since B9). Added `updateTransaction` +
+  `mobile/src/components/TransactionEditModal.tsx` (amount magnitude w/ sign
+  preserved, merchant, description, free-text category, `YYYY-MM-DD` date) wired
+  into `TransactionDetailScreen` for confirmed/non-archived rows; backend 409s
+  (shadow/transfer/archived) surface in the modal. tsc clean; on-device sign-off
+  pending. No backend changes (PATCH `/transactions/{id}` already existed).
+- **Create flows missing natively** — SPA has `BillsNew`/`DebtsNew`/`IncomesNew`/
+  `GoalsNew`; native has fetch+update+archive but no create screens for bills,
+  debts, incomes, or goals. Low daily impact (set up at onboarding), but blocks
+  full SPA retirement unless creation routes through chat instead.
+- **Memoria edit missing** — native `MemoryScreen` is list/delete/export only;
+  the SPA's per-type user-override edit (`PATCH /users/me/insights/{id}`) is not
+  ported (still via the bot's `/editar_memoria`).
+- Accounts + Categories: at parity.
 
 **Hard rules for Phase 6f:**
 
@@ -1027,6 +1049,7 @@ iPhone + Expo flow end-to-end.
 - **Phase 6f B1: `mobile/` is pinned to Expo SDK 54** (`expo@~54.0.34`, `react@19.1.0`, `react-native@0.81.5`). Pinned because Apple's App Store ships only the latest Expo Go and Expo Go for SDK 54 is the version the operator's iPhone runs. When the App Store ships Expo Go for a newer SDK and the operator's device updates, bump `mobile/` to that SDK (or move to a custom dev build via EAS Build, which makes us SDK-independent — that's P8 prep). Node 20+ is required by SDK 53+; the host machine is on Node 20.20.2 via NodeSource apt.
 - **Phase 6f B3: two session-issuance endpoints coexist** (`POST /auth/magic-link/exchange` and `POST /auth/device-code/exchange`). Both terminate in `issue_session_jwt` and the resulting JWT is interchangeable downstream. Magic-link exchange ALSO sets the `fa_session` cookie for SPA backwards-compat; device-code exchange does NOT (native-only). When the SPA is retired at 6f B16, magic-link exchange can either be deleted (if `/setup` deep links land in B15 using `ledgercr://`) or kept and stripped of the cookie set. Cleanup target: pick one path post-B16.
 - **Phase 6f B15: `users.expo_push_token` column exists (migration 0021) but no worker reads it.** Schema-only prep — nudges + shadow approvals continue to deliver only to Telegram during Phase 6f even when the operator uses the native app for everything else. No Expo push token is written by the app yet, and there is no APNs delivery worker. P8 prerequisites: Apple Developer Program enrollment for APNs certificates + an Expo push token registration call in the app + a delivery worker.
+- **Phase 6f: no test catches mobile-API-helper ↔ backend request-body drift.** Backend tests use the correct schema field names; mobile `api/*.ts` bodies are untyped at the `axios` call and `tsc` can't see a wrong JSON key. This let the B9 `archiveTransaction`/`restoreTransaction` `{ ids }`-vs-`{ transaction_ids }` bug ship undetected (fixed 2026-05-30). There is no native CI (decision §3.8), so the only current guard is operator on-device testing. Cleanup target: when EAS/CI lands at P8, add a thin contract test (or generate mobile request types from the OpenAPI schema) so body-field drift fails in CI.
 
 ---
 

@@ -5,6 +5,7 @@
  * cache — avoids an extra GET). Shows all fields. Archive/restore via bottom
  * action; shadow rows show a read-only notice instead of the archive button.
  */
+import { useState } from "react";
 import {
   Alert,
   Pressable,
@@ -21,6 +22,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { archiveTransaction, restoreTransaction } from "../api/transactions";
 import { fetchAccounts } from "../api/accounts";
+import { TransactionEditModal } from "../components/TransactionEditModal";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
 import type { TransactionsStackParamList } from "../navigation/TransactionsNavigator";
 
@@ -84,7 +86,9 @@ function DetailRow({
 }
 
 export function TransactionDetailScreen({ route }: Props) {
-  const { transaction: tx } = route.params;
+  // Local copy so an inline edit reflects immediately (params are static).
+  const [tx, setTx] = useState(route.params.transaction);
+  const [editVisible, setEditVisible] = useState(false);
   const nav = useNavigation<Nav>();
   const qc = useQueryClient();
 
@@ -253,22 +257,52 @@ export function TransactionDetailScreen({ route }: Props) {
               </Text>
             </Pressable>
           ) : (
-            <Pressable
-              onPress={onArchive}
-              disabled={isPending}
-              style={({ pressed }) => [
-                styles.actionBtn,
-                styles.actionBtnArchive,
-                isPending && { opacity: 0.5 },
-                pressed && { opacity: 0.75 },
-              ]}
-            >
-              <Feather name="archive" size={16} color={Colors.textMuted} />
-              <Text style={styles.actionBtnLabel}>Archivar movimiento</Text>
-            </Pressable>
+            <View style={styles.bottomRow}>
+              <Pressable
+                onPress={() => setEditVisible(true)}
+                disabled={isPending}
+                style={({ pressed }) => [
+                  styles.actionBtn,
+                  styles.actionBtnFlex,
+                  styles.actionBtnEdit,
+                  isPending && { opacity: 0.5 },
+                  pressed && { opacity: 0.85 },
+                ]}
+              >
+                <Feather name="edit-2" size={16} color={Colors.bgCard} />
+                <Text style={[styles.actionBtnLabel, { color: Colors.bgCard }]}>
+                  Editar
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={onArchive}
+                disabled={isPending}
+                style={({ pressed }) => [
+                  styles.actionBtn,
+                  styles.actionBtnFlex,
+                  styles.actionBtnArchive,
+                  isPending && { opacity: 0.5 },
+                  pressed && { opacity: 0.75 },
+                ]}
+              >
+                <Feather name="archive" size={16} color={Colors.textMuted} />
+                <Text style={styles.actionBtnLabel}>Archivar</Text>
+              </Pressable>
+            </View>
           )}
         </View>
       )}
+
+      <TransactionEditModal
+        visible={editVisible}
+        tx={tx}
+        onClose={() => setEditVisible(false)}
+        onSaved={(updated) => {
+          setTx(updated);
+          invalidate();
+          setEditVisible(false);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -393,6 +427,10 @@ const styles = StyleSheet.create({
     borderTopColor: Colors.borderLight,
     backgroundColor: Colors.bgCard,
   },
+  bottomRow: {
+    flexDirection: "row",
+    gap: Spacing.sm,
+  },
   actionBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -401,6 +439,13 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
     paddingVertical: Spacing.md,
     borderWidth: 1,
+  },
+  actionBtnFlex: {
+    flex: 1,
+  },
+  actionBtnEdit: {
+    borderColor: Colors.accent,
+    backgroundColor: Colors.accent,
   },
   actionBtnArchive: {
     borderColor: Colors.border,
