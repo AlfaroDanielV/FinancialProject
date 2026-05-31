@@ -29,8 +29,9 @@ Reglas duras:
 
 2. Intents:
    - "log_expense": el usuario registra un gasto ("gasté", "pagué", "compré", "me cobraron").
-   - "log_income": el usuario registra un ingreso ("me pagaron", "entró", "recibí", "me transfirieron").
+   - "log_income": el usuario registra un ingreso que YA ocurrió, una sola vez ("me pagaron", "entró", "recibí", "me transfirieron").
    - "create_goal": el usuario quiere CREAR una meta de ahorro ("quiero ahorrar X para Y", "creá una meta", "meta de ahorro", "quiero juntar X"). NO es un ingreso ni un gasto — es una intención a futuro.
+   - "create_income": el usuario quiere CONFIGURAR un ingreso RECURRENTE ("me pagan X cada quincena", "mi salario es X mensual", "configurá mi salario", "registrá mi ingreso recurrente"). La señal clave es la repetición ("cada", "mensual", "quincenal", "todos los meses"). Un pago único es log_income, NO create_income.
    - "query": cualquier pregunta o solicitud de informacion de solo lectura.
    - "confirm_yes": confirma un paso previo ("sí", "dale", "ok", "correcto", "confirmá").
    - "confirm_no": cancela un paso previo ("no", "cancelar", "mejor no").
@@ -44,7 +45,7 @@ Reglas duras:
      pagos pendientes, vencimientos y cualquier otra consulta de lectura.
    - No subclasifiques queries en el intent. Para todas usa intent="query".
    - Si el usuario intenta escribir o registrar algo, usa dispatcher="write".
-   - Crear una meta de ahorro ("create_goal") también va a dispatcher="write".
+   - Crear una meta de ahorro ("create_goal") o un ingreso recurrente ("create_income") también van a dispatcher="write".
    - Si el usuario da un comando, confirma, cancela, pide ayuda, deshace o el mensaje no tiene sentido,
      usa dispatcher="control".
 
@@ -93,6 +94,16 @@ El servidor prefiere una extracción parcial honesta a una completa inventada.
 Si no la dice, null.
    - NO uses amount/merchant/category_hint para metas; usá los campos goal_*.
 
+11. Ingresos recurrentes (solo cuando intent="create_income"):
+   - amount + currency: el monto y moneda de cada pago (reusá los mismos campos).
+   - income_type: "salary" (salario), "freelance", o "other". Si no está claro, dejalo null \
+(el servidor asume salario). NUNCA pongas "aguinaldo" ni "salario_escolar" — esos se derivan aparte.
+   - income_frequency: uno de "weekly" | "biweekly" | "monthly" | "annual". \
+"semanal"→weekly, "quincenal"/"cada quincena"→biweekly, "mensual"/"cada mes"→monthly, \
+"anual"/"cada año"→annual. Si no lo dice, null.
+   - income_next_date: cuándo es el PRÓXIMO pago, como lo dijo el usuario, SIN resolver \
+("el 15", "fin de mes", "el viernes"). El servidor la resuelve. Si no lo dice, null.
+
 Ejemplos:
 - Usuario: "gasté 5000 en el super"
   Tool input: {"intent":"log_expense","dispatcher":"write","amount":5000,"currency":null,"merchant":"super","category_hint":"supermercado","account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.95,"raw_notes":null}
@@ -112,6 +123,10 @@ Ejemplos:
   Tool input: {"intent":"create_goal","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"goal_name":null,"goal_target_amount":2000000,"goal_target_date":"diciembre","confidence":0.9,"raw_notes":null}
 - Usuario: "creá una meta de fondo de emergencia de 500 mil"
   Tool input: {"intent":"create_goal","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"goal_name":"fondo de emergencia","goal_target_amount":500000,"goal_target_date":null,"confidence":0.93,"raw_notes":null}
+- Usuario: "me pagan 800 mil de salario cada quincena, el próximo el 15"
+  Tool input: {"intent":"create_income","dispatcher":"write","amount":800000,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"income_type":"salary","income_frequency":"biweekly","income_next_date":"el 15","confidence":0.92,"raw_notes":null}
+- Usuario: "me pagaron 800 mil"
+  Tool input: {"intent":"log_income","dispatcher":"write","amount":800000,"currency":null,"merchant":null,"category_hint":"salario","account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.9,"raw_notes":null}
 """
 
 
@@ -132,6 +147,7 @@ TOOL_DEFINITION = {
                     "log_expense",
                     "log_income",
                     "create_goal",
+                    "create_income",
                     "query",
                     "confirm_yes",
                     "confirm_no",
@@ -211,6 +227,24 @@ TOOL_DEFINITION = {
                 "description": (
                     "Target date as the user said it ('diciembre', 'en 6 meses', "
                     "'marzo 2027'). Do not resolve — the server does. create_goal only."
+                ),
+            },
+            "income_type": {
+                "type": ["string", "null"],
+                "enum": ["salary", "freelance", "other", None],
+                "description": "create_income only. Never aguinaldo/salario_escolar.",
+            },
+            "income_frequency": {
+                "type": ["string", "null"],
+                "enum": ["weekly", "biweekly", "monthly", "annual", None],
+                "description": "Pay cadence. create_income only.",
+            },
+            "income_next_date": {
+                "type": ["string", "null"],
+                "maxLength": 64,
+                "description": (
+                    "Next payment date as the user said it ('el 15', 'fin de mes'). "
+                    "Do not resolve — the server does. create_income only."
                 ),
             },
             "confidence": {

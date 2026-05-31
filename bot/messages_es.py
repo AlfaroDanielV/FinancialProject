@@ -65,6 +65,14 @@ COMMITTED_DISCARDED = "Listo, no guardé nada."
 # Phase 6f — conversational goal creation.
 GOAL_CREATED = "🎯 Meta creada: {name}. La encontrás en la pestaña Metas."
 
+# Phase 6f — conversational recurring-income creation.
+INCOME_CREATED = (
+    "💵 Ingreso recurrente creado: {name}. Lo encontrás en la pestaña Ingresos."
+)
+INCOME_DERIVE_TIP = (
+    " Tip: desde Ingresos podés derivar aguinaldo y salario escolar con un toque."
+)
+
 EDIT_PROMPT = (
     "¿Qué campo querés cambiar? Respondé con: monto / cuenta / categoría / fecha."
 )

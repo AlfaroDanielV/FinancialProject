@@ -124,6 +124,15 @@ def merge_reply(
     elif field == "goal_name":
         # Raw pass-through; the goal name is whatever the user typed.
         merged["goal_name"] = reply
+    elif field == "income_frequency":
+        # Phase 6f conversational income creation.
+        freq = _parse_frequency_es(reply)
+        if freq is None:
+            return None
+        merged["income_frequency"] = freq
+    elif field == "income_next_date":
+        # Raw pass-through; the dispatcher re-resolves and re-asks if needed.
+        merged["income_next_date"] = reply
     else:
         return None
 
@@ -233,4 +242,22 @@ def _parse_intent_es(text: str) -> Optional[Intent]:
     for intent, keywords in _INTENT_KEYWORDS.items():
         if any(kw in t for kw in keywords):
             return intent
+    return None
+
+
+# Frequency keywords, checked biweekly-first so "quincenal" wins over a bare
+# "semana"/"mes" partial. Spanish → recurring_incomes enum.
+_FREQUENCY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "biweekly": ("quincenal", "quincena", "cada quincena", "bisemanal", "cada 15", "cada dos semanas"),
+    "weekly": ("semanal", "cada semana", "por semana", "semana"),
+    "monthly": ("mensual", "cada mes", "al mes", "por mes", "mes"),
+    "annual": ("anual", "cada año", "al año", "por año", "una vez al año", "año"),
+}
+
+
+def _parse_frequency_es(text: str) -> Optional[str]:
+    t = text.strip().lower()
+    for freq in ("biweekly", "weekly", "monthly", "annual"):
+        if any(kw in t for kw in _FREQUENCY_KEYWORDS[freq]):
+            return freq
     return None

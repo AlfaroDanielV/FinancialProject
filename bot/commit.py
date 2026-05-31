@@ -16,6 +16,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.models.goal import Goal
+from api.models.recurring_income import RecurringIncome
 from api.models.user import User
 from api.services.transactions import create_transaction
 
@@ -35,6 +36,9 @@ async def commit_pending(
 
     if pending.action_type == "create_goal":
         return await _commit_goal(user=user, pending=pending, db=db, redis=redis)
+
+    if pending.action_type == "create_income":
+        return await _commit_income(user=user, pending=pending, db=db, redis=redis)
 
     if pending.action_type not in ("log_expense", "log_income"):
         raise ValueError(f"unknown action_type: {pending.action_type}")
@@ -119,3 +123,43 @@ async def _commit_goal(
         redis=redis,
     )
     return goal.id
+
+
+async def _commit_income(
+    *,
+    user: User,
+    pending: PendingAction,
+    db: AsyncSession,
+    redis: Redis,
+) -> uuid.UUID:
+    """Create a recurring income from a confirmed create_income proposal.
+    Mirrors api/routers/recurring_incomes.py::create_recurring_income for the
+    non-derived case (aguinaldo/salario_escolar are derived via the Incomes
+    screen's one-tap action, never created here). Returns the new income id."""
+    payload = pending.payload
+    income = RecurringIncome(
+        user_id=user.id,
+        name=payload["name"],
+        income_type=payload["income_type"],
+        amount=Decimal(payload["amount"]),
+        currency=payload["currency"],
+        frequency=payload["frequency"],
+        next_payment_date=date.fromisoformat(payload["next_payment_date"]),
+    )
+    db.add(income)
+    await db.commit()
+    await db.refresh(income)
+
+    await resolve_from_pending(
+        session=db, pending=pending, resolution="confirmed"
+    )
+    await db.commit()
+
+    await clear_pending(user_id=user.id, redis=redis)
+    await save_last_action(
+        user_id=user.id,
+        action_type="create_income",
+        record_id=income.id,
+        redis=redis,
+    )
+    return income.id

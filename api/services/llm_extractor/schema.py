@@ -19,6 +19,7 @@ class Intent(str, Enum):
     LOG_EXPENSE = "log_expense"
     LOG_INCOME = "log_income"
     CREATE_GOAL = "create_goal"
+    CREATE_INCOME = "create_income"
     QUERY = "query"
     CONFIRM_YES = "confirm_yes"
     CONFIRM_NO = "confirm_no"
@@ -59,6 +60,12 @@ class ExtractionResult(BaseModel):
     goal_name: Optional[str] = Field(default=None, max_length=255)
     goal_target_amount: Optional[Decimal] = Field(default=None)
     goal_target_date: Optional[str] = Field(default=None, max_length=64)
+    # Phase 6f — conversational recurring-income creation (intent=create_income).
+    # amount + currency are reused for the income amount. income_type defaults
+    # to salary server-side; derived CR cycles are NOT creatable here.
+    income_type: Optional[str] = Field(default=None, max_length=32)
+    income_frequency: Optional[str] = Field(default=None, max_length=16)
+    income_next_date: Optional[str] = Field(default=None, max_length=64)
     confidence: float = Field(..., ge=0.0, le=1.0)
     raw_notes: Optional[str] = Field(default=None, max_length=500)
 
@@ -100,6 +107,24 @@ class ExtractionResult(BaseModel):
             return None
         v = " ".join(v.split())  # collapse inner whitespace
         return v or None
+
+    @field_validator("income_type")
+    @classmethod
+    def _valid_income_type(cls, v: Optional[str]) -> Optional[str]:
+        # Only directly-creatable types; aguinaldo/salario_escolar derive from a
+        # salary (the Incomes screen's one-tap action), never created here.
+        if v is None:
+            return None
+        v = v.strip().lower()
+        return v if v in {"salary", "freelance", "other"} else None
+
+    @field_validator("income_frequency")
+    @classmethod
+    def _valid_income_frequency(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip().lower()
+        return v if v in {"weekly", "biweekly", "monthly", "annual"} else None
 
     @field_validator("amount", "goal_target_amount")
     @classmethod

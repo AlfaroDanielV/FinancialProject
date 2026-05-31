@@ -209,6 +209,11 @@ async def dispatch(
             extraction=extraction, user=user, today=today
         )
 
+    if intent is Intent.CREATE_INCOME:
+        return _dispatch_create_income(
+            extraction=extraction, user=user, today=today
+        )
+
     # Defensive fallback — should be unreachable given the enum.
     return ShowHelp()
 
@@ -527,4 +532,150 @@ def _dispatch_create_goal(
     )
     return ProposeAction(
         action_type="create_goal", payload=payload, summary_es=summary
+    )
+
+
+# ── Phase 6f: conversational recurring-income creation ────────────────────────
+
+
+_FREQUENCY_LABELS_ES: dict[str, str] = {
+    "weekly": "semanal",
+    "biweekly": "quincenal",
+    "monthly": "mensual",
+    "annual": "anual",
+}
+
+_DEFAULT_INCOME_NAME: dict[str, str] = {
+    "salary": "Salario",
+    "freelance": "Freelance",
+    "other": "Ingreso",
+}
+
+
+def _next_dom(today: date, day: int) -> date:
+    """Next occurrence of day-of-month `day`: this month if still ahead, else
+    next month (clamped to the month length)."""
+    cur_last = calendar.monthrange(today.year, today.month)[1]
+    if today.day <= day <= cur_last:
+        return date(today.year, today.month, day)
+    nxt = _add_months(date(today.year, today.month, 1), 1)
+    nxt_last = calendar.monthrange(nxt.year, nxt.month)[1]
+    return date(nxt.year, nxt.month, min(day, nxt_last))
+
+
+def _resolve_next_payment_date(hint: Optional[str], today: date) -> Optional[date]:
+    """Resolve a next-payment-date hint. ISO date, "el N"/"día N" (day of
+    month), "fin de mes", "hoy"/"mañana". Anything else → None (clarify)."""
+    if not hint:
+        return None
+    h = hint.strip().lower()
+
+    try:
+        return date.fromisoformat(h)
+    except ValueError:
+        pass
+
+    if h in {"hoy"}:
+        return today
+    if h in {"mañana", "manana"}:
+        return today + timedelta(days=1)
+
+    if "fin de mes" in h or "ultimo dia" in h or "último día" in h:
+        cur_last = calendar.monthrange(today.year, today.month)[1]
+        eom = date(today.year, today.month, cur_last)
+        if eom > today:
+            return eom
+        nxt = _add_months(date(today.year, today.month, 1), 1)
+        nxt_last = calendar.monthrange(nxt.year, nxt.month)[1]
+        return date(nxt.year, nxt.month, nxt_last)
+
+    m = re.fullmatch(r"(?:el\s+|d[ií]a\s+|el\s+d[ií]a\s+)?(\d{1,2})", h)
+    if m:
+        day = int(m.group(1))
+        if 1 <= day <= 31:
+            return _next_dom(today, day)
+
+    return None
+
+
+def _build_income_summary(
+    *,
+    name: str,
+    amount: Decimal,
+    currency: str,
+    currency_defaulted: bool,
+    frequency: str,
+    next_date: date,
+    income_type: str,
+) -> str:
+    amt = _format_amount(amount, currency)
+    freq = _FREQUENCY_LABELS_ES.get(frequency, frequency)
+    lead = (
+        f"Ingreso recurrente: {name} — {amt} ({freq}), "
+        f"próximo pago {next_date.isoformat()}."
+    )
+    if currency_defaulted:
+        lead += f" (Usé {currency} por defecto.)"
+    if income_type == "salary" and currency == "CRC":
+        lead += (
+            " Después podés derivar aguinaldo y salario escolar desde la "
+            "pestaña Ingresos."
+        )
+    return lead + " ¿Confirmo?"
+
+
+def _dispatch_create_income(
+    *,
+    extraction: ExtractionResult,
+    user: User,
+    today: date,
+) -> DispatcherResult:
+    # Amount, frequency, and next payment date are all NOT NULL on the row,
+    # so each is gathered before proposing. Amount reuses the shared field.
+    if extraction.amount is None:
+        return AskClarification(
+            question_es="¿De cuánto es cada pago? Decime el monto (ej: '800 mil').",
+            awaiting_field="amount",
+            partial=extraction.model_dump(mode="json"),
+        )
+    if extraction.income_frequency is None:
+        return AskClarification(
+            question_es="¿Cada cuánto te pagan? (semanal / quincenal / mensual / anual)",
+            awaiting_field="income_frequency",
+            partial=extraction.model_dump(mode="json"),
+        )
+    next_date = _resolve_next_payment_date(extraction.income_next_date, today)
+    if next_date is None:
+        return AskClarification(
+            question_es="¿Cuándo es el próximo pago? (ej: 'el 15', 'fin de mes', o una fecha)",
+            awaiting_field="income_next_date",
+            partial=extraction.model_dump(mode="json"),
+        )
+
+    income_type = extraction.income_type or "salary"
+    currency = extraction.currency or user.currency
+    currency_defaulted = extraction.currency is None
+    amount: Decimal = extraction.amount
+    name = _DEFAULT_INCOME_NAME.get(income_type, "Ingreso")
+
+    payload = {
+        "action_type": "create_income",
+        "name": name,
+        "income_type": income_type,
+        "amount": str(amount),
+        "currency": currency,
+        "frequency": extraction.income_frequency,
+        "next_payment_date": next_date.isoformat(),
+    }
+    summary = _build_income_summary(
+        name=name,
+        amount=amount,
+        currency=currency,
+        currency_defaulted=currency_defaulted,
+        frequency=extraction.income_frequency,
+        next_date=next_date,
+        income_type=income_type,
+    )
+    return ProposeAction(
+        action_type="create_income", payload=payload, summary_es=summary
     )

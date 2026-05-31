@@ -176,6 +176,31 @@ CREATE_GOAL_NO_NAME = RecordedLLMResponse(
 )
 
 
+# ── 9. Conversational recurring-income creation — salary (Phase 6f) ───────────
+# Input: "me pagan 800 mil de salario cada quincena, el próximo el 15"
+CREATE_INCOME_SALARY = RecordedLLMResponse(
+    tool_input={
+        "intent": "create_income",
+        "dispatcher": "write",
+        "amount": 800000,
+        "currency": None,
+        "merchant": None,
+        "category_hint": None,
+        "account_hint": None,
+        "occurred_at_hint": None,
+        "query_window": None,
+        "income_type": "salary",
+        "income_frequency": "biweekly",
+        "income_next_date": "el 15",
+        "confidence": 0.92,
+        "raw_notes": None,
+    },
+    input_tokens=445,
+    output_tokens=55,
+    cache_read_input_tokens=380,
+)
+
+
 # ── 6. Low-confidence ambiguous input (schema-sharpening case) ────────────────
 # Input: "algo de 1000 por ahí"
 LOW_CONFIDENCE_AMBIGUOUS = RecordedLLMResponse(

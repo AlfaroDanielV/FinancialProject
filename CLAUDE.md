@@ -818,7 +818,20 @@ vs native screens/API:
     tested (`tests/test_phase_6f_chat_create_goal.py`, 9 cases) via
     FixtureLLMClient + direct dispatch. **Operator on-device sign-off received
     2026-05-31** (real LLM routes the goal phrasing to create_goal correctly).
-    Income / bill / debt slices still pending.
+  - **Income — ✅ second slice implemented 2026-05-31.** New
+    `Intent.CREATE_INCOME` + `income_type`/`income_frequency`/`income_next_date`
+    fields (amount/currency reused). `_dispatch_create_income` clarifies each
+    NOT-NULL field in turn (amount → frequency → next_payment_date), resolves
+    the date hint (`_resolve_next_payment_date`: ISO, "el N"/"día N", "fin de
+    mes", "hoy/mañana"), defaults `income_type`→salary + a Spanish name, and
+    proposes. Confirm → `commit._commit_income` writes a `RecurringIncome`
+    (non-derived; mirrors `routers/recurring_incomes.py`). The aguinaldo +
+    salario_escolar **derive stays the Incomes screen's one-tap action** (chat
+    creates, structured screen acts); the CRC-salary confirmation points there.
+    `merge_reply` + `_parse_frequency_es` handle the frequency/date
+    clarifications. Tested (`tests/test_phase_6f_chat_create_income.py`, 10
+    cases). **LLM classification (recurring create_income vs one-time log_income)
+    needs operator on-device sign-off.** Bill / debt slices still pending.
 - **Memoria edit** — stays conversational (the bot's `/editar_memoria`); native
   `MemoryScreen` remains list/delete/export. No new edit form (consistent with
   the chat-first decision).

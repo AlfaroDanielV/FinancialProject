@@ -396,8 +396,8 @@ async def _handle_confirm(
         await clear_pending(user_id=user.id, redis=redis)
         return BotReply(text=messages_es.COMMITTED_DISCARDED)
 
-    # Phase 6f conversational creation: goals commit + confirm differently
-    # from transactions (no amount sign, no /transactions deep link).
+    # Phase 6f conversational creation: goals/incomes commit + confirm
+    # differently from transactions (no amount sign, no /transactions deep link).
     if pending.action_type == "create_goal":
         await commit_pending(user=user, pending=pending, db=db, redis=redis)
         return BotReply(
@@ -405,6 +405,16 @@ async def _handle_confirm(
                 name=pending.payload.get("name", "tu meta")
             )
         )
+
+    if pending.action_type == "create_income":
+        await commit_pending(user=user, pending=pending, db=db, redis=redis)
+        payload = pending.payload
+        msg = messages_es.INCOME_CREATED.format(
+            name=payload.get("name", "tu ingreso")
+        )
+        if payload.get("income_type") == "salary" and payload.get("currency") == "CRC":
+            msg += messages_es.INCOME_DERIVE_TIP
+        return BotReply(text=msg)
 
     txn_id = await commit_pending(user=user, pending=pending, db=db, redis=redis)
     amt_decimal = Decimal(pending.payload["amount"])
