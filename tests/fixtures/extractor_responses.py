@@ -126,6 +126,56 @@ WEEKLY_BALANCE_QUERY = RecordedLLMResponse(
 )
 
 
+# ── 7. Conversational goal creation — named + amount (Phase 6f) ───────────────
+# Input: "creá una meta de fondo de emergencia de 500 mil"
+CREATE_GOAL_NAMED = RecordedLLMResponse(
+    tool_input={
+        "intent": "create_goal",
+        "dispatcher": "write",
+        "amount": None,
+        "currency": None,
+        "merchant": None,
+        "category_hint": None,
+        "account_hint": None,
+        "occurred_at_hint": None,
+        "query_window": None,
+        "goal_name": "fondo de emergencia",
+        "goal_target_amount": 500000,
+        "goal_target_date": None,
+        "confidence": 0.93,
+        "raw_notes": None,
+    },
+    input_tokens=440,
+    output_tokens=50,
+    cache_read_input_tokens=380,
+)
+
+
+# ── 8. Goal creation, amount + date but no name (drives clarification) ─────────
+# Input: "quiero ahorrar 2 millones para diciembre"
+CREATE_GOAL_NO_NAME = RecordedLLMResponse(
+    tool_input={
+        "intent": "create_goal",
+        "dispatcher": "write",
+        "amount": None,
+        "currency": None,
+        "merchant": None,
+        "category_hint": None,
+        "account_hint": None,
+        "occurred_at_hint": None,
+        "query_window": None,
+        "goal_name": None,
+        "goal_target_amount": 2000000,
+        "goal_target_date": "diciembre",
+        "confidence": 0.9,
+        "raw_notes": None,
+    },
+    input_tokens=438,
+    output_tokens=48,
+    cache_read_input_tokens=380,
+)
+
+
 # ── 6. Low-confidence ambiguous input (schema-sharpening case) ────────────────
 # Input: "algo de 1000 por ahí"
 LOW_CONFIDENCE_AMBIGUOUS = RecordedLLMResponse(

@@ -30,6 +30,7 @@ Reglas duras:
 2. Intents:
    - "log_expense": el usuario registra un gasto ("gasté", "pagué", "compré", "me cobraron").
    - "log_income": el usuario registra un ingreso ("me pagaron", "entró", "recibí", "me transfirieron").
+   - "create_goal": el usuario quiere CREAR una meta de ahorro ("quiero ahorrar X para Y", "creá una meta", "meta de ahorro", "quiero juntar X"). NO es un ingreso ni un gasto — es una intención a futuro.
    - "query": cualquier pregunta o solicitud de informacion de solo lectura.
    - "confirm_yes": confirma un paso previo ("sí", "dale", "ok", "correcto", "confirmá").
    - "confirm_no": cancela un paso previo ("no", "cancelar", "mejor no").
@@ -43,6 +44,7 @@ Reglas duras:
      pagos pendientes, vencimientos y cualquier otra consulta de lectura.
    - No subclasifiques queries en el intent. Para todas usa intent="query".
    - Si el usuario intenta escribir o registrar algo, usa dispatcher="write".
+   - Crear una meta de ahorro ("create_goal") también va a dispatcher="write".
    - Si el usuario da un comando, confirma, cancela, pide ayuda, deshace o el mensaje no tiene sentido,
      usa dispatcher="control".
 
@@ -80,6 +82,17 @@ concreta — eso lo hace el servidor.
 9. Campos desconocidos SIEMPRE son null. No rellenes por "ser útil". \
 El servidor prefiere una extracción parcial honesta a una completa inventada.
 
+10. Metas de ahorro (solo cuando intent="create_goal"):
+   - goal_target_amount: el monto OBJETIVO a ahorrar (magnitud positiva, sin signo). \
+"2 millones" → 2000000.
+   - currency: CRC o USD si lo dice; si no, null (el servidor usa la preferida).
+   - goal_name: nombre corto de la meta tal cual lo dice el usuario ("vacaciones", \
+"fondo de emergencia", "carro"). Si no lo dice, null.
+   - goal_target_date: la fecha objetivo como la dijo el usuario, SIN resolver \
+("diciembre", "fin de año", "en 6 meses", "marzo 2027"). El servidor la resuelve. \
+Si no la dice, null.
+   - NO uses amount/merchant/category_hint para metas; usá los campos goal_*.
+
 Ejemplos:
 - Usuario: "gasté 5000 en el super"
   Tool input: {"intent":"log_expense","dispatcher":"write","amount":5000,"currency":null,"merchant":"super","category_hint":"supermercado","account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.95,"raw_notes":null}
@@ -95,6 +108,10 @@ Ejemplos:
   Tool input: {"intent":"undo","dispatcher":"control","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.95,"raw_notes":null}
 - Usuario: "asdf no sé qué"
   Tool input: {"intent":"unknown","dispatcher":"control","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.2,"raw_notes":null}
+- Usuario: "quiero ahorrar 2 millones para diciembre"
+  Tool input: {"intent":"create_goal","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"goal_name":null,"goal_target_amount":2000000,"goal_target_date":"diciembre","confidence":0.9,"raw_notes":null}
+- Usuario: "creá una meta de fondo de emergencia de 500 mil"
+  Tool input: {"intent":"create_goal","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"goal_name":"fondo de emergencia","goal_target_amount":500000,"goal_target_date":null,"confidence":0.93,"raw_notes":null}
 """
 
 
@@ -114,6 +131,7 @@ TOOL_DEFINITION = {
                 "enum": [
                     "log_expense",
                     "log_income",
+                    "create_goal",
                     "query",
                     "confirm_yes",
                     "confirm_no",
@@ -171,6 +189,28 @@ TOOL_DEFINITION = {
                 "description": (
                     "One of: today | yesterday | this_week | this_month | "
                     "last_n_days:<int>. Only set for query intents."
+                ),
+            },
+            "goal_name": {
+                "type": ["string", "null"],
+                "maxLength": 255,
+                "description": (
+                    "Short savings-goal name as the user said it "
+                    "('vacaciones', 'fondo de emergencia'). Only for create_goal."
+                ),
+            },
+            "goal_target_amount": {
+                "type": ["number", "null"],
+                "description": (
+                    "Positive target amount to save. Only for create_goal."
+                ),
+            },
+            "goal_target_date": {
+                "type": ["string", "null"],
+                "maxLength": 64,
+                "description": (
+                    "Target date as the user said it ('diciembre', 'en 6 meses', "
+                    "'marzo 2027'). Do not resolve — the server does. create_goal only."
                 ),
             },
             "confidence": {

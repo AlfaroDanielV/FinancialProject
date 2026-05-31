@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class Intent(str, Enum):
     LOG_EXPENSE = "log_expense"
     LOG_INCOME = "log_income"
+    CREATE_GOAL = "create_goal"
     QUERY = "query"
     CONFIRM_YES = "confirm_yes"
     CONFIRM_NO = "confirm_no"
@@ -54,6 +55,10 @@ class ExtractionResult(BaseModel):
     account_hint: Optional[str] = Field(default=None, max_length=100)
     occurred_at_hint: Optional[str] = Field(default=None, max_length=100)
     query_window: Optional[str] = Field(default=None, max_length=32)
+    # Phase 6f — conversational goal creation (intent=create_goal).
+    goal_name: Optional[str] = Field(default=None, max_length=255)
+    goal_target_amount: Optional[Decimal] = Field(default=None)
+    goal_target_date: Optional[str] = Field(default=None, max_length=64)
     confidence: float = Field(..., ge=0.0, le=1.0)
     raw_notes: Optional[str] = Field(default=None, max_length=500)
 
@@ -88,7 +93,7 @@ class ExtractionResult(BaseModel):
             return f"{EXPECTED_QUERY_WINDOW_PREFIX}{n}"
         return None
 
-    @field_validator("category_hint", "account_hint", "merchant")
+    @field_validator("category_hint", "account_hint", "merchant", "goal_name")
     @classmethod
     def _normalize_strings(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
@@ -96,7 +101,7 @@ class ExtractionResult(BaseModel):
         v = " ".join(v.split())  # collapse inner whitespace
         return v or None
 
-    @field_validator("amount")
+    @field_validator("amount", "goal_target_amount")
     @classmethod
     def _positive_amount(cls, v: Optional[Decimal]) -> Optional[Decimal]:
         # The sign in the DB is decided by the dispatcher from `intent`; the

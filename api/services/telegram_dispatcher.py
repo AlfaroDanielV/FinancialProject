@@ -10,6 +10,8 @@ Everything downstream of this module is deterministic.
 """
 from __future__ import annotations
 
+import calendar
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -202,6 +204,11 @@ async def dispatch(
             extraction=extraction, user=user, today=today, db=db
         )
 
+    if intent is Intent.CREATE_GOAL:
+        return _dispatch_create_goal(
+            extraction=extraction, user=user, today=today
+        )
+
     # Defensive fallback — should be unreachable given the enum.
     return ShowHelp()
 
@@ -370,3 +377,154 @@ def _build_summary(
     if currency_defaulted:
         lead += f" (Usé {currency} por defecto.)"
     return lead + " ¿Confirmo?"
+
+
+# ── Phase 6f: conversational goal creation ────────────────────────────────────
+
+
+_MONTHS_ES: dict[str, int] = {
+    "enero": 1,
+    "febrero": 2,
+    "marzo": 3,
+    "abril": 4,
+    "mayo": 5,
+    "junio": 6,
+    "julio": 7,
+    "agosto": 8,
+    "septiembre": 9,
+    "setiembre": 9,
+    "octubre": 10,
+    "noviembre": 11,
+    "diciembre": 12,
+}
+
+
+def _add_months(d: date, n: int) -> date:
+    """Add n calendar months, clamping the day to the target month length."""
+    month_index = d.month - 1 + n
+    year = d.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def _months_between(start: date, end: date) -> int:
+    """Whole months from start to end, floored at 1 (avoids /0 in forecasts)."""
+    months = (end.year - start.year) * 12 + (end.month - start.month)
+    return max(1, months)
+
+
+def _resolve_goal_target_date(hint: Optional[str], today: date) -> Optional[date]:
+    """Resolve a natural-language goal target-date hint to a concrete date.
+
+    Mirrors the LLM-extracts/server-resolves split used for occurred_at: the
+    model passes the user's words, this resolves them. Handles ISO dates,
+    YYYY-MM, "en N meses/años", "fin de año", and Spanish month names
+    (optionally with a year). Anything else → None (goal created without a
+    deadline; user can set one later)."""
+    if not hint:
+        return None
+    h = hint.strip().lower()
+
+    try:
+        return date.fromisoformat(h)
+    except ValueError:
+        pass
+
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})", h)
+    if m:
+        year, month = int(m.group(1)), int(m.group(2))
+        if 1 <= month <= 12:
+            return date(year, month, 1)
+
+    m = re.search(r"en\s+(\d{1,3})\s+mes", h)
+    if m:
+        return _add_months(today, int(m.group(1)))
+    m = re.search(r"en\s+(\d{1,2})\s+a[nñ]o", h)
+    if m:
+        return _add_months(today, int(m.group(1)) * 12)
+
+    if "fin de a" in h:  # "fin de año" / "fin de ano"
+        eoy = date(today.year, 12, 1)
+        return eoy if eoy > today else date(today.year + 1, 12, 1)
+
+    for name, month in _MONTHS_ES.items():
+        if name in h:
+            year_match = re.search(r"(20\d{2})", h)
+            if year_match:
+                return date(int(year_match.group(1)), month, 1)
+            cand = date(today.year, month, 1)
+            if cand <= today:
+                cand = date(today.year + 1, month, 1)
+            return cand
+
+    return None
+
+
+def _build_goal_summary(
+    *,
+    name: str,
+    target: Decimal,
+    currency: str,
+    currency_defaulted: bool,
+    target_date: Optional[date],
+    today: date,
+) -> str:
+    amt = _format_amount(target, currency)
+    parts = [f"Nueva meta: {name} — ahorrar {amt}"]
+    if target_date is not None:
+        parts.append(f"para {target_date.isoformat()}")
+    lead = " ".join(parts) + "."
+    if target_date is not None:
+        months = _months_between(today, target_date)
+        monthly = (target / months).quantize(Decimal("1"))
+        lead += f" Necesitás ~{_format_amount(monthly, currency)}/mes para llegar."
+    if currency_defaulted:
+        lead += f" (Usé {currency} por defecto.)"
+    return lead + " ¿Confirmo?"
+
+
+def _dispatch_create_goal(
+    *,
+    extraction: ExtractionResult,
+    user: User,
+    today: date,
+) -> DispatcherResult:
+    # Target amount is non-negotiable — it's what "the goal" means.
+    if extraction.goal_target_amount is None:
+        return AskClarification(
+            question_es="¿Cuánto querés ahorrar? Decime el monto de la meta (ej: '2 millones').",
+            awaiting_field="goal_target_amount",
+            partial=extraction.model_dump(mode="json"),
+        )
+    # A goal needs a name so it's identifiable in the list.
+    if not extraction.goal_name:
+        return AskClarification(
+            question_es="¿Cómo querés llamar la meta? (ej: 'vacaciones', 'fondo de emergencia').",
+            awaiting_field="goal_name",
+            partial=extraction.model_dump(mode="json"),
+        )
+
+    currency = extraction.currency or user.currency
+    currency_defaulted = extraction.currency is None
+    target: Decimal = extraction.goal_target_amount
+    target_date = _resolve_goal_target_date(extraction.goal_target_date, today)
+
+    payload = {
+        "action_type": "create_goal",
+        "name": extraction.goal_name,
+        "target_amount": str(target),
+        "target_currency": currency,
+        "target_date": target_date.isoformat() if target_date else None,
+    }
+    summary = _build_goal_summary(
+        name=extraction.goal_name,
+        target=target,
+        currency=currency,
+        currency_defaulted=currency_defaulted,
+        target_date=target_date,
+        today=today,
+    )
+    return ProposeAction(
+        action_type="create_goal", payload=payload, summary_es=summary
+    )

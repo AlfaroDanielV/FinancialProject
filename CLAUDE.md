@@ -792,14 +792,37 @@ vs native screens/API:
   into `TransactionDetailScreen` for confirmed/non-archived rows; backend 409s
   (shadow/transfer/archived) surface in the modal. tsc clean; on-device sign-off
   pending. No backend changes (PATCH `/transactions/{id}` already existed).
-- **Create flows missing natively** — SPA has `BillsNew`/`DebtsNew`/`IncomesNew`/
-  `GoalsNew`; native has fetch+update+archive but no create screens for bills,
-  debts, incomes, or goals. Low daily impact (set up at onboarding), but blocks
-  full SPA retirement unless creation routes through chat instead.
-- **Memoria edit missing** — native `MemoryScreen` is list/delete/export only;
-  the SPA's per-type user-override edit (`PATCH /users/me/insights/{id}`) is not
-  ported (still via the bot's `/editar_memoria`).
-- Accounts + Categories: at parity.
+- **Create flows — RESOLVED: conversational, NOT ported forms.** Decision
+  2026-05-30 (`05_Decisions/Decision - Conversational Creation Over Forms.md`):
+  the native app's primary verb is conversation, so the SPA's `BillsNew`/
+  `DebtsNew`/`IncomesNew`/`GoalsNew` forms are **not** ported. Instead, goals /
+  recurring bills / recurring incomes are created in the in-app **chat** (extend
+  the Phase 6d B9 conversational-account pattern; LLM proposes structured fields,
+  deterministic code writes — "LLM extracts; rules decide" preserved). **Debt**
+  is chat-initiated → a focused pre-filled native sheet for the amortization
+  fields (honors the 6d "debt forms due to field complexity" decision). This is
+  new write-dispatcher work, sequenced goals → income → bill → debt; structured
+  "New" screens are not built. B16 parity = the user can *do* everything, not
+  that every SPA form has a native twin.
+  - **Goals — ✅ first slice implemented 2026-05-31.** New `Intent.CREATE_GOAL`
+    + `goal_name`/`goal_target_amount`/`goal_target_date` fields on
+    `ExtractionResult` (+ tool schema + prompt guidance/examples).
+    `telegram_dispatcher._dispatch_create_goal` validates fields (clarifies for
+    a missing amount/name), resolves the date hint server-side
+    (`_resolve_goal_target_date`: ISO, `YYYY-MM`, "en N meses/años", "fin de
+    año", Spanish month names), and proposes with a **monthly-needed forecast**
+    in the summary. Confirm → `commit._commit_goal` writes a `Goal` row
+    (mirrors `routers/goals.py::create_goal`). `merge_reply` handles the
+    `goal_target_amount`/`goal_name` clarification replies; `_parse_amount_es`
+    grew "millones" support (×1\_000\_000). The deterministic path is fully
+    tested (`tests/test_phase_6f_chat_create_goal.py`, 9 cases) via
+    FixtureLLMClient + direct dispatch. **Operator on-device sign-off received
+    2026-05-31** (real LLM routes the goal phrasing to create_goal correctly).
+    Income / bill / debt slices still pending.
+- **Memoria edit** — stays conversational (the bot's `/editar_memoria`); native
+  `MemoryScreen` remains list/delete/export. No new edit form (consistent with
+  the chat-first decision).
+- Accounts + Categories: at parity. Transaction edit: closed (above).
 
 **Hard rules for Phase 6f:**
 

@@ -62,6 +62,9 @@ COMMITTED_EXPENSE = "Guardado: gasto de {amount}. Mandá /undo si te equivocaste
 COMMITTED_INCOME = "Guardado: ingreso de {amount}. Mandá /undo si te equivocaste."
 COMMITTED_DISCARDED = "Listo, no guardé nada."
 
+# Phase 6f — conversational goal creation.
+GOAL_CREATED = "🎯 Meta creada: {name}. La encontrás en la pestaña Metas."
+
 EDIT_PROMPT = (
     "¿Qué campo querés cambiar? Respondé con: monto / cuenta / categoría / fecha."
 )

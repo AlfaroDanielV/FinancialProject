@@ -396,6 +396,16 @@ async def _handle_confirm(
         await clear_pending(user_id=user.id, redis=redis)
         return BotReply(text=messages_es.COMMITTED_DISCARDED)
 
+    # Phase 6f conversational creation: goals commit + confirm differently
+    # from transactions (no amount sign, no /transactions deep link).
+    if pending.action_type == "create_goal":
+        await commit_pending(user=user, pending=pending, db=db, redis=redis)
+        return BotReply(
+            text=messages_es.GOAL_CREATED.format(
+                name=pending.payload.get("name", "tu meta")
+            )
+        )
+
     txn_id = await commit_pending(user=user, pending=pending, db=db, redis=redis)
     amt_decimal = Decimal(pending.payload["amount"])
     currency = pending.payload["currency"]

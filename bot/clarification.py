@@ -114,6 +114,16 @@ def merge_reply(
             merged["dispatcher"] = "query"
         else:
             merged["dispatcher"] = "control"
+    elif field == "goal_target_amount":
+        # Phase 6f conversational goal creation — same amount parser as the
+        # transaction amount clarification.
+        amount = _parse_amount_es(reply)
+        if amount is None:
+            return None
+        merged["goal_target_amount"] = str(amount)
+    elif field == "goal_name":
+        # Raw pass-through; the goal name is whatever the user typed.
+        merged["goal_name"] = reply
     else:
         return None
 
@@ -130,6 +140,10 @@ def merge_reply(
 
 _AMOUNT_RE = re.compile(r"(-?\d+(?:[.,]\d+)*)")
 _MIL_RE = re.compile(r"^\s*(\d+(?:[.,]\d+)?)\s*(mil|k)\s*$", re.IGNORECASE)
+# "2 millones", "1,5 millón" → ×1_000_000. Disjoint from _MIL_RE ("mil"/"k").
+_MILLON_RE = re.compile(
+    r"^\s*(\d+(?:[.,]\d+)?)\s*(mill[oó]n|millones)\s*$", re.IGNORECASE
+)
 
 
 def _parse_amount_es(text: str) -> Optional[Decimal]:
@@ -137,6 +151,14 @@ def _parse_amount_es(text: str) -> Optional[Decimal]:
     for sym in ("₡", "$", "crc", "usd", "colones", "dólares", "dolares"):
         t = t.replace(sym, "")
     t = t.strip()
+
+    millon = _MILLON_RE.match(t)
+    if millon:
+        base = millon.group(1).replace(",", ".")
+        try:
+            return Decimal(base) * 1_000_000
+        except InvalidOperation:
+            return None
 
     mil = _MIL_RE.match(t)
     if mil:

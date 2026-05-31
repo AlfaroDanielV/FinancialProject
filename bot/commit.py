@@ -1,8 +1,9 @@
 """Commit a PendingAction into the DB.
 
-Only two action types today: log_expense, log_income. Both go through the
-same transactions service so the REST router and the bot produce the same
-rows.
+Action types: log_expense / log_income (transactions, via the shared
+transactions service so the REST router and the bot produce the same rows)
+and create_goal (Phase 6f conversational goal creation, mirroring
+api/routers/goals.py::create_goal).
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from typing import Optional
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.models.goal import Goal
 from api.models.user import User
 from api.services.transactions import create_transaction
 
@@ -28,8 +30,11 @@ async def commit_pending(
     db: AsyncSession,
     redis: Redis,
 ) -> uuid.UUID:
-    """Create the transaction, clear the pending key, stamp last_action.
-    Returns the newly created transaction id."""
+    """Commit the pending action, clear the pending key, stamp last_action.
+    Returns the id of the newly created row (transaction or goal)."""
+
+    if pending.action_type == "create_goal":
+        return await _commit_goal(user=user, pending=pending, db=db, redis=redis)
 
     if pending.action_type not in ("log_expense", "log_income"):
         raise ValueError(f"unknown action_type: {pending.action_type}")
@@ -72,3 +77,45 @@ async def commit_pending(
         redis=redis,
     )
     return txn.id
+
+
+async def _commit_goal(
+    *,
+    user: User,
+    pending: PendingAction,
+    db: AsyncSession,
+    redis: Redis,
+) -> uuid.UUID:
+    """Create a savings goal from a confirmed create_goal proposal. Mirrors
+    api/routers/goals.py::create_goal so chat-created and SPA-created goals are
+    identical rows. Returns the new goal id."""
+    payload = pending.payload
+    target_date = (
+        date.fromisoformat(payload["target_date"])
+        if payload.get("target_date")
+        else None
+    )
+    goal = Goal(
+        user_id=user.id,
+        name=payload["name"],
+        target_amount=Decimal(payload["target_amount"]),
+        target_currency=payload["target_currency"],
+        target_date=target_date,
+    )
+    db.add(goal)
+    await db.commit()
+    await db.refresh(goal)
+
+    await resolve_from_pending(
+        session=db, pending=pending, resolution="confirmed"
+    )
+    await db.commit()
+
+    await clear_pending(user_id=user.id, redis=redis)
+    await save_last_action(
+        user_id=user.id,
+        action_type="create_goal",
+        record_id=goal.id,
+        redis=redis,
+    )
+    return goal.id
