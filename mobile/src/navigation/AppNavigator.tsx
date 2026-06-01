@@ -1,7 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 
-import { ChatScreen } from "../screens/Chat";
+import { ChatNavigator } from "./ChatNavigator";
 import { DashboardScreen } from "../screens/Dashboard";
 import { AccountsNavigator } from "./AccountsNavigator";
 import { TransactionsNavigator } from "./TransactionsNavigator";
@@ -71,7 +71,7 @@ export function AppNavigator() {
       />
       <Tab.Screen
         name="Chat"
-        component={ChatScreen}
+        component={ChatNavigator}
         options={{ title: "Chat", headerShown: false }}
       />
       <Tab.Screen

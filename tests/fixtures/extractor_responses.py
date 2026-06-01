@@ -226,6 +226,25 @@ CREATE_BILL_MONTHLY = RecordedLLMResponse(
 )
 
 
+# ── 11. Conversational debt creation (Phase 6f) — chat → form handoff ─────────
+# Input: "tengo un préstamo de 5 millones a 5 años con el BAC" (rate unknown)
+CREATE_DEBT_BASIC = RecordedLLMResponse(
+    tool_input={
+        "intent": "create_debt",
+        "dispatcher": "write",
+        "debt_name": None,
+        "debt_principal": 5000000,
+        "debt_interest_rate": None,
+        "debt_term_months": 60,
+        "debt_lender": "BAC",
+        "confidence": 0.9,
+    },
+    input_tokens=452,
+    output_tokens=44,
+    cache_read_input_tokens=380,
+)
+
+
 # ── 6. Low-confidence ambiguous input (schema-sharpening case) ────────────────
 # Input: "algo de 1000 por ahí"
 LOW_CONFIDENCE_AMBIGUOUS = RecordedLLMResponse(

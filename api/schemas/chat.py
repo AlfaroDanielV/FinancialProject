@@ -11,6 +11,8 @@ works without any per-channel branching.
 """
 from __future__ import annotations
 
+from typing import Any, Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -34,6 +36,18 @@ class ChatUrlButton(BaseModel):
 
     label: str
     url: str
+
+
+class ChatOpenScreen(BaseModel):
+    """Phase 6f debt slice — a directive for the native client to open a
+    screen pre-filled with `prefill`. Used by the chat→form handoff for debt
+    creation: the chat does light extraction, then the app opens
+    `DebtCreateScreen` with the extracted fields so the user completes the
+    amortization params and submits to `POST /debts`. The SPA / Telegram
+    ignore this field — it is native-only."""
+
+    screen: str
+    prefill: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatMessageRequest(BaseModel):
@@ -60,6 +74,7 @@ class ChatMessageResponse(BaseModel):
     reply_text: str
     buttons: list[ChatButton] = Field(default_factory=list)
     url_buttons: list[ChatUrlButton] = Field(default_factory=list)
+    open_screen: Optional[ChatOpenScreen] = None
 
 
 # ChatImageResponse is intentionally the same shape as ChatMessageResponse —

@@ -174,3 +174,79 @@ export async function archiveDebt(id: string): Promise<DebtResponse> {
   const { data } = await api.delete<DebtResponse>(`/debts/${id}`);
   return data;
 }
+
+// ── Phase 6f debt slice (D3): create + PDF term extraction ───────────────────
+
+export const DEBT_TYPES = [
+  "personal_loan",
+  "mortgage",
+  "auto_loan",
+  "credit_card",
+  "student_loan",
+  "other",
+] as const;
+export type DebtType = (typeof DEBT_TYPES)[number];
+
+/**
+ * Mirrors the backend `DebtCreate` schema. `interest_rate` is the 0–1 fraction
+ * the API stores (the form converts the percent the user enters). The native
+ * form submits fixed-rate, brand-new loans (payments_made 0); variable rate +
+ * refinance are not exposed in v1.
+ */
+export interface DebtCreatePayload {
+  name: string;
+  debt_type: DebtType;
+  original_amount: number;
+  current_balance: number;
+  interest_rate: number;
+  minimum_payment: number;
+  payment_due_day: number;
+  term_months?: number;
+  lender?: string;
+  currency?: string;
+  rate_type?: "fixed" | "variable";
+  includes_insurance?: boolean;
+  insurance_monthly?: number;
+  prepayment_penalty_pct?: number;
+  payments_made?: number;
+  notes?: string;
+}
+
+/** Mirrors the backend `DebtTermsExtraction` (POST /debts/parse-document). */
+export interface DebtTermsExtraction {
+  original_amount: number | null;
+  interest_rate: number | null; // 0–1 fraction
+  term_months: number | null;
+  minimum_payment: number | null;
+  lender: string | null;
+  start_date: string | null;
+  rate_type: "fixed" | "variable" | null;
+  includes_insurance: boolean | null;
+  insurance_monthly: number | null;
+  currency: string | null;
+  confidence: number;
+}
+
+export async function createDebt(payload: DebtCreatePayload): Promise<DebtResponse> {
+  const { data } = await api.post<DebtResponse>("/debts", payload);
+  return data;
+}
+
+/**
+ * Upload a loan PDF; the backend reads the terms via Claude and returns them to
+ * pre-fill the form. Does NOT create a debt. Mirrors postChatImage's RN
+ * FormData shape.
+ */
+export async function parseDebtDocument(uri: string): Promise<DebtTermsExtraction> {
+  const form = new FormData();
+  const filename = uri.split("/").pop() ?? "prestamo.pdf";
+  form.append("file", {
+    uri,
+    type: "application/pdf",
+    name: filename,
+  } as unknown as Blob);
+  const { data } = await api.post<DebtTermsExtraction>("/debts/parse-document", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}

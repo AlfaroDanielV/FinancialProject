@@ -56,6 +56,30 @@ class DebtCreate(BaseModel):
         return self
 
 
+class DebtTermsExtraction(BaseModel):
+    """Phase 6f debt slice (D2) — loan terms parsed from an uploaded PDF.
+
+    Returned by `POST /debts/parse-document` to PRE-FILL the native debt form;
+    it does NOT create a debt. Every loan-term field is Optional so the model
+    can honestly leave a value null instead of hallucinating one (the form
+    asks for whatever is missing). `interest_rate` is the 0–1 fraction
+    DebtCreate stores. Obeys "LLM extracts; rules decide": the deterministic
+    `POST /debts` is still the only write path.
+    """
+
+    original_amount: Optional[float] = Field(None, gt=0)
+    interest_rate: Optional[float] = Field(None, ge=0, le=1)
+    term_months: Optional[int] = Field(None, gt=0)
+    minimum_payment: Optional[float] = Field(None, gt=0)
+    lender: Optional[str] = None
+    start_date: Optional[date] = None
+    rate_type: Optional[RateTypeEnum] = None
+    includes_insurance: Optional[bool] = None
+    insurance_monthly: Optional[float] = Field(None, ge=0)
+    currency: Optional[str] = None
+    confidence: float = Field(..., ge=0, le=1)
+
+
 class DebtUpdate(BaseModel):
     """Phase 6e B7 — narrowed whitelist.
 

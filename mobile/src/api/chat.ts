@@ -10,10 +10,33 @@ export interface ChatUrlButton {
   url: string;
 }
 
+/**
+ * Phase 6f debt slice (D1/D3) — light-extraction handoff fields the chat does
+ * NOT commit. `prefill` mirrors the backend `_dispatch_create_debt` payload:
+ * amounts are strings (parsed in the form), `interest_rate_pct` is a percent
+ * (the form converts to a 0–1 fraction), `term_months` is a number, and any
+ * field may be null (the form completes whatever is missing).
+ */
+export interface DebtPrefill {
+  name: string | null;
+  original_amount: string | null;
+  current_balance: string | null;
+  interest_rate_pct: string | null;
+  term_months: number | null;
+  lender: string | null;
+  currency: string;
+}
+
+export interface ChatOpenScreen {
+  screen: string;
+  prefill: DebtPrefill;
+}
+
 export interface ChatMessageResponse {
   reply_text: string;
   buttons: ChatButton[];
   url_buttons: ChatUrlButton[];
+  open_screen: ChatOpenScreen | null;
 }
 
 export async function postChatMessage(text: string): Promise<ChatMessageResponse> {

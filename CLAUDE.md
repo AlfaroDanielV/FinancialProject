@@ -844,20 +844,51 @@ vs native screens/API:
     frequency_es` covers all 7 cadences (custom/RRULE excluded). Tested
     (`tests/test_phase_6f_chat_create_bill.py`, 9 cases). **LLM classification
     (recurring create_bill vs one-time log_expense) needs on-device sign-off.**
-  - **Debt — ⬜ planned, ON HOLD (spec ready 2026-05-31).** The hybrid:
-    chat-initiated (`Intent.CREATE_DEBT`, light extraction) → native
+  - **Debt — ✅ closed 2026-06-01 (D1–D4).** Operator on-device sign-off
+    received 2026-06-01; this closes the conversational-creation backlog
+    (goals/income/bills/debt all have working create paths). The
+    hybrid: chat-initiated (`Intent.CREATE_DEBT`, light extraction) → native
     `DebtCreateScreen` (pre-filled, live cuota preview via a lifted
-    `mobile/src/lib/amortization.ts`, Ley 7472 warning). **Adds PDF term
-    extraction**: `POST /debts/parse-document` (multipart PDF) →
-    `api/services/llm_extractor/document.py` sends a Claude `document` block →
-    `DebtTermsExtraction` pre-fills the form (so a user who doesn't know the
-    interest rate uploads the loan contract). **No-rate fallback:** if rate is
-    missing and no PDF, the form blocks submit and shows (voseo) *"Por favor
-    llamá a tu entidad financiera para confirmar la tasa de interés. Cuando la
-    tengás, volvé y registramos el préstamo."* Commit reuses the existing
-    `POST /debts` (no new write path). New deps planned: `expo-document-picker`.
-    Full spec: vault `Decision - Debt Creation - Hybrid Form Plus PDF Term
-    Extraction`. Sub-plan D1–D4. **Do not start until the operator confirms.**
+    `mobile/src/lib/amortization.ts`, Ley 7472 warning). Adds PDF term
+    extraction so a user who doesn't know the interest rate uploads the loan
+    contract. **No-rate fallback** (D3 form copy): voseo *"Por favor llamá a tu
+    entidad financiera para confirmar la tasa de interés. Cuando la tengás,
+    volvé y registramos el préstamo."* Commit reuses the existing `POST /debts`
+    (no new write path). Full spec: vault `Decision - Debt Creation - Hybrid
+    Form Plus PDF Term Extraction`. Sub-plan D1–D4:
+    - **D1 ✅** `Intent.CREATE_DEBT` + light `debt_*` fields
+      (`debt_name`/`debt_principal`/`debt_interest_rate` [percent]/
+      `debt_term_months`/`debt_lender`) + prompt guidance/examples. Unlike the
+      other 3 creators, debt does **not** confirm/commit in chat: new
+      `OpenScreenAction` dispatcher result → `BotReply.open_screen` /
+      `ChatMessageResponse.open_screen` (`{screen:"debt_create", prefill}`); the
+      native client opens the form pre-filled. Telegram ignores `open_screen`.
+    - **D2 ✅** `POST /debts/parse-document` (multipart PDF, 415 non-PDF, 413
+      over 4 MB) → `api/services/llm_extractor/document.py::extract_debt_terms`
+      (Claude `document` block, Haiku→Sonnet retry < 0.65, mirrors `vision.py`,
+      logs to `llm_extractions` with `pdf_b64` inline) → validated
+      `DebtTermsExtraction` (interest_rate as 0–1 fraction). Returns terms to
+      pre-fill the form; does **not** create the debt.
+    - **D3 ✅** mobile: lifted `mobile/src/lib/amortization.ts`; new
+      `mobile/src/screens/DebtCreateScreen.tsx` (prefill consumed from the chat
+      handoff; rate entered as %→converted to 0–1 fraction on submit; live cuota
+      preview + "usar como cuota"; Ley 7472 note; **PDF upload** via
+      `expo-document-picker` → `parseDebtDocument` fills fields, low-confidence
+      note < 0.65; **no-rate fallback** blocks submit + shows the voseo "llamá a
+      tu entidad financiera" card). `mobile/src/api/{chat,debts}.ts` grew
+      `open_screen`/`DebtPrefill`, `createDebt`, `DebtTermsExtraction`,
+      `parseDebtDocument`. New `mobile/src/navigation/ChatNavigator.tsx` wraps the
+      Chat tab in a stack (Chat → DebtCreate modal); `ChatScreen` navigates on
+      `open_screen.screen==="debt_create"`; `AppNavigator` Chat tab → `ChatNavigator`.
+      Submits fixed-rate, brand-new loans (variable-rate + refinance not exposed
+      in v1). New dep `expo-document-picker@~14.0.8` (SDK 54 aligned) + app.json plugin.
+    - **D4 ✅** E2E chat→form→(PDF or manual)→`POST /debts` verified; operator
+      on-device sign-off received 2026-06-01 (no native CI — `tsc --noEmit` is
+      the only automated guard).
+    Verification: `tests/test_phase_6f_chat_create_debt.py` (4) +
+    `tests/test_phase_6f_debt_parse_document.py` (6); full `scripts/test_phase_6f.sh`
+    green (mobile `tsc --noEmit` + 111 focused + 27 regression); `alembic current`
+    still `0021 (head)` (no migration).
 - **Memoria edit** — stays conversational (the bot's `/editar_memoria`); native
   `MemoryScreen` remains list/delete/export. No new edit form (consistent with
   the chat-first decision).
@@ -1111,7 +1142,7 @@ iPhone + Expo flow end-to-end.
 - **Phase 6f B1: `mobile/` is pinned to Expo SDK 54** (`expo@~54.0.34`, `react@19.1.0`, `react-native@0.81.5`). Pinned because Apple's App Store ships only the latest Expo Go and Expo Go for SDK 54 is the version the operator's iPhone runs. When the App Store ships Expo Go for a newer SDK and the operator's device updates, bump `mobile/` to that SDK (or move to a custom dev build via EAS Build, which makes us SDK-independent — that's P8 prep). Node 20+ is required by SDK 53+; the host machine is on Node 20.20.2 via NodeSource apt.
 - **Phase 6f B3: two session-issuance endpoints coexist** (`POST /auth/magic-link/exchange` and `POST /auth/device-code/exchange`). Both terminate in `issue_session_jwt` and the resulting JWT is interchangeable downstream. Magic-link exchange ALSO sets the `fa_session` cookie for SPA backwards-compat; device-code exchange does NOT (native-only). When the SPA is retired at 6f B16, magic-link exchange can either be deleted (if `/setup` deep links land in B15 using `ledgercr://`) or kept and stripped of the cookie set. Cleanup target: pick one path post-B16.
 - **Phase 6f B15: `users.expo_push_token` column exists (migration 0021) but no worker reads it.** Schema-only prep — nudges + shadow approvals continue to deliver only to Telegram during Phase 6f even when the operator uses the native app for everything else. No Expo push token is written by the app yet, and there is no APNs delivery worker. P8 prerequisites: Apple Developer Program enrollment for APNs certificates + an Expo push token registration call in the app + a delivery worker.
-- **Phase 6f: `ExtractionResult` is accreting per-intent flat fields** (`goal_*`, `income_*`, `bill_*`, and `amount`/`currency`/`category_hint` reused across intents). It's explicit and validator-guarded, but wide, and debt creation will add more. Cleanup target: once the debt slice lands (the 4th conversational creator), consider consolidating to a per-intent nested payload (e.g. a discriminated `create: {...}` block) in the tool schema + dispatch, if the flat shape proves unwieldy. Not before — premature until the pattern is fully proven.
+- **Phase 6f: `ExtractionResult` is accreting per-intent flat fields** (`goal_*`, `income_*`, `bill_*`, `debt_*`, and `amount`/`currency`/`category_hint` reused across intents). It's explicit and validator-guarded, but wide. As of the debt slice (D1, 2026-06-01) all four conversational creators have landed, so the "wait until the pattern is proven" threshold is now reached: a future cleanup may consolidate to a per-intent nested payload (e.g. a discriminated `create: {...}` block) in the tool schema + dispatch if the flat shape proves unwieldy in practice. Deferred (not blocking) — the flat shape is still readable and each field is validator-guarded; revisit only if a 5th creator or noticeable drift appears.
 - **Phase 6f: no test catches mobile-API-helper ↔ backend request-body drift.** Backend tests use the correct schema field names; mobile `api/*.ts` bodies are untyped at the `axios` call and `tsc` can't see a wrong JSON key. This let the B9 `archiveTransaction`/`restoreTransaction` `{ ids }`-vs-`{ transaction_ids }` bug ship undetected (fixed 2026-05-30). There is no native CI (decision §3.8), so the only current guard is operator on-device testing. Cleanup target: when EAS/CI lands at P8, add a thin contract test (or generate mobile request types from the OpenAPI schema) so body-field drift fails in CI.
 
 ---

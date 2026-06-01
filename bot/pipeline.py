@@ -40,6 +40,7 @@ from api.services.telegram_dispatcher import (
     AskClarification,
     ConfirmResponse,
     LazyDetectionPrompt,
+    OpenScreenAction,
     ProposeAction,
     Reject,
     ShowHelp,
@@ -116,10 +117,21 @@ class UrlButton:
 
 
 @dataclass
+class OpenScreen:
+    """Phase 6f debt slice — directs a native client to open `screen`
+    pre-filled with `prefill`. The Telegram renderer ignores this (debt is a
+    native-app feature); the native chat reads it and navigates."""
+
+    screen: str
+    prefill: dict
+
+
+@dataclass
 class BotReply:
     text: str
     buttons: list[ConfirmButton] = field(default_factory=list)
     url_buttons: list[UrlButton] = field(default_factory=list)
+    open_screen: Optional[OpenScreen] = None
 
 
 # ── small helpers ─────────────────────────────────────────────────────────────
@@ -551,6 +563,18 @@ async def _apply_decision(
         return BotReply(
             text=prefix + decision.summary_es,
             buttons=_buttons_for(short_id),
+        )
+    if isinstance(decision, OpenScreenAction):
+        # Debt: chat hands off to the native form. No pending, no commit, no
+        # buttons — the form gathers the rest and posts to POST /debts. The
+        # clarification key was already cleared above (not an AskClarification).
+        if telemetry_persisted:
+            await db.commit()
+        return BotReply(
+            text=decision.message_es,
+            open_screen=OpenScreen(
+                screen=decision.screen, prefill=decision.prefill
+            ),
         )
     if isinstance(decision, AskClarification):
         await save_clarification(

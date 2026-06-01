@@ -21,6 +21,7 @@ class Intent(str, Enum):
     CREATE_GOAL = "create_goal"
     CREATE_INCOME = "create_income"
     CREATE_BILL = "create_bill"
+    CREATE_DEBT = "create_debt"
     QUERY = "query"
     CONFIRM_YES = "confirm_yes"
     CONFIRM_NO = "confirm_no"
@@ -72,6 +73,16 @@ class ExtractionResult(BaseModel):
     bill_name: Optional[str] = Field(default=None, max_length=255)
     bill_frequency: Optional[str] = Field(default=None, max_length=16)
     bill_day_of_month: Optional[int] = Field(default=None)
+    # Phase 6f — conversational debt creation (intent=create_debt). Extraction
+    # is LIGHT: just enough to pre-fill the native form, which gathers the rest
+    # (the chat never collects all six DebtCreate fields). currency is reused.
+    # debt_interest_rate is a PERCENT (18 → "18%"); the form converts to the
+    # 0–1 fraction DebtCreate stores.
+    debt_name: Optional[str] = Field(default=None, max_length=255)
+    debt_principal: Optional[Decimal] = Field(default=None)
+    debt_interest_rate: Optional[Decimal] = Field(default=None)
+    debt_term_months: Optional[int] = Field(default=None)
+    debt_lender: Optional[str] = Field(default=None, max_length=100)
     confidence: float = Field(..., ge=0.0, le=1.0)
     raw_notes: Optional[str] = Field(default=None, max_length=500)
 
@@ -107,7 +118,8 @@ class ExtractionResult(BaseModel):
         return None
 
     @field_validator(
-        "category_hint", "account_hint", "merchant", "goal_name", "bill_name"
+        "category_hint", "account_hint", "merchant", "goal_name", "bill_name",
+        "debt_name", "debt_lender",
     )
     @classmethod
     def _normalize_strings(cls, v: Optional[str]) -> Optional[str]:
@@ -153,7 +165,7 @@ class ExtractionResult(BaseModel):
             return None
         return v if 1 <= v <= 31 else None
 
-    @field_validator("amount", "goal_target_amount")
+    @field_validator("amount", "goal_target_amount", "debt_principal")
     @classmethod
     def _positive_amount(cls, v: Optional[Decimal]) -> Optional[Decimal]:
         # The sign in the DB is decided by the dispatcher from `intent`; the
@@ -165,3 +177,23 @@ class ExtractionResult(BaseModel):
         if v <= 0:
             return None
         return v
+
+    @field_validator("debt_interest_rate")
+    @classmethod
+    def _valid_interest_pct(cls, v: Optional[Decimal]) -> Optional[Decimal]:
+        # Extracted as a PERCENT (the form converts to a 0–1 fraction). A
+        # plausible CR loan rate is single/low-double digits; anything outside
+        # (0, 100] is dropped so the form asks rather than pre-filling garbage.
+        if v is None:
+            return None
+        if v <= 0 or v > 100:
+            return None
+        return v
+
+    @field_validator("debt_term_months")
+    @classmethod
+    def _valid_term_months(cls, v: Optional[int]) -> Optional[int]:
+        # 1 month .. 50 years. Out-of-range → None (form gathers it).
+        if v is None:
+            return None
+        return v if 1 <= v <= 600 else None

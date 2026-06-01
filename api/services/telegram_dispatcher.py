@@ -82,6 +82,26 @@ class LazyDetectionPrompt:
 
 
 @dataclass(frozen=True)
+class OpenScreenAction:
+    """Phase 6f debt slice — chat does LIGHT extraction then hands off to a
+    native screen instead of confirming/committing in chat.
+
+    Unlike goal/income/bill creation (which propose → confirm → commit here),
+    debt needs six required fields + amortization params that the native form
+    gathers. `prefill` carries the partial fields the LLM extracted; the native
+    client opens `screen` pre-filled and the user completes + submits to the
+    existing `POST /debts`. No Redis pending, no commit, no buttons.
+
+    The Telegram renderer ignores `screen`/`prefill` and shows `message_es`
+    only — debt is a native-app feature; Telegram stays a backup capture
+    surface."""
+
+    screen: str  # "debt_create"
+    prefill: dict[str, Any]
+    message_es: str
+
+
+@dataclass(frozen=True)
 class ConfirmResponse:
     """User said yes/no/cancel. The handler correlates with the Redis
     pending-action key — dispatcher doesn't know if one exists."""
@@ -113,6 +133,7 @@ class Reject:
 
 DispatcherResult = Union[
     ProposeAction,
+    OpenScreenAction,
     AskClarification,
     LazyDetectionPrompt,
     ConfirmResponse,
@@ -219,6 +240,9 @@ async def dispatch(
         return _dispatch_create_bill(
             extraction=extraction, user=user, today=today
         )
+
+    if intent is Intent.CREATE_DEBT:
+        return _dispatch_create_debt(extraction=extraction, user=user)
 
     # Defensive fallback — should be unreachable given the enum.
     return ShowHelp()
@@ -793,4 +817,59 @@ def _dispatch_create_bill(
     )
     return ProposeAction(
         action_type="create_bill", payload=payload, summary_es=summary
+    )
+
+
+# ── Phase 6f: conversational debt creation (chat → native form handoff) ───────
+
+
+# Voseo, CR. Defined here (not in bot/messages_es) because the dispatcher must
+# not import from bot/ — that would invert the bot → api layering — and the
+# dispatcher already builds all its other user-facing copy inline.
+DEBT_FORM_HANDOFF = (
+    "Perfecto, te abro el formulario de préstamo con lo que me diste. "
+    "Revisá la tasa de interés y confirmá para registrarlo."
+)
+
+
+def _dispatch_create_debt(
+    *,
+    extraction: ExtractionResult,
+    user: User,
+) -> DispatcherResult:
+    """Light extraction → hand off to the native debt form.
+
+    Unlike goal/income/bill, debt does NOT confirm/commit in chat: DebtCreate
+    needs six required fields + amortization params the native form gathers.
+    We pre-fill what the LLM extracted (any of these may be None — the form
+    completes them) and signal the client to open the debt-creation screen.
+
+    Amounts are passed as strings (same convention as the log/create payloads)
+    so the mobile form parses them without float drift. interest_rate is a
+    PERCENT (`interest_rate_pct`); the form converts it to the 0–1 fraction
+    DebtCreate stores. current_balance defaults to the principal for a new loan
+    (spec open-question 4)."""
+    principal = (
+        str(extraction.debt_principal)
+        if extraction.debt_principal is not None
+        else None
+    )
+    rate_pct = (
+        str(extraction.debt_interest_rate)
+        if extraction.debt_interest_rate is not None
+        else None
+    )
+    prefill = {
+        "name": extraction.debt_name,
+        "original_amount": principal,
+        "current_balance": principal,
+        "interest_rate_pct": rate_pct,
+        "term_months": extraction.debt_term_months,
+        "lender": extraction.debt_lender,
+        "currency": extraction.currency or user.currency,
+    }
+    return OpenScreenAction(
+        screen="debt_create",
+        prefill=prefill,
+        message_es=DEBT_FORM_HANDOFF,
     )

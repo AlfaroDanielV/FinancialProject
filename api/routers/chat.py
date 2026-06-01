@@ -30,6 +30,7 @@ from ..schemas.chat import (
     ChatImageResponse,
     ChatMessageRequest,
     ChatMessageResponse,
+    ChatOpenScreen,
     ChatUrlButton,
 )
 
@@ -46,6 +47,12 @@ router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
 
 
 def _build_response(reply) -> ChatMessageResponse:
+    open_screen = None
+    if reply.open_screen is not None:
+        open_screen = ChatOpenScreen(
+            screen=reply.open_screen.screen,
+            prefill=reply.open_screen.prefill,
+        )
     return ChatMessageResponse(
         reply_text=reply.text,
         buttons=[
@@ -56,6 +63,7 @@ def _build_response(reply) -> ChatMessageResponse:
             ChatUrlButton(label=u.label, url=u.url)
             for u in reply.url_buttons
         ],
+        open_screen=open_screen,
     )
 
 

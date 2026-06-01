@@ -34,11 +34,12 @@
           "photosPermission": "Elegí una foto del recibo para registrar la transacción automáticamente.",
           "cameraPermission": "Tomá una foto del recibo para registrar la transacción automáticamente."
         }
-      ]
+      ],
+      "expo-document-picker"
     ],
     "extra": {
       "phase": "6f",
-      "block": "B6"
+      "block": "debt-D3"
     }
   }
 }

@@ -15,6 +15,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import * as WebBrowser from "expo-web-browser";
 import * as ImagePicker from "expo-image-picker";
 import { Feather } from "@expo/vector-icons";
+import { useNavigation } from "@react-navigation/native";
+import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useMutation } from "@tanstack/react-query";
 
 import {
@@ -23,6 +25,7 @@ import {
   type ChatButton,
   type ChatUrlButton,
 } from "../api/chat";
+import type { ChatStackParamList } from "../navigation/ChatNavigator";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
 
 function stripHtml(text: string): string {
@@ -44,6 +47,7 @@ function nextId() {
 }
 
 export function ChatScreen() {
+  const nav = useNavigation<NativeStackNavigationProp<ChatStackParamList, "Chat">>();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [usedChips, setUsedChips] = useState<Set<string>>(new Set());
@@ -60,6 +64,11 @@ export function ChatScreen() {
         urlButtons: data.url_buttons.length > 0 ? data.url_buttons : undefined,
       },
     ]);
+    // Phase 6f debt slice: the chat hands off to a native form instead of
+    // committing. Show the reply bubble (above), then open the pre-filled form.
+    if (data.open_screen?.screen === "debt_create") {
+      nav.navigate("DebtCreate", { prefill: data.open_screen.prefill });
+    }
   };
 
   const onError = () => {

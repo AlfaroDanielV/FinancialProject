@@ -33,6 +33,7 @@ Reglas duras:
    - "create_goal": el usuario quiere CREAR una meta de ahorro ("quiero ahorrar X para Y", "creá una meta", "meta de ahorro", "quiero juntar X"). NO es un ingreso ni un gasto — es una intención a futuro.
    - "create_income": el usuario quiere CONFIGURAR un ingreso RECURRENTE ("me pagan X cada quincena", "mi salario es X mensual", "configurá mi salario", "registrá mi ingreso recurrente"). La señal clave es la repetición ("cada", "mensual", "quincenal", "todos los meses"). Un pago único es log_income, NO create_income.
    - "create_bill": el usuario quiere CONFIGURAR un gasto fijo / recibo RECURRENTE ("el recibo de luz de 18 mil cada mes", "pago de internet 25 mil mensual", "configurá el alquiler de 300 mil", "agregá la factura del agua"). La señal clave es la repetición de un cobro. Una compra única es log_expense, NO create_bill.
+   - "create_debt": el usuario quiere REGISTRAR un préstamo / deuda / crédito existente ("tengo un préstamo de 5 millones a 5 años con el BAC", "saqué un crédito de carro", "debo 3 millones al Banco Nacional", "registrá mi hipoteca"). La señal clave es un saldo prestado con plazo/entidad. Un pago único de una deuda es log_expense, NO create_debt.
    - "query": cualquier pregunta o solicitud de informacion de solo lectura.
    - "confirm_yes": confirma un paso previo ("sí", "dale", "ok", "correcto", "confirmá").
    - "confirm_no": cancela un paso previo ("no", "cancelar", "mejor no").
@@ -46,7 +47,7 @@ Reglas duras:
      pagos pendientes, vencimientos y cualquier otra consulta de lectura.
    - No subclasifiques queries en el intent. Para todas usa intent="query".
    - Si el usuario intenta escribir o registrar algo, usa dispatcher="write".
-   - Crear una meta ("create_goal"), un ingreso recurrente ("create_income") o un gasto fijo ("create_bill") también van a dispatcher="write".
+   - Crear una meta ("create_goal"), un ingreso recurrente ("create_income"), un gasto fijo ("create_bill") o registrar una deuda ("create_debt") también van a dispatcher="write".
    - Si el usuario da un comando, confirma, cancela, pide ayuda, deshace o el mensaje no tiene sentido,
      usa dispatcher="control".
 
@@ -115,6 +116,16 @@ salud / ocio / vivienda / deudas / otros). Recibos de servicios → "servicios",
 "semestral"→semiannual, "anual"→annual. Si no lo dice, null.
    - bill_day_of_month: el día del mes en que se cobra (1–31), si lo dice ("el 5" → 5). Si no, null.
 
+13. Deudas / préstamos (solo cuando intent="create_debt"):
+   - La extracción es LIGERA — solo lo que sirva para PRE-LLENAR un formulario. NO juntes todos los campos por chat; el formulario nativo completa lo demás.
+   - debt_principal: el monto prestado / saldo, como magnitud positiva ("5 millones" → 5000000). Si no lo dice, null.
+   - debt_term_months: el plazo en MESES. "5 años" → 60, "a 24 meses" → 24. Si no lo dice, null.
+   - debt_interest_rate: la tasa de interés en PORCENTAJE como número ("al 18%" → 18). NO la conviertas a fracción — eso lo hace el formulario. La mayoría de la gente NO sabe su tasa; si no la dice, dejala null (el formulario la pide o el usuario sube el contrato).
+   - debt_lender: la entidad/banco tal cual ("BAC", "Banco Nacional", "Coopealianza"). Si no lo dice, null.
+   - debt_name: un nombre corto del préstamo si lo da ("préstamo del carro", "hipoteca"). Si no, null.
+   - currency: CRC o USD si lo dice; si no, null.
+   - NO uses amount/merchant para deudas; usá los campos debt_*.
+
 Ejemplos:
 - Usuario: "gasté 5000 en el super"
   Tool input: {"intent":"log_expense","dispatcher":"write","amount":5000,"currency":null,"merchant":"super","category_hint":"supermercado","account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.95,"raw_notes":null}
@@ -140,6 +151,10 @@ Ejemplos:
   Tool input: {"intent":"log_income","dispatcher":"write","amount":800000,"currency":null,"merchant":null,"category_hint":"salario","account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.9,"raw_notes":null}
 - Usuario: "el recibo de luz me llega como 18 mil cada mes, el 5"
   Tool input: {"intent":"create_bill","dispatcher":"write","amount":18000,"currency":null,"merchant":null,"category_hint":"servicios","account_hint":null,"occurred_at_hint":null,"query_window":null,"bill_name":"Luz","bill_frequency":"monthly","bill_day_of_month":5,"confidence":0.9,"raw_notes":null}
+- Usuario: "tengo un préstamo de 5 millones a 5 años con el BAC"
+  Tool input: {"intent":"create_debt","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"debt_name":null,"debt_principal":5000000,"debt_interest_rate":null,"debt_term_months":60,"debt_lender":"BAC","confidence":0.9,"raw_notes":null}
+- Usuario: "saqué un crédito de carro de 8 millones al 12% a 7 años"
+  Tool input: {"intent":"create_debt","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"debt_name":"crédito de carro","debt_principal":8000000,"debt_interest_rate":12,"debt_term_months":84,"debt_lender":null,"confidence":0.92,"raw_notes":null}
 """
 
 
@@ -162,6 +177,7 @@ TOOL_DEFINITION = {
                     "create_goal",
                     "create_income",
                     "create_bill",
+                    "create_debt",
                     "query",
                     "confirm_yes",
                     "confirm_no",
@@ -279,6 +295,44 @@ TOOL_DEFINITION = {
                 "minimum": 1,
                 "maximum": 31,
                 "description": "Day of month the bill is charged. create_bill only.",
+            },
+            "debt_name": {
+                "type": ["string", "null"],
+                "maxLength": 255,
+                "description": (
+                    "Short loan name as the user said it ('préstamo del carro', "
+                    "'hipoteca'). create_debt only."
+                ),
+            },
+            "debt_principal": {
+                "type": ["number", "null"],
+                "description": (
+                    "Positive borrowed amount / balance ('5 millones' → 5000000). "
+                    "create_debt only."
+                ),
+            },
+            "debt_interest_rate": {
+                "type": ["number", "null"],
+                "description": (
+                    "Annual interest rate as a PERCENT number ('al 18%' → 18). Do "
+                    "NOT convert to a fraction — the form does. Null if unknown. "
+                    "create_debt only."
+                ),
+            },
+            "debt_term_months": {
+                "type": ["integer", "null"],
+                "description": (
+                    "Loan term in MONTHS ('5 años' → 60, 'a 24 meses' → 24). "
+                    "create_debt only."
+                ),
+            },
+            "debt_lender": {
+                "type": ["string", "null"],
+                "maxLength": 100,
+                "description": (
+                    "Lender/bank as the user said it ('BAC', 'Banco Nacional'). "
+                    "create_debt only."
+                ),
             },
             "confidence": {
                 "type": "number",
