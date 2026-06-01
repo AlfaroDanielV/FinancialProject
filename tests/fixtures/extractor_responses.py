@@ -201,6 +201,31 @@ CREATE_INCOME_SALARY = RecordedLLMResponse(
 )
 
 
+# ── 10. Conversational recurring-bill creation (Phase 6f) ─────────────────────
+# Input: "el recibo de luz me llega como 18 mil cada mes, el 5"
+CREATE_BILL_MONTHLY = RecordedLLMResponse(
+    tool_input={
+        "intent": "create_bill",
+        "dispatcher": "write",
+        "amount": 18000,
+        "currency": None,
+        "merchant": None,
+        "category_hint": "servicios",
+        "account_hint": None,
+        "occurred_at_hint": None,
+        "query_window": None,
+        "bill_name": "Luz",
+        "bill_frequency": "monthly",
+        "bill_day_of_month": 5,
+        "confidence": 0.9,
+        "raw_notes": None,
+    },
+    input_tokens=448,
+    output_tokens=58,
+    cache_read_input_tokens=380,
+)
+
+
 # ── 6. Low-confidence ambiguous input (schema-sharpening case) ────────────────
 # Input: "algo de 1000 por ahí"
 LOW_CONFIDENCE_AMBIGUOUS = RecordedLLMResponse(

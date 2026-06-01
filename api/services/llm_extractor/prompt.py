@@ -32,6 +32,7 @@ Reglas duras:
    - "log_income": el usuario registra un ingreso que YA ocurrió, una sola vez ("me pagaron", "entró", "recibí", "me transfirieron").
    - "create_goal": el usuario quiere CREAR una meta de ahorro ("quiero ahorrar X para Y", "creá una meta", "meta de ahorro", "quiero juntar X"). NO es un ingreso ni un gasto — es una intención a futuro.
    - "create_income": el usuario quiere CONFIGURAR un ingreso RECURRENTE ("me pagan X cada quincena", "mi salario es X mensual", "configurá mi salario", "registrá mi ingreso recurrente"). La señal clave es la repetición ("cada", "mensual", "quincenal", "todos los meses"). Un pago único es log_income, NO create_income.
+   - "create_bill": el usuario quiere CONFIGURAR un gasto fijo / recibo RECURRENTE ("el recibo de luz de 18 mil cada mes", "pago de internet 25 mil mensual", "configurá el alquiler de 300 mil", "agregá la factura del agua"). La señal clave es la repetición de un cobro. Una compra única es log_expense, NO create_bill.
    - "query": cualquier pregunta o solicitud de informacion de solo lectura.
    - "confirm_yes": confirma un paso previo ("sí", "dale", "ok", "correcto", "confirmá").
    - "confirm_no": cancela un paso previo ("no", "cancelar", "mejor no").
@@ -45,7 +46,7 @@ Reglas duras:
      pagos pendientes, vencimientos y cualquier otra consulta de lectura.
    - No subclasifiques queries en el intent. Para todas usa intent="query".
    - Si el usuario intenta escribir o registrar algo, usa dispatcher="write".
-   - Crear una meta de ahorro ("create_goal") o un ingreso recurrente ("create_income") también van a dispatcher="write".
+   - Crear una meta ("create_goal"), un ingreso recurrente ("create_income") o un gasto fijo ("create_bill") también van a dispatcher="write".
    - Si el usuario da un comando, confirma, cancela, pide ayuda, deshace o el mensaje no tiene sentido,
      usa dispatcher="control".
 
@@ -104,6 +105,16 @@ Si no la dice, null.
    - income_next_date: cuándo es el PRÓXIMO pago, como lo dijo el usuario, SIN resolver \
 ("el 15", "fin de mes", "el viernes"). El servidor la resuelve. Si no lo dice, null.
 
+12. Gastos fijos / recibos recurrentes (solo cuando intent="create_bill"):
+   - amount + currency: el monto esperado de cada cobro (reusá los mismos campos).
+   - bill_name: nombre del gasto fijo ("Luz", "Internet", "Alquiler"). Si no lo dice, null.
+   - category_hint: una de las categorías CR (alimentación / transporte / servicios / \
+salud / ocio / vivienda / deudas / otros). Recibos de servicios → "servicios", alquiler → "vivienda".
+   - bill_frequency: uno de "weekly" | "biweekly" | "monthly" | "bimonthly" | "quarterly" \
+| "semiannual" | "annual". "mensual"→monthly, "bimestral"→bimonthly, "trimestral"→quarterly, \
+"semestral"→semiannual, "anual"→annual. Si no lo dice, null.
+   - bill_day_of_month: el día del mes en que se cobra (1–31), si lo dice ("el 5" → 5). Si no, null.
+
 Ejemplos:
 - Usuario: "gasté 5000 en el super"
   Tool input: {"intent":"log_expense","dispatcher":"write","amount":5000,"currency":null,"merchant":"super","category_hint":"supermercado","account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.95,"raw_notes":null}
@@ -127,6 +138,8 @@ Ejemplos:
   Tool input: {"intent":"create_income","dispatcher":"write","amount":800000,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"income_type":"salary","income_frequency":"biweekly","income_next_date":"el 15","confidence":0.92,"raw_notes":null}
 - Usuario: "me pagaron 800 mil"
   Tool input: {"intent":"log_income","dispatcher":"write","amount":800000,"currency":null,"merchant":null,"category_hint":"salario","account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.9,"raw_notes":null}
+- Usuario: "el recibo de luz me llega como 18 mil cada mes, el 5"
+  Tool input: {"intent":"create_bill","dispatcher":"write","amount":18000,"currency":null,"merchant":null,"category_hint":"servicios","account_hint":null,"occurred_at_hint":null,"query_window":null,"bill_name":"Luz","bill_frequency":"monthly","bill_day_of_month":5,"confidence":0.9,"raw_notes":null}
 """
 
 
@@ -148,6 +161,7 @@ TOOL_DEFINITION = {
                     "log_income",
                     "create_goal",
                     "create_income",
+                    "create_bill",
                     "query",
                     "confirm_yes",
                     "confirm_no",
@@ -246,6 +260,25 @@ TOOL_DEFINITION = {
                     "Next payment date as the user said it ('el 15', 'fin de mes'). "
                     "Do not resolve — the server does. create_income only."
                 ),
+            },
+            "bill_name": {
+                "type": ["string", "null"],
+                "maxLength": 255,
+                "description": "Recurring-bill name ('Luz', 'Internet'). create_bill only.",
+            },
+            "bill_frequency": {
+                "type": ["string", "null"],
+                "enum": [
+                    "weekly", "biweekly", "monthly", "bimonthly",
+                    "quarterly", "semiannual", "annual", None,
+                ],
+                "description": "Billing cadence. create_bill only.",
+            },
+            "bill_day_of_month": {
+                "type": ["integer", "null"],
+                "minimum": 1,
+                "maximum": 31,
+                "description": "Day of month the bill is charged. create_bill only.",
             },
             "confidence": {
                 "type": "number",

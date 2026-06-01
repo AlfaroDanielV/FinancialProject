@@ -416,6 +416,14 @@ async def _handle_confirm(
             msg += messages_es.INCOME_DERIVE_TIP
         return BotReply(text=msg)
 
+    if pending.action_type == "create_bill":
+        await commit_pending(user=user, pending=pending, db=db, redis=redis)
+        return BotReply(
+            text=messages_es.BILL_CREATED.format(
+                name=pending.payload.get("name", "el gasto fijo")
+            )
+        )
+
     txn_id = await commit_pending(user=user, pending=pending, db=db, redis=redis)
     amt_decimal = Decimal(pending.payload["amount"])
     currency = pending.payload["currency"]

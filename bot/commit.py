@@ -16,8 +16,10 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.models.goal import Goal
+from api.models.recurring_bill import RecurringBill
 from api.models.recurring_income import RecurringIncome
 from api.models.user import User
+from api.services import recurrence
 from api.services.transactions import create_transaction
 
 from .pending import PendingAction, clear_pending, save_last_action
@@ -39,6 +41,9 @@ async def commit_pending(
 
     if pending.action_type == "create_income":
         return await _commit_income(user=user, pending=pending, db=db, redis=redis)
+
+    if pending.action_type == "create_bill":
+        return await _commit_bill(user=user, pending=pending, db=db, redis=redis)
 
     if pending.action_type not in ("log_expense", "log_income"):
         raise ValueError(f"unknown action_type: {pending.action_type}")
@@ -163,3 +168,47 @@ async def _commit_income(
         redis=redis,
     )
     return income.id
+
+
+async def _commit_bill(
+    *,
+    user: User,
+    pending: PendingAction,
+    db: AsyncSession,
+    redis: Redis,
+) -> uuid.UUID:
+    """Create a recurring bill (gasto fijo) + generate its occurrences, mirroring
+    api/routers/recurring_bills.py::create_recurring_bill. Fixed-amount only
+    (no is_variable_amount via chat yet). Returns the new bill id."""
+    payload = pending.payload
+    day_raw = payload.get("day_of_month")
+    bill = RecurringBill(
+        user_id=user.id,
+        name=payload["name"],
+        category=payload["category"],
+        amount_expected=Decimal(payload["amount_expected"]),
+        currency=payload["currency"],
+        is_variable_amount=False,
+        frequency=payload["frequency"],
+        day_of_month=int(day_raw) if day_raw is not None else None,
+        start_date=date.fromisoformat(payload["start_date"]),
+        lead_time_days=0,
+    )
+    db.add(bill)
+    await db.flush()
+    await recurrence.generate_occurrences(bill, db)
+
+    await resolve_from_pending(
+        session=db, pending=pending, resolution="confirmed"
+    )
+    await db.commit()
+    await db.refresh(bill)
+
+    await clear_pending(user_id=user.id, redis=redis)
+    await save_last_action(
+        user_id=user.id,
+        action_type="create_bill",
+        record_id=bill.id,
+        redis=redis,
+    )
+    return bill.id

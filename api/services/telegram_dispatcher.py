@@ -21,6 +21,7 @@ from typing import Any, Optional, Union
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.user import User
+from ..schemas.recurring_bills import VALID_RECURRING_BILL_CATEGORIES
 from .dispatch.lazy_detection import classify_hint_type, match_account_hint
 from .accounts import resolve_account, list_active
 from .llm_extractor import ExtractionResult, Intent
@@ -211,6 +212,11 @@ async def dispatch(
 
     if intent is Intent.CREATE_INCOME:
         return _dispatch_create_income(
+            extraction=extraction, user=user, today=today
+        )
+
+    if intent is Intent.CREATE_BILL:
+        return _dispatch_create_bill(
             extraction=extraction, user=user, today=today
         )
 
@@ -678,4 +684,113 @@ def _dispatch_create_income(
     )
     return ProposeAction(
         action_type="create_income", payload=payload, summary_es=summary
+    )
+
+
+# ── Phase 6f: conversational recurring-bill (gasto fijo) creation ─────────────
+
+
+_BILL_FREQUENCY_LABELS_ES: dict[str, str] = {
+    "weekly": "semanal",
+    "biweekly": "quincenal",
+    "monthly": "mensual",
+    "bimonthly": "bimestral",
+    "quarterly": "trimestral",
+    "semiannual": "semestral",
+    "annual": "anual",
+}
+
+# Recurring bills are predominantly utilities/subscriptions; a valid generic
+# default keeps the required+validated category from blocking creation. The
+# user recategorizes in the Bills screen.
+_DEFAULT_BILL_CATEGORY = "servicios"
+
+
+def _resolve_bill_category(hint: Optional[str]) -> str:
+    if hint:
+        h = hint.strip().lower()
+        if h in VALID_RECURRING_BILL_CATEGORIES:
+            return h
+    return _DEFAULT_BILL_CATEGORY
+
+
+def _build_bill_summary(
+    *,
+    name: str,
+    amount: Decimal,
+    currency: str,
+    currency_defaulted: bool,
+    frequency: str,
+    day_of_month: Optional[int],
+    category: str,
+) -> str:
+    amt = _format_amount(amount, currency)
+    freq = _BILL_FREQUENCY_LABELS_ES.get(frequency, frequency)
+    parts = [f"Gasto fijo: {name} — {amt} ({freq})"]
+    if day_of_month:
+        parts.append(f"el día {day_of_month}")
+    parts.append(f"[{category}]")
+    lead = " ".join(parts) + "."
+    if currency_defaulted:
+        lead += f" (Usé {currency} por defecto.)"
+    return lead + " ¿Confirmo?"
+
+
+def _dispatch_create_bill(
+    *,
+    extraction: ExtractionResult,
+    user: User,
+    today: date,
+) -> DispatcherResult:
+    # amount_expected is required (we don't support is_variable_amount via chat
+    # yet) and frequency is NOT NULL, so both are gathered before proposing.
+    if extraction.amount is None:
+        return AskClarification(
+            question_es="¿De cuánto es el recibo? Decime el monto (ej: '18 mil').",
+            awaiting_field="amount",
+            partial=extraction.model_dump(mode="json"),
+        )
+    if extraction.bill_frequency is None:
+        return AskClarification(
+            question_es=(
+                "¿Cada cuánto se paga? (mensual / bimestral / trimestral / "
+                "semestral / anual / semanal / quincenal)"
+            ),
+            awaiting_field="bill_frequency",
+            partial=extraction.model_dump(mode="json"),
+        )
+    if not extraction.bill_name:
+        return AskClarification(
+            question_es="¿Cómo se llama este gasto fijo? (ej: 'Luz', 'Internet', 'Alquiler').",
+            awaiting_field="bill_name",
+            partial=extraction.model_dump(mode="json"),
+        )
+
+    currency = extraction.currency or user.currency
+    currency_defaulted = extraction.currency is None
+    amount: Decimal = extraction.amount
+    category = _resolve_bill_category(extraction.category_hint)
+    day_of_month = extraction.bill_day_of_month
+
+    payload = {
+        "action_type": "create_bill",
+        "name": extraction.bill_name,
+        "category": category,
+        "amount_expected": str(amount),
+        "currency": currency,
+        "frequency": extraction.bill_frequency,
+        "day_of_month": day_of_month,
+        "start_date": today.isoformat(),
+    }
+    summary = _build_bill_summary(
+        name=extraction.bill_name,
+        amount=amount,
+        currency=currency,
+        currency_defaulted=currency_defaulted,
+        frequency=extraction.bill_frequency,
+        day_of_month=day_of_month,
+        category=category,
+    )
+    return ProposeAction(
+        action_type="create_bill", payload=payload, summary_es=summary
     )

@@ -73,6 +73,12 @@ INCOME_DERIVE_TIP = (
     " Tip: desde Ingresos podés derivar aguinaldo y salario escolar con un toque."
 )
 
+# Phase 6f — conversational recurring-bill (gasto fijo) creation.
+BILL_CREATED = (
+    "📅 Gasto fijo creado: {name}. Lo vas a ver en la pestaña Gastos fijos con "
+    "sus próximos vencimientos."
+)
+
 EDIT_PROMPT = (
     "¿Qué campo querés cambiar? Respondé con: monto / cuenta / categoría / fecha."
 )

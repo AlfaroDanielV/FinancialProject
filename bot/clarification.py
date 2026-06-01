@@ -133,6 +133,13 @@ def merge_reply(
     elif field == "income_next_date":
         # Raw pass-through; the dispatcher re-resolves and re-asks if needed.
         merged["income_next_date"] = reply
+    elif field == "bill_frequency":
+        freq = _parse_bill_frequency_es(reply)
+        if freq is None:
+            return None
+        merged["bill_frequency"] = freq
+    elif field == "bill_name":
+        merged["bill_name"] = reply
     else:
         return None
 
@@ -259,5 +266,30 @@ def _parse_frequency_es(text: str) -> Optional[str]:
     t = text.strip().lower()
     for freq in ("biweekly", "weekly", "monthly", "annual"):
         if any(kw in t for kw in _FREQUENCY_KEYWORDS[freq]):
+            return freq
+    return None
+
+
+# Recurring bills add bimonthly/quarterly/semiannual on top of the income set.
+# "monthly" is checked last (its keywords are specific — "mensual"/"cada mes" —
+# so they don't collide with bi/tri/semestral).
+_BILL_FREQUENCY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "biweekly": ("quincenal", "quincena", "cada quincena"),
+    "weekly": ("semanal", "cada semana", "por semana", "semana"),
+    "bimonthly": ("bimestral", "bimensual", "cada dos meses", "cada 2 meses"),
+    "quarterly": ("trimestral", "cada trimestre", "cada tres meses", "cada 3 meses"),
+    "semiannual": ("semestral", "cada semestre", "cada seis meses", "cada 6 meses"),
+    "annual": ("anual", "cada año", "al año", "por año", "una vez al año", "año"),
+    "monthly": ("mensual", "cada mes", "al mes", "por mes"),
+}
+
+
+def _parse_bill_frequency_es(text: str) -> Optional[str]:
+    t = text.strip().lower()
+    for freq in (
+        "biweekly", "weekly", "bimonthly", "quarterly",
+        "semiannual", "annual", "monthly",
+    ):
+        if any(kw in t for kw in _BILL_FREQUENCY_KEYWORDS[freq]):
             return freq
     return None

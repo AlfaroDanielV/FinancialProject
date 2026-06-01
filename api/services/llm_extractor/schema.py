@@ -20,6 +20,7 @@ class Intent(str, Enum):
     LOG_INCOME = "log_income"
     CREATE_GOAL = "create_goal"
     CREATE_INCOME = "create_income"
+    CREATE_BILL = "create_bill"
     QUERY = "query"
     CONFIRM_YES = "confirm_yes"
     CONFIRM_NO = "confirm_no"
@@ -66,6 +67,11 @@ class ExtractionResult(BaseModel):
     income_type: Optional[str] = Field(default=None, max_length=32)
     income_frequency: Optional[str] = Field(default=None, max_length=16)
     income_next_date: Optional[str] = Field(default=None, max_length=64)
+    # Phase 6f — conversational recurring-bill creation (intent=create_bill).
+    # amount (amount_expected), currency, category_hint (category) are reused.
+    bill_name: Optional[str] = Field(default=None, max_length=255)
+    bill_frequency: Optional[str] = Field(default=None, max_length=16)
+    bill_day_of_month: Optional[int] = Field(default=None)
     confidence: float = Field(..., ge=0.0, le=1.0)
     raw_notes: Optional[str] = Field(default=None, max_length=500)
 
@@ -100,7 +106,9 @@ class ExtractionResult(BaseModel):
             return f"{EXPECTED_QUERY_WINDOW_PREFIX}{n}"
         return None
 
-    @field_validator("category_hint", "account_hint", "merchant", "goal_name")
+    @field_validator(
+        "category_hint", "account_hint", "merchant", "goal_name", "bill_name"
+    )
     @classmethod
     def _normalize_strings(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
@@ -125,6 +133,25 @@ class ExtractionResult(BaseModel):
             return None
         v = v.strip().lower()
         return v if v in {"weekly", "biweekly", "monthly", "annual"} else None
+
+    @field_validator("bill_frequency")
+    @classmethod
+    def _valid_bill_frequency(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip().lower()
+        # All BillFrequency members except 'custom' (RRULE is not conversational).
+        return v if v in {
+            "weekly", "biweekly", "monthly", "bimonthly",
+            "quarterly", "semiannual", "annual",
+        } else None
+
+    @field_validator("bill_day_of_month")
+    @classmethod
+    def _valid_day_of_month(cls, v: Optional[int]) -> Optional[int]:
+        if v is None:
+            return None
+        return v if 1 <= v <= 31 else None
 
     @field_validator("amount", "goal_target_amount")
     @classmethod

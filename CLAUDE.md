@@ -831,7 +831,20 @@ vs native screens/API:
     `merge_reply` + `_parse_frequency_es` handle the frequency/date
     clarifications. Tested (`tests/test_phase_6f_chat_create_income.py`, 10
     cases). **LLM classification (recurring create_income vs one-time log_income)
-    needs operator on-device sign-off.** Bill / debt slices still pending.
+    needs operator on-device sign-off.**
+  - **Bills — ✅ third slice implemented 2026-05-31.** New `Intent.CREATE_BILL`
+    + `bill_name`/`bill_frequency`/`bill_day_of_month` (amount→amount_expected,
+    currency, category_hint→category reused). `_dispatch_create_bill` clarifies
+    amount → frequency → name; the required+validated `category` falls back to a
+    valid default (`servicios`) when the hint isn't a CR category;
+    `day_of_month` optional (`generate_occurrences` anchors on start_date.day);
+    `start_date` defaults to today. Confirm → `commit._commit_bill` creates the
+    `RecurringBill` **and runs `recurrence.generate_occurrences`** (mirrors
+    `routers/recurring_bills.py`, so the calendar populates). `_parse_bill_
+    frequency_es` covers all 7 cadences (custom/RRULE excluded). Tested
+    (`tests/test_phase_6f_chat_create_bill.py`, 9 cases). **LLM classification
+    (recurring create_bill vs one-time log_expense) needs on-device sign-off.**
+    Debt slice still pending (the hybrid: chat-initiated → focused form).
 - **Memoria edit** — stays conversational (the bot's `/editar_memoria`); native
   `MemoryScreen` remains list/delete/export. No new edit form (consistent with
   the chat-first decision).
@@ -1085,6 +1098,7 @@ iPhone + Expo flow end-to-end.
 - **Phase 6f B1: `mobile/` is pinned to Expo SDK 54** (`expo@~54.0.34`, `react@19.1.0`, `react-native@0.81.5`). Pinned because Apple's App Store ships only the latest Expo Go and Expo Go for SDK 54 is the version the operator's iPhone runs. When the App Store ships Expo Go for a newer SDK and the operator's device updates, bump `mobile/` to that SDK (or move to a custom dev build via EAS Build, which makes us SDK-independent — that's P8 prep). Node 20+ is required by SDK 53+; the host machine is on Node 20.20.2 via NodeSource apt.
 - **Phase 6f B3: two session-issuance endpoints coexist** (`POST /auth/magic-link/exchange` and `POST /auth/device-code/exchange`). Both terminate in `issue_session_jwt` and the resulting JWT is interchangeable downstream. Magic-link exchange ALSO sets the `fa_session` cookie for SPA backwards-compat; device-code exchange does NOT (native-only). When the SPA is retired at 6f B16, magic-link exchange can either be deleted (if `/setup` deep links land in B15 using `ledgercr://`) or kept and stripped of the cookie set. Cleanup target: pick one path post-B16.
 - **Phase 6f B15: `users.expo_push_token` column exists (migration 0021) but no worker reads it.** Schema-only prep — nudges + shadow approvals continue to deliver only to Telegram during Phase 6f even when the operator uses the native app for everything else. No Expo push token is written by the app yet, and there is no APNs delivery worker. P8 prerequisites: Apple Developer Program enrollment for APNs certificates + an Expo push token registration call in the app + a delivery worker.
+- **Phase 6f: `ExtractionResult` is accreting per-intent flat fields** (`goal_*`, `income_*`, `bill_*`, and `amount`/`currency`/`category_hint` reused across intents). It's explicit and validator-guarded, but wide, and debt creation will add more. Cleanup target: once the debt slice lands (the 4th conversational creator), consider consolidating to a per-intent nested payload (e.g. a discriminated `create: {...}` block) in the tool schema + dispatch, if the flat shape proves unwieldy. Not before — premature until the pattern is fully proven.
 - **Phase 6f: no test catches mobile-API-helper ↔ backend request-body drift.** Backend tests use the correct schema field names; mobile `api/*.ts` bodies are untyped at the `axios` call and `tsc` can't see a wrong JSON key. This let the B9 `archiveTransaction`/`restoreTransaction` `{ ids }`-vs-`{ transaction_ids }` bug ship undetected (fixed 2026-05-30). There is no native CI (decision §3.8), so the only current guard is operator on-device testing. Cleanup target: when EAS/CI lands at P8, add a thin contract test (or generate mobile request types from the OpenAPI schema) so body-field drift fails in CI.
 
 ---
