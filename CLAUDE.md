@@ -844,7 +844,20 @@ vs native screens/API:
     frequency_es` covers all 7 cadences (custom/RRULE excluded). Tested
     (`tests/test_phase_6f_chat_create_bill.py`, 9 cases). **LLM classification
     (recurring create_bill vs one-time log_expense) needs on-device sign-off.**
-    Debt slice still pending (the hybrid: chat-initiated → focused form).
+  - **Debt — ⬜ planned, ON HOLD (spec ready 2026-05-31).** The hybrid:
+    chat-initiated (`Intent.CREATE_DEBT`, light extraction) → native
+    `DebtCreateScreen` (pre-filled, live cuota preview via a lifted
+    `mobile/src/lib/amortization.ts`, Ley 7472 warning). **Adds PDF term
+    extraction**: `POST /debts/parse-document` (multipart PDF) →
+    `api/services/llm_extractor/document.py` sends a Claude `document` block →
+    `DebtTermsExtraction` pre-fills the form (so a user who doesn't know the
+    interest rate uploads the loan contract). **No-rate fallback:** if rate is
+    missing and no PDF, the form blocks submit and shows (voseo) *"Por favor
+    llamá a tu entidad financiera para confirmar la tasa de interés. Cuando la
+    tengás, volvé y registramos el préstamo."* Commit reuses the existing
+    `POST /debts` (no new write path). New deps planned: `expo-document-picker`.
+    Full spec: vault `Decision - Debt Creation - Hybrid Form Plus PDF Term
+    Extraction`. Sub-plan D1–D4. **Do not start until the operator confirms.**
 - **Memoria edit** — stays conversational (the bot's `/editar_memoria`); native
   `MemoryScreen` remains list/delete/export. No new edit form (consistent with
   the chat-first decision).
