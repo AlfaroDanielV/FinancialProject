@@ -68,6 +68,13 @@ const MODULES: ModuleTile[] = [
     screen: "CategoriesScreen",
   },
   {
+    key: "gmail",
+    title: "Gmail",
+    subtitle: "Conectar correo, remitentes por banco y revisar hallazgos",
+    icon: "mail",
+    screen: "GmailHome",
+  },
+  {
     key: "memory",
     title: "Memoria y privacidad",
     subtitle: "Insights del asistente y exportación de datos",

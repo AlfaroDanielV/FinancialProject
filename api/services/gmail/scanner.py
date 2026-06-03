@@ -364,12 +364,18 @@ async def _already_seen(
     *, db: AsyncSession, user_id: uuid.UUID, message_id: str
 ) -> bool:
     row = await db.execute(
-        select(GmailMessageSeen.gmail_message_id).where(
+        select(GmailMessageSeen.outcome).where(
             GmailMessageSeen.user_id == user_id,
             GmailMessageSeen.gmail_message_id == message_id,
         )
     )
-    return row.scalar_one_or_none() is not None
+    outcome = row.scalar_one_or_none()
+    # A prior `failed` is TRANSIENT (revoked mid-scan, network blip, extract
+    # error) and must be retried — otherwise one bad scan buries that email
+    # forever (the cause of "recent transactions never show up after a failed
+    # scan"). Every other outcome — matched / created / created_shadow /
+    # skipped / rejected_by_user — is terminal and stays deduped.
+    return outcome is not None and outcome != "failed"
 
 
 async def _mark_seen(
@@ -382,9 +388,12 @@ async def _mark_seen(
     ingestion_run_id: Optional[uuid.UUID],
     error: Optional[dict[str, Any]] = None,
 ) -> None:
-    """Insert into gmail_messages_seen. If a row already exists (race
-    between concurrent scans) the ON CONFLICT DO NOTHING is the right
-    behavior — first writer wins."""
+    """Upsert into gmail_messages_seen.
+
+    On conflict we overwrite ONLY when the prior row was `failed` — so a
+    successful retry promotes failed → created/etc., while a concurrent
+    second writer on a terminal row is a no-op (first terminal writer wins,
+    preserving the original race-safety intent)."""
     stmt = pg_insert(GmailMessageSeen).values(
         user_id=user_id,
         gmail_message_id=message_id,
@@ -393,8 +402,16 @@ async def _mark_seen(
         ingestion_run_id=ingestion_run_id,
         error=error,
     )
-    stmt = stmt.on_conflict_do_nothing(
-        index_elements=["user_id", "gmail_message_id"]
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["user_id", "gmail_message_id"],
+        set_={
+            "outcome": stmt.excluded.outcome,
+            "transaction_id": stmt.excluded.transaction_id,
+            "ingestion_run_id": stmt.excluded.ingestion_run_id,
+            "error": stmt.excluded.error,
+            "processed_at": datetime.now(timezone.utc),
+        },
+        where=GmailMessageSeen.outcome == "failed",
     )
     await db.execute(stmt)
 
@@ -464,28 +481,31 @@ async def scan_user_inbox(
         until.isoformat() if until else "now",
     )
 
-    # 1. Resolve access token (this also marks revoked_at if invalid_grant).
+    # 1. Open the run row up front. Every scan attempt is then auditable AND
+    #    the native app's run-based polling always sees a finished run — even
+    #    when we abort below because the credential is revoked (previously this
+    #    early-returned without a run, so the app's poll hung forever).
+    run = await _create_run(db=db, user_id=user_id, mode=mode)
+    result.run_id = run.id
+
+    # 2. Resolve access token (this also marks revoked_at if invalid_grant).
     access_token = await _resolve_access_token(user_id=user_id, db=db)
     if access_token is None:
         result.revoked = True
+        result.errors.append({"phase": "auth", "error": "revoked_or_no_credential"})
         result.finished_at = datetime.now(timezone.utc)
+        await _finalize_run(db=db, run=run, result=result)
         log.warning("scan_aborted user=%s reason=no_credential_or_revoked", user_id)
         return result
 
-    # 2. Read whitelist. Empty → record run, do nothing.
+    # 3. Read whitelist. Empty → finalize, do nothing.
     senders = [s.sender_email for s in await wl_svc.list_active(db=db, user_id=user_id)]
     if not senders:
-        run = await _create_run(db=db, user_id=user_id, mode=mode)
-        result.run_id = run.id
         result.no_whitelist = True
         result.finished_at = datetime.now(timezone.utc)
         await _finalize_run(db=db, run=run, result=result)
         log.warning("scan_no_whitelist user=%s — nothing to query", user_id)
         return result
-
-    # 3. Open run row.
-    run = await _create_run(db=db, user_id=user_id, mode=mode)
-    result.run_id = run.id
 
     # 4. Build query.
     query = _build_gmail_query(senders=senders, since=since, until=until)

@@ -102,7 +102,13 @@ async def test_discover_senders_groups_by_sender_and_persists(db_with_user):
         "Transacción aprobada",
     ]
 
-    row = (await db.execute(select(GmailDiscoveryRun))).scalars().one()
+    # Scope to this test's user — the table may hold rows from other tests /
+    # prior runs, so an unfiltered .one() is fragile (MultipleResultsFound).
+    row = (
+        await db.execute(
+            select(GmailDiscoveryRun).where(GmailDiscoveryRun.user_id == user_id)
+        )
+    ).scalars().one()
     assert row.keywords == ["transacción"]
     assert row.senders_found[0]["email"] == "notificacion@notificacionesbaccr.com"
 
