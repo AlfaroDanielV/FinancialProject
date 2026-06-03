@@ -58,15 +58,14 @@ class Settings(BaseSettings):
     dev_secret_prefix: str = "DEV_SECRET_"
     file_secret_store_path: str = ""  # default .dev_secrets.json in cwd
 
-    # Magic-link auth (Phase 6d B3)
-    spa_base_url: str = "http://localhost:5173"
-    spa_cors_origins: str = ""  # comma-separated; defaults to spa_base_url
+    # Magic-link auth (Phase 6d B3). Phase 6f B16 removed spa_base_url +
+    # spa_cors_origins with the SPA.
     magic_link_session_secret: str = "change-me-in-prod-magic-link-session"
     magic_link_ttl_s: int = 1800  # 30 min
-    session_cookie_name: str = "fa_session"
-    session_cookie_ttl_s: int = 14400  # 4h
-    session_cookie_domain: str = ""  # empty = host-only (dev)
-    session_cookie_secure: bool = False  # dev=false, prod=true
+    # Session JWT lifetime (shared by magic-link + device-code exchange). The
+    # SPA `fa_session` cookie was removed at Phase 6f B16; the bearer JWT keeps
+    # this TTL.
+    session_ttl_s: int = 14400  # 4h
     bcrypt_rounds: int = 12
 
     # Native app deep links (Phase 6f B15). Custom URL scheme registered in

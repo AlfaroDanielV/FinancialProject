@@ -23,17 +23,15 @@ class DeviceCodeExchangeRequest(BaseModel):
 
 
 class MagicLinkExchangeResponse(BaseModel):
-    """Response shape for `POST /api/v1/auth/magic-link/exchange`.
+    """Response shape for the magic-link / device-code exchange endpoints.
 
-    The SPA reads `user_id` / `email` / `full_name` and relies on the
-    `Set-Cookie: fa_session=…` side effect for auth.
+    Native clients (Expo) read `token` + `expires_at` from the body and
+    send `Authorization: Bearer <token>` on subsequent calls; `user_id` /
+    `email` / `full_name` identify the signed-in user.
 
-    Phase 6f B2: native clients additionally read `token` + `expires_at`
-    from the body and send `Authorization: Bearer <token>` on subsequent
-    calls (they cannot share the HttpOnly cookie with their JS-side
-    axios). The token is the same HS256 JWT the cookie carries, signed
-    with the same `magic_link_session_secret`; there is exactly one
-    session credential issued per exchange.
+    Phase 6f B16: the SPA `fa_session` cookie was removed; the bearer
+    token in this body is now the only session credential issued per
+    exchange (HS256, signed with `magic_link_session_secret`).
     """
 
     user_id: uuid.UUID
@@ -42,9 +40,8 @@ class MagicLinkExchangeResponse(BaseModel):
     token: str = Field(
         ...,
         description=(
-            "Session JWT (HS256). Same value as the fa_session cookie; "
-            "native clients persist this in secure storage and send it as "
-            "`Authorization: Bearer <token>`."
+            "Session JWT (HS256). Native clients persist this in secure "
+            "storage and send it as `Authorization: Bearer <token>`."
         ),
     )
     expires_at: int = Field(

@@ -66,7 +66,6 @@ from .clarification import (
     save_clarification,
 )
 from .commit import commit_pending
-from .deep_link import mint_edit_session_url
 from .formatting import format_amount
 from .onboarding_welcome import build_onboarding_reply
 from .pending import (
@@ -436,7 +435,7 @@ async def _handle_confirm(
             )
         )
 
-    txn_id = await commit_pending(user=user, pending=pending, db=db, redis=redis)
+    await commit_pending(user=user, pending=pending, db=db, redis=redis)
     amt_decimal = Decimal(pending.payload["amount"])
     currency = pending.payload["currency"]
     amt_formatted = format_amount(amt_decimal, currency)
@@ -446,24 +445,10 @@ async def _handle_confirm(
         else messages_es.COMMITTED_INCOME
     )
 
-    # Phase 6e B12: offer a one-tap deep link into the SPA at the just-
-    # committed transaction's row. Swallow-on-fail so the confirmation
-    # reply ships even if the magic-link mint hiccups.
-    url_buttons: list[UrlButton] = []
-    deep_link_url = await mint_edit_session_url(
-        db,
-        user_id=user.id,
-        target_path=f"/transactions?highlight={txn_id}",
-    )
-    if deep_link_url:
-        url_buttons.append(
-            UrlButton(label="Ver en Centro Financiero", url=deep_link_url)
-        )
-
-    return BotReply(
-        text=tmpl.format(amount=amt_formatted),
-        url_buttons=url_buttons,
-    )
+    # Phase 6f B16: the SPA "Ver en Centro Financiero" deep-link button was
+    # removed with the SPA. The committed transaction is visible in the
+    # native app's Transactions tab.
+    return BotReply(text=tmpl.format(amount=amt_formatted))
 
 
 # ── dev/smoke entry: skip LLM, inject a pre-baked ExtractionResult ──────────

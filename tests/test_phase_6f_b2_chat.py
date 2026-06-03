@@ -24,7 +24,6 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from api.config import settings
 from api.database import get_db
 from api.main import app
 from api.models.user import User
@@ -88,16 +87,14 @@ async def test_exchange_returns_bearer_token_and_cookie(db_with_user):
         assert "expires_at" in body
         assert body["expires_at"] > 0
 
-        # The body token must decode to the same user the cookie carries.
+        # The body token decodes to the same user.
         claims = decode_session_jwt(body["token"])
         assert claims is not None
         assert claims["sub"] == str(user_id)
         assert claims["exp"] == body["expires_at"]
 
-        # And the cookie is still set for SPA backwards-compat.
-        cookie_header = resp.headers.get("set-cookie", "")
-        assert settings.session_cookie_name in cookie_header
-        assert "HttpOnly" in cookie_header
+        # Phase 6f B16: no cookie is set — the JWT body is the only credential.
+        assert "set-cookie" not in {k.lower() for k in resp.headers.keys()}
     finally:
         _clear_db_override()
 
@@ -136,34 +133,7 @@ async def test_bearer_token_authenticates_chat_message(db_with_user):
         _clear_db_override()
 
 
-# ── 3. Cookie still authenticates /chat/message (SPA backwards-compat) ───────
-
-
-@pytest.mark.asyncio
-async def test_cookie_authenticates_chat_message(db_with_user):
-    session, user_id = db_with_user
-    link = await generate_link(session, user_id=user_id, purpose="onboarding")
-
-    _override_db(session)
-    try:
-        transport = ASGITransport(app=app)
-        # AsyncClient threads cookies through automatically. Hit exchange,
-        # then chat without explicit Authorization header — the cookie set
-        # by exchange should carry the session forward.
-        async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            exchange = await _exchange(ac, link.raw_token)
-            assert exchange.status_code == 200
-            assert ac.cookies.get(settings.session_cookie_name)
-
-            chat = await _chat(ac, "/help")
-
-        assert chat.status_code == 200, chat.text
-        assert chat.json()["reply_text"]
-    finally:
-        _clear_db_override()
-
-
-# ── 4. No auth → 401, malformed body → 422 ───────────────────────────────────
+# ── 3. No auth → 401, malformed body → 422 ───────────────────────────────────
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,17 @@
-"""Phase 6d B10 onboarding-aware welcome/help copy."""
+"""Phase 6d B10 onboarding-aware welcome/help copy.
+
+Phase 6f B16: the SPA was retired. The "setup web" magic-link button is
+replaced by a native deep link (`ledgercr://exchange?token=...`) delivered
+as tappable message text — Telegram inline URL buttons require https, so a
+custom-scheme link can't be a button (same constraint `/login` works around).
+Tapping it opens the native app and signs in via the silent
+`useMagicLinkListener`. Structured onboarding (accounts/incomes/debts/bills)
+now happens in the app + chat, not a web form.
+
+Note: a brand-new user without the app installed can't use the deep link —
+they fall back to the app + `/login`. App-install onboarding for beta users
+is a P8 concern.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,27 +21,35 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.models.user import User
 from api.routers.onboarding import onboarding_status
 from api.schemas.onboarding import OnboardingStatus
-from api.services.auth.magic_link import generate_link
 
-
-SETUP_BUTTON_LABEL = "Abrir setup web"
+from .deep_link import mint_native_deep_link
 
 
 @dataclass(frozen=True)
 class OnboardingReply:
     text: str
-    setup_url: str | None = None
+
+
+async def _setup_link_line(*, user: User, db: AsyncSession) -> str:
+    """A tappable native deep link as message text, or a /login fallback."""
+    link = await mint_native_deep_link(
+        db, user_id=user.id, purpose="onboarding"
+    )
+    if link:
+        return (
+            "Link para entrar a la app (válido 30 min, un solo uso) — tocalo "
+            f"desde tu teléfono:\n{link}"
+        )
+    return "Abrí la app de LedgerCR e iniciá sesión con el código de /login."
 
 
 async def build_setup_reply(*, user: User, db: AsyncSession) -> OnboardingReply:
-    link = await generate_link(db, user_id=user.id, purpose="onboarding")
+    line = await _setup_link_line(user=user, db=db)
     return OnboardingReply(
         text=(
-            "Acá tenés tu link al setup web. Es válido por 30 minutos y se "
-            "usa una sola vez.\n\n"
-            "Si lo abrís y después necesitás entrar de nuevo, mandame /setup."
-        ),
-        setup_url=link.url,
+            f"{line}\n\n"
+            "Si ya estás dentro y solo querés volver a entrar, mandame /setup."
+        )
     )
 
 
@@ -41,29 +62,24 @@ async def build_onboarding_reply(
     paired_now: bool = False,
 ) -> OnboardingReply:
     status = await onboarding_status(db=db, user=user)
-    setup_url = None
-    if include_setup_link and not _is_complete(status):
-        setup_url = (
-            await generate_link(db, user_id=user.id, purpose="onboarding")
-        ).url
 
-    if _is_empty(status):
-        return OnboardingReply(
-            text=_empty_welcome(first_name=first_name, paired_now=paired_now),
-            setup_url=setup_url,
-        )
     if _is_complete(status):
         return OnboardingReply(
             text=_complete_help(first_name=first_name, paired_now=paired_now)
         )
-    return OnboardingReply(
-        text=_partial_welcome(
+
+    if _is_empty(status):
+        text = _empty_welcome(first_name=first_name, paired_now=paired_now)
+    else:
+        text = _partial_welcome(
             status=status,
             first_name=first_name,
             paired_now=paired_now,
-        ),
-        setup_url=setup_url,
-    )
+        )
+
+    if include_setup_link:
+        text += "\n\n" + await _setup_link_line(user=user, db=db)
+    return OnboardingReply(text=text)
 
 
 def _is_empty(status: OnboardingStatus) -> bool:
@@ -99,10 +115,10 @@ def _empty_welcome(*, first_name: str, paired_now: bool) -> str:
     return (
         _prefix(first_name=first_name, paired_now=paired_now)
         + "Bienvenido. Para arrancar, registrá al menos una cuenta. "
-        "Podés abrir el setup web para meter cuentas, ingresos, deudas y "
-        "gastos fijos, o hacerlo paso a paso por acá.\n\n"
+        "Podés hacerlo en la app (cuentas, ingresos, deudas y gastos fijos) "
+        "o paso a paso por acá.\n\n"
         "Si preferís chat, decime algo como: crear cuenta BAC.\n"
-        "Para abrir el setup después, mandá /setup."
+        "Para volver a entrar a la app, mandá /setup."
     )
 
 
@@ -117,9 +133,8 @@ def _partial_welcome(
     return (
         _prefix(first_name=first_name, paired_now=paired_now)
         + f"Ya empezaste. Te falta registrar {missing_text}.\n\n"
-        "Podés seguir en el setup web con /setup, o hacerlo por acá cuando "
-        "surja. Para cuentas, decime: crear cuenta BAC. Las deudas van mejor "
-        "en el setup web."
+        "Podés seguir en la app con /setup, o hacerlo por acá cuando surja. "
+        "Para cuentas, decime: crear cuenta BAC."
     )
 
 

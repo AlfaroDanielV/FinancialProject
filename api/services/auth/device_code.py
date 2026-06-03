@@ -16,10 +16,9 @@ gripe with B3), so authentication on a new device goes:
 Side-by-side with magic-link exchange (Phase 6d B3 / 6f B2):
 
 - Both endpoints terminate in `issue_session_jwt`. Identical token
-  shape; identical `current_user` resolution downstream.
-- Magic-link path also sets the `fa_session` HttpOnly cookie for SPA
-  backwards-compat. Device-code path does NOT set a cookie — it's a
-  native-only flow.
+  shape; identical `current_user` resolution downstream. Neither sets a
+  cookie — the SPA `fa_session` cookie was removed at Phase 6f B16; both
+  are bearer-token flows now.
 - Magic links carry a `jti` from `magic_link_tokens.jti`. Device codes
   don't have a durable row to reference, so we mint a fresh `uuid4`
   as the JWT `jti`. The token still revokes by expiration; explicit

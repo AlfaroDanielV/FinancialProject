@@ -24,7 +24,6 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from api.config import settings
 from api.database import get_db
 from api.main import app
 from api.models.magic_link_token import MagicLinkToken
@@ -59,11 +58,11 @@ async def _exchange(session, token: str):
         app.dependency_overrides.pop(get_db, None)
 
 
-# ── 1. Token válido → 200 + cookie + claims ──────────────────────────────────
+# ── 1. Token válido → 200 + bearer JWT in body (no cookie post-6f-B16) ────────
 
 
 @pytest.mark.asyncio
-async def test_valid_token_exchange_sets_cookie(db_with_user):
+async def test_valid_token_exchange_returns_bearer_jwt(db_with_user):
     session, user_id = db_with_user
     link = await generate_link(session, user_id=user_id, purpose="onboarding")
 
@@ -72,18 +71,13 @@ async def test_valid_token_exchange_sets_cookie(db_with_user):
     body = resp.json()
     assert body["user_id"] == str(user_id)
 
-    cookie_header = resp.headers.get("set-cookie", "")
-    assert settings.session_cookie_name in cookie_header
-    assert "HttpOnly" in cookie_header
-    assert "SameSite=lax" in cookie_header.replace("Lax", "lax")
-
-    # JWT decodes to the same user + jti.
-    cookie_value = resp.cookies.get(settings.session_cookie_name)
-    assert cookie_value
-    claims = decode_session_jwt(cookie_value)
+    # Phase 6f B16: no cookie is set; the JWT is returned in the body.
+    assert "set-cookie" not in {k.lower() for k in resp.headers.keys()}
+    token = body["token"]
+    assert token
+    claims = decode_session_jwt(token)
     assert claims is not None
     assert claims["sub"] == str(user_id)
-    assert claims["jti"] == str(link.record_id) or "jti" in claims
 
     # And the row is now consumed.
     refreshed = await session.execute(
@@ -94,12 +88,12 @@ async def test_valid_token_exchange_sets_cookie(db_with_user):
 
 
 @pytest.mark.asyncio
-async def test_session_cookie_authenticates_spa_endpoint(db_with_user):
-    """The cookie set by exchange must work with current_user.
+async def test_bearer_token_authenticates_endpoint(db_with_user):
+    """The bearer JWT returned by exchange must authenticate current_user.
 
-    This is the integration seam B4 depends on: after the SPA exchanges
-    `?token=...`, `GET /api/v1/onboarding/status` should succeed without
-    X-Shortcut-Token or X-User-Id.
+    Phase 6f B16: after exchanging `?token=...`, `GET /api/v1/onboarding/
+    status` succeeds with `Authorization: Bearer <token>` (no cookie, no
+    X-Shortcut-Token, no X-User-Id).
     """
     session, user_id = db_with_user
     link = await generate_link(session, user_id=user_id, purpose="onboarding")
@@ -116,8 +110,12 @@ async def test_session_cookie_authenticates_spa_endpoint(db_with_user):
                 json={"token": link.raw_token},
             )
             assert exchange.status_code == 200, exchange.text
+            token = exchange.json()["token"]
 
-            status_resp = await ac.get("/api/v1/onboarding/status")
+            status_resp = await ac.get(
+                "/api/v1/onboarding/status",
+                headers={"Authorization": f"Bearer {token}"},
+            )
             assert status_resp.status_code == 200, status_resp.text
             body = status_resp.json()
             assert body["accounts_count"] == 0

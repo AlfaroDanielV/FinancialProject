@@ -2,7 +2,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -83,33 +82,9 @@ app = FastAPI(
 )
 
 
-def _cors_origins() -> list[str]:
-    configured = [
-        origin.strip()
-        for origin in settings.spa_cors_origins.split(",")
-        if origin.strip()
-    ]
-    if settings.is_dev:
-        configured.extend(
-            [
-                settings.spa_base_url,
-                "http://localhost:5173",
-                "http://127.0.0.1:5173",
-            ]
-        )
-    elif settings.spa_base_url:
-        configured.append(settings.spa_base_url)
-
-    return list(dict.fromkeys(configured))
-
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins(),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Phase 6f B16: CORS middleware removed with the SPA. The native app
+# (React Native / axios) and the iPhone Shortcut webhook are non-browser
+# clients that don't enforce CORS. Re-add if a browser client returns.
 
 app.include_router(users.router)
 app.include_router(accounts.router)

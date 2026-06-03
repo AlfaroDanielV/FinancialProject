@@ -198,7 +198,6 @@ async def on_memoria(message: Message) -> None:
     if message.from_user is None:
         return
     db = AsyncSessionLocal()
-    deep_link_url: Optional[str] = None
     try:
         user = await user_by_telegram_id(
             telegram_user_id=message.from_user.id, db=db
@@ -209,22 +208,12 @@ async def on_memoria(message: Message) -> None:
         rows = await load_active_insights(db, user_id=user.id)
         view = render_view(rows)
         text = render_memoria_text(view, footer=messages_es.MEMORIA_FOOTER)
-        # Phase 6e B12: offer the SPA "Editar en SPA" deep link.
-        from .deep_link import mint_edit_session_url
-
-        deep_link_url = await mint_edit_session_url(
-            db, user_id=user.id, target_path="/memoria"
-        )
     finally:
         await db.close()
-    kb: Optional[InlineKeyboardMarkup] = None
-    if deep_link_url:
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="Editar en SPA", url=deep_link_url)]
-            ]
-        )
-    await _send(message, text, kb=kb)
+    # Phase 6f B16: the SPA "Editar en SPA" deep link was removed with the
+    # SPA. Memory editing stays conversational (/editar_memoria) per the
+    # chat-first decision; the native MemoryScreen is list/delete/export.
+    await _send(message, text)
 
 
 # ── /olvidar ────────────────────────────────────────────────────────────────

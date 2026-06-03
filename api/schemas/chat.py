@@ -29,10 +29,11 @@ class ChatButton(BaseModel):
 
 
 class ChatUrlButton(BaseModel):
-    """External URL button — opens in `expo-web-browser` on native, or
-    a real browser tab from the SPA. Used for SPA edit-session deep
-    links minted by `bot/deep_link.py::mint_edit_session_url` (Phase 6e
-    B12)."""
+    """External https URL button — opens in `expo-web-browser` on native.
+
+    The SPA edit-session deep links that originally populated this (Phase
+    6e B12) were removed when the SPA was retired at 6f B16; the field
+    stays as an extension point for future https deep links."""
 
     label: str
     url: str

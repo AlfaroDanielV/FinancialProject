@@ -39,11 +39,7 @@ from . import messages_es
 from .account_creation import clear_account_creation
 from .app import get_bot, get_llm_client
 from .delivery_send import send_chunked
-from .onboarding_welcome import (
-    SETUP_BUTTON_LABEL,
-    OnboardingReply,
-    build_onboarding_reply,
-)
+from .onboarding_welcome import build_onboarding_reply
 from .pairing import consume_pairing_code, resolve_pairing_code
 from .clarification import clear_clarification
 from .pending import clear_pending, load_pending
@@ -114,16 +110,6 @@ def _kb(reply: BotReply) -> Optional[InlineKeyboardMarkup]:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _setup_kb(reply: OnboardingReply) -> Optional[InlineKeyboardMarkup]:
-    if not reply.setup_url:
-        return None
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=SETUP_BUTTON_LABEL, url=reply.setup_url)]
-        ]
-    )
-
-
 async def _send(message: Message, reply: BotReply) -> None:
     """Send `reply` to Telegram, chunked + sanitized for HTML safety.
 
@@ -191,7 +177,7 @@ async def on_start(message: Message, command: CommandObject) -> None:
                 first_name=first_name,
                 include_setup_link=True,
             )
-            await message.answer(reply.text, reply_markup=_setup_kb(reply))
+            await message.answer(reply.text)
             return
 
         if not command.args:
@@ -227,7 +213,7 @@ async def on_start(message: Message, command: CommandObject) -> None:
             include_setup_link=True,
             paired_now=True,
         )
-        await message.answer(reply.text, reply_markup=_setup_kb(reply))
+        await message.answer(reply.text)
 
 
 # ── /help, /whoami, /cancel, /undo ────────────────────────────────────────────

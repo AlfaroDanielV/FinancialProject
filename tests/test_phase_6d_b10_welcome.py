@@ -1,6 +1,12 @@
-"""Phase 6d B10 — onboarding-aware /start, /help, and /setup."""
+"""Phase 6d B10 — onboarding-aware /start, /help, and /setup.
+
+Phase 6f B16: the SPA was retired. The setup link is now a native deep link
+(`ledgercr://exchange?token=...`) embedded in the message text, not an
+inline-button https SPA URL.
+"""
 from __future__ import annotations
 
+import re
 from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
@@ -120,9 +126,15 @@ async def _seed_complete_onboarding(session, user_id):
     await session.commit()
 
 
-def _button_url(reply_markup) -> str:
-    assert reply_markup is not None
-    return reply_markup.inline_keyboard[0][0].url
+_DEEP_LINK_RE = re.compile(r"ledgercr://\S+")
+
+
+def _extract_deep_link(text: str) -> str:
+    """The native deep link is embedded in the message text (Phase 6f B16),
+    not an inline button."""
+    m = _DEEP_LINK_RE.search(text)
+    assert m is not None, f"no deep link in text: {text!r}"
+    return m.group(0)
 
 
 @pytest.mark.asyncio
@@ -138,8 +150,7 @@ async def test_empty_start_reply_generates_setup_link(db_with_user):
     assert "Hola, Dani." in reply.text
     assert "registrá al menos una cuenta" in reply.text
     assert "crear cuenta BAC" in reply.text
-    assert reply.setup_url is not None
-    assert "/?token=" in reply.setup_url
+    assert "ledgercr://exchange?token=" in reply.text
     links = await _magic_links(session, user_id)
     assert len(links) == 1
     assert links[0].purpose == "onboarding"
@@ -168,7 +179,7 @@ async def test_partial_reply_lists_missing_entities_without_link_by_default(
 
     assert "Te falta registrar ingresos, deudas y gastos fijos" in reply.text
     assert "crear cuenta BAC" in reply.text
-    assert reply.setup_url is None
+    assert "ledgercr://" not in reply.text
     assert await _magic_links(session, user_id) == []
 
 
@@ -186,7 +197,7 @@ async def test_complete_reply_is_short_command_reminder(db_with_user):
     assert "Ya tenés lo básico registrado." in reply.text
     assert "/setup" in reply.text
     assert "/cancel" in reply.text
-    assert reply.setup_url is None
+    assert "ledgercr://" not in reply.text
 
 
 @pytest.mark.asyncio
@@ -197,16 +208,16 @@ async def test_setup_reply_always_mints_a_fresh_single_use_link(db_with_user):
     first = await build_setup_reply(user=user, db=session)
     second = await build_setup_reply(user=user, db=session)
 
-    assert first.setup_url is not None
-    assert second.setup_url is not None
-    assert first.setup_url != second.setup_url
+    assert "ledgercr://exchange?token=" in first.text
+    assert "ledgercr://exchange?token=" in second.text
+    assert _extract_deep_link(first.text) != _extract_deep_link(second.text)
     links = await _magic_links(session, user_id)
     assert len(links) == 2
     assert {link.purpose for link in links} == {"onboarding"}
 
 
 @pytest.mark.asyncio
-async def test_on_start_empty_user_sends_setup_button(db_with_user):
+async def test_on_start_empty_user_sends_setup_link(db_with_user):
     session, user_id = db_with_user
     user = await _user(session, user_id)
     msg = _FakeMessage()
@@ -224,7 +235,8 @@ async def test_on_start_empty_user_sends_setup_button(db_with_user):
     assert len(msg.answers) == 1
     text, reply_markup = msg.answers[0]
     assert "registrá al menos una cuenta" in text
-    assert "/?token=" in _button_url(reply_markup)
+    assert reply_markup is None  # deep link is in text, not an inline button
+    assert "ledgercr://exchange?token=" in text
 
 
 @pytest.mark.asyncio
@@ -270,7 +282,7 @@ async def test_on_setup_handler_mints_new_link_each_time(db_with_user):
         await onboarding_handlers.on_setup(msg)
         await onboarding_handlers.on_setup(msg)
 
-    urls = [_button_url(reply_markup) for _text, reply_markup in msg.answers]
+    urls = [_extract_deep_link(text) for text, _rm in msg.answers]
     assert len(urls) == 2
     assert urls[0] != urls[1]
-    assert all("/?token=" in url for url in urls)
+    assert all("ledgercr://exchange?token=" in url for url in urls)

@@ -3,15 +3,14 @@
 Single public endpoint per Resolución 9.3: bot mints links via the service
 directly; only the consumer (`/exchange`) is exposed.
 
-On success: validates + atomically consumes the magic link, then sets an
-HttpOnly session cookie containing a 4h JWT (Resolución 9.1). The cookie
-is the only auth artifact the SPA holds; subsequent requests use it.
+On success: validates + atomically consumes the magic link and returns a
+4h session JWT (`token` + `expires_at`) in the response body. Native
+clients (Expo) persist it in secure storage and send
+`Authorization: Bearer <token>`.
 
-Phase 6f B2: the response body also returns `token` + `expires_at` so
-native clients (Expo) can persist the JWT in secure storage and send
-`Authorization: Bearer <token>`. The cookie path stays for SPA
-backwards-compat; both auth surfaces co-exist until Phase 6f B16 retires
-the SPA.
+Phase 6f B16: the SPA `fa_session` HttpOnly cookie was removed with the
+SPA. The exchange endpoint stays — the native `ledgercr://exchange` deep
+link (B15) still consumes magic links via this path.
 
 Phase 6f B3: device-code exchange added at
 `POST /api/v1/auth/device-code/exchange`. Replaces magic-link UX as the
@@ -21,12 +20,11 @@ Same JWT codec, same `current_user` resolution downstream; no cookie set
 """
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..config import settings
 from ..database import get_db
 from ..models.user import User
 from ..redis_client import get_redis
@@ -54,7 +52,6 @@ router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 )
 async def exchange_magic_link(
     payload: MagicLinkExchangeRequest,
-    response: Response,
     db: AsyncSession = Depends(get_db),
 ):
     consumed = await validate_and_consume(db, payload.token)
@@ -70,25 +67,10 @@ async def exchange_magic_link(
         raise HTTPException(status_code=401, detail=GENERIC_REJECT)
 
     token = issue_session_jwt(user.id, consumed.jti)
-    # Read `exp` straight back from the JWT we just issued. Avoids a
-    # second `datetime.now()` call that could drift microseconds away
-    # from the cookie's actual expiry.
+    # Read `exp` straight back from the JWT we just issued.
     claims = decode_session_jwt(token)
     assert claims is not None, "freshly issued JWT must decode"
     expires_at = int(claims["exp"])
-
-    cookie_kwargs = {
-        "key": settings.session_cookie_name,
-        "value": token,
-        "max_age": settings.session_cookie_ttl_s,
-        "httponly": True,
-        "secure": settings.session_cookie_secure,
-        "samesite": "lax",
-        "path": "/",
-    }
-    if settings.session_cookie_domain:
-        cookie_kwargs["domain"] = settings.session_cookie_domain
-    response.set_cookie(**cookie_kwargs)
 
     return MagicLinkExchangeResponse(
         user_id=user.id,
