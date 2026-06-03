@@ -57,8 +57,8 @@ The product is **not** a dashboard-first app. It is a financial assistant
 that lives in a messaging thread. In Phase 6f the primary surface becomes a
 native iOS app (Expo) that combines an in-app chat (transaction capture +
 queries + receipt photo upload) with structured read/edit screens for
-accounts, transactions, debts, goals, etc. The Phase 6e SPA is frozen at
-B13 and retires at Phase 6f B16. Telegram stays alive as a backup capture
+accounts, transactions, debts, goals, etc. The Phase 6e SPA was retired at
+Phase 6f B16 (`web/` deleted 2026-06-01). Telegram stays alive as a backup capture
 surface.
 
 ---
@@ -77,7 +77,7 @@ surface.
 | **Messaging** | Telegram Bot API (aiogram v3) | NOT WhatsApp |
 | **Email** | Gmail API | OAuth2, per-bank parsers |
 | **LLM** | Anthropic API (Haiku for extraction, Sonnet for queries) | Not self-hosted |
-| **SPA (frozen)** | Vite + React + Tailwind + Zod + TanStack Query + Recharts | Phase 6d onboarding + Phase 6e Centro Financiero; frozen at 6e B13, retires at 6f B16 |
+| **SPA (retired)** | ~~Vite + React + Tailwind~~ | Phase 6d/6e Centro Financiero SPA — **retired at 6f B16 (`web/` deleted 2026-06-01)**; native app replaces it |
 | **Native app** | Expo (managed) + React Native + TypeScript + React Navigation + TanStack Query + RHF + Zod | Phase 6f iOS-first; in-app chat reuses `bot/pipeline.py::process_message()` |
 | **Transaction Capture** | iPhone Shortcuts → POST webhook | `X-Shortcut-Token` header |
 | **Containerization** | Docker Compose (dev), Azure Container Apps (prod) | |
@@ -125,9 +125,9 @@ finance-agent/
 │   ├── tools/                  # get_user_context, compare_periods, etc.
 │   └── history.py              # query_history Redis
 ├── workers/                    # gmail_daily.py, insights_nightly.py, insights_lifecycle.py
-├── web/                        # Phase 6d/6e SPA (Vite/React) — frozen at 6e B13; retires at 6f B16
+│                               # (web/ Phase 6d/6e SPA — DELETED at 6f B16, 2026-06-01)
 ├── mobile/                     # Phase 6f native iOS app (Expo, React Native) — created at 6f B1
-├── migrations/versions/        # Hand-written Alembic (0001 → 0020)
+├── migrations/versions/        # Hand-written Alembic (0001 → 0021)
 ├── tests/                      # pytest suite
 ├── scripts/                    # Phase smoke scripts (phase5a/5b/6b/6c/etc.)
 ├── docs/phase-*/               # Per-phase operational docs (privacy, deployment, etc.)
@@ -191,8 +191,8 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 | **6b** ✅ | Gmail ingestion + reconciliation | See `11_Phases/Phase-6b-Gmail-Ingestion.md` |
 | **6c** ✅ | User memory + behavioral profiling | See `11_Phases/Phase-6c-User-Memory.md`. Awaiting production `INSIGHTS_DISPATCHER_ENABLED=true` flip. |
 | **6d** ✅ | Onboarding & self-registration | Closed in B13; see "Phase 6d (closed)" below |
-| **6e** ✅ | Centro Financiero SPA | Closed at B13. B14/B15 dropped; privacy export/delete absorbed into Phase 6f B14. SPA frozen pending retirement at 6f B16. |
-| **6f** 🚧 | Native iOS app (Expo) | Active; B0–B14 implemented (B10–B14 verified 2026-05-30, operator on-device sign-off pending). B15 (polish + bot deep links + Sentry + `users.expo_push_token`) in progress. Replaces SPA. Adds in-app chat (reuses `bot/pipeline.py::process_message()`) and receipt photo upload via Claude vision (B6). Auth via Telegram `/login` 6-char device code (B3). See `docs/phase-6f-decisions.md`. Local testing: `docs/LOCAL_DEV.md §8`. |
+| **6e** ✅ | Centro Financiero SPA | Closed at B13; **retired at 6f B16 (`web/` deleted 2026-06-01)**. B14/B15 dropped; privacy export/delete absorbed into Phase 6f B14. |
+| **6f** 🚧 | Native iOS app (Expo) | B0–B16 implemented. Replaces SPA (B16 retired `web/` + SWA workflow + cookie auth path on 2026-06-01, operator override of the 4-week-dogfood-first gate). In-app chat (reuses `bot/pipeline.py::process_message()`), receipt photo upload (B6), conversational creation (goals/income/bills/debt), device-code `/login` auth (B3). See `docs/phase-6f-decisions.md`. Remaining: operator daily native-only use. |
 | **P7** | Affordability / pushback engine | Deterministic affordability checks + LLM explanation wrapper |
 | **P8** | Beta users | Onboard a second person via Telegram with accurate reports within a week |
 | **P9** | SaaS hardening | Multi-tenant auth, billing, compliance, observability |
@@ -568,13 +568,14 @@ App Store Expo Go release.
 `api/`, `bot/`. SPA `web/` remains in tree until Phase 6f B16.
 
 **Backend additions (landed in B2 + B3):**
-- `POST /api/v1/auth/magic-link/exchange` extended to ALSO return
-  `{token, expires_at, user_id, email, full_name}` in the response body
-  (the existing `fa_session` cookie set is unchanged for SPA
-  backwards-compat). — B2
-- `api/dependencies.py::current_user` gains a 4th resolution branch:
-  `Authorization: Bearer <jwt>`. New order — `X-Shortcut-Token` → bearer
-  JWT → cookie → dev `X-User-Id` shim. — B2
+- `POST /api/v1/auth/magic-link/exchange` returns
+  `{token, expires_at, user_id, email, full_name}` in the response body.
+  (B2 originally also set the `fa_session` cookie for SPA back-compat;
+  **B16 removed the cookie** when the SPA retired — bearer-only now.) — B2
+- `api/dependencies.py::current_user` gains a `Authorization: Bearer <jwt>`
+  resolution branch. Order — `X-Shortcut-Token` → bearer JWT → dev
+  `X-User-Id` shim. (B2 had a cookie branch between bearer and shim;
+  **B16 removed it** with the SPA.) — B2
 - New router `api/routers/chat.py`: `POST /chat/message` (calls
   `bot/pipeline.py::process_message()` directly, returns serialized
   `BotReply`). — B2
@@ -776,9 +777,22 @@ enrollment until P8.
   pending operator DNS/hostname; live `@sentry/react-native` (EAS dev build,
   P8). **Operator on-device sign-off pending** for the `/login` deep-link
   tappability in Telegram iOS.
-- **B16**: SPA retirement — `web/` deleted, Azure Static Web Apps workflow
-  removed, CLAUDE.md updated. **Gated on:** 4+ weeks operator daily native-only
-  use + closing the parity backlog below.
+- **B16 ✅ (2026-06-01)**: SPA retirement. `web/` deleted; Azure Static Web
+  Apps workflow + the Phase-6d-E2E workflow + `scripts/generate_pwa_icons.py`
+  removed; `scripts/test_phase_6d.sh` trimmed of the SPA lint/build + B11 E2E.
+  **Cookie auth path removed**: no `Set-Cookie` on exchange, no cookie branch
+  in `current_user`, `session_cookie_*` settings dropped (`session_cookie_ttl_s`
+  → `session_ttl_s`); both exchange endpoints are bearer-only. SPA deep links
+  removed (`mint_edit_session_url` + the "Ver en Centro Financiero" / "Editar en
+  SPA" buttons); `bot/deep_link.py` keeps only `mint_native_deep_link`.
+  Onboarding `/setup` + `/start`/`/help` now send a native `ledgercr://` deep
+  link as tappable message text (https inline buttons can't carry a custom
+  scheme). `GeneratedLink.url` (SPA URL) dropped — callers build their own.
+  CORS middleware + `spa_base_url`/`spa_cors_origins` removed (native + Shortcut
+  are non-browser clients). The amortization parity test repointed to
+  `mobile/src/lib/amortization.ts`. **Operator override** of the documented
+  "4-week dogfood first" gate — the SPA was retired at the start of the
+  native-only period rather than the end; native-only daily use is ongoing.
 
 **B16 readiness — native↔SPA parity backlog (audit 2026-05-30):** before `web/`
 can be deleted, the native app must cover what the SPA does. Audit of SPA routes
@@ -912,6 +926,65 @@ vs native screens/API:
 
 ---
 
+## Native Gmail (post-6f) — connect + senders + shadow review
+
+Brings Gmail ingestion (Phase 6b, previously Telegram-only) to the native app.
+Backend (G1) done + verified; mobile (G2–G4) code-complete, **operator
+on-device sign-off pending**. No schema change (`alembic` still `0021`).
+
+- **Shared service** `api/services/gmail/shadow_review.py`:
+  `list_shadow` / `confirm_shadow(items=ShadowEdit[]|None)` /
+  `discard_shadow(ids|None)`. The bot's `/aprobar_shadow` + `/rechazar_shadow`
+  were repointed to it (DRY) — `items=None`/`ids=None` = "all". Shadow rows
+  can't be PATCHed (409 by design), so the native review applies per-row edits
+  **atomically inside confirm**.
+- **REST** (new in `api/routers/gmail.py`, `current_user` auth; OAuth
+  `/oauth/start` + `/status` already existed): `POST /gmail/scan` (alias of
+  `enqueue_backfill`, **guarded**: 409 if not connected, 400 if no senders — the
+  scanner silently no-ops on either, so the guards give immediate feedback);
+  `GET /gmail/scan/status` (connected / revoked / senders_count / latest
+  `gmail_ingestion_runs` snapshot: running + counts + has_errors — the native
+  scan-progress signal); `GET/POST/DELETE /gmail/senders` (comma/space/newline
+  email blob per `bank_name`, regex-validated, `ACTIVE_CAP=8` enforced);
+  `GET /gmail/shadow`; `POST /gmail/shadow/{confirm,discard}`. Schemas in
+  `api/schemas/gmail.py`. Reuses `whitelist.py` (`add_sender`/`list_active`/
+  `remove_sender_by_id`/`count_active`).
+- **Mobile**: `mobile/src/api/gmail.ts` + three screens wired through
+  `MasNavigator` → "Más" hub: `GmailScreen` (connect via `expo-web-browser`;
+  polls `GET /gmail/scan/status` → shows connection, a "no senders" prompt, a
+  **scanning spinner**, last-run summary, and a result/failure alert after
+  "Escanear ahora" — the feedback that was missing), `GmailSendersScreen`
+  (comma-separated emails per bank), `GmailReviewScreen` (per-row keep/discard +
+  local-draft edit + "Aplicar"; loading / error+retry / empty states +
+  pull-to-refresh + **refetch-on-focus** so it isn't a stale empty cache after a
+  scan). Connect is poll-based (the OAuth callback redirects to a static page,
+  not `ledgercr://`); callback→deep-link auto-close is deferred polish.
+- **Disconnect/reconnect handling.** `scan_user_inbox` now opens the
+  `gmail_ingestion_runs` row **up front** and finalizes it (with an `auth`
+  error) even when the credential is revoked — previously it early-returned
+  without a run, so the native poll hung forever. `GmailScreen` ends its
+  spinner on `status.connected===false` (→ "Gmail desconectado, reconectá"),
+  has a 90s safety timeout, and always shows a **"Reconectar Gmail"** action
+  (tokens can die silently).
+- **Transient-failure retry.** `_already_seen` treats a prior `failed` outcome
+  as retryable (not "seen"); `_mark_seen` upserts `failed → terminal` on a
+  successful retry but guards terminal rows from clobber (`WHERE outcome=
+  'failed'`, preserving the race-safety intent). Fixes the "recent transactions
+  never show up after a failed scan" bug — a revoked/errored scan no longer
+  buries the emails it touched forever.
+- **Known root cause (operational, not a code bug):** the GCP OAuth consent
+  screen is in **Testing** publishing status, so Google expires `gmail.readonly`
+  refresh tokens after **~7 days** → recurring "se desconectó tu Gmail". The
+  app now handles this gracefully (reconnect anytime), but stopping the weekly
+  disconnect requires publishing the consent screen to Production (+ likely
+  verification for the sensitive scope) — **P8 work** (tech-debt below).
+- Verification: `tests/test_gmail_native.py` (11: senders bulk-add/cap, sender
+  list/remove, shadow list/confirm-with-overrides/discard, auth, scan
+  guards 409/400, scan status, revoked-run regression, failed-retry) + the full
+  `-k gmail` slice (162) pass; mobile `tsc` clean.
+
+---
+
 ## Closed phases — hard rules to preserve
 
 These are extracted from the closed-phase notes in `11_Phases/`. **Do not relax without an explicit decision in `05_Decisions/`.**
@@ -920,7 +993,7 @@ These are extracted from the closed-phase notes in `11_Phases/`. **Do not relax 
 
 - **`X-Shortcut-Token`** (server-resolved against `users.shortcut_token`) is required by `POST /transactions/shortcut` and every `POST /jobs/*`. The dev `X-User-Id` shim is rejected here.
 - **`X-User-Id`** dev shim is well-formed UUID matching a `users.id`. Comment-flagged in `api/dependencies.py::current_user`. Do NOT build features that depend on it.
-- Resolution order in `current_user`: `X-Shortcut-Token` → session cookie (Phase 6d) → `X-User-Id`. The strict `current_user_via_token` ignores the shim entirely.
+- Resolution order in `current_user`: `X-Shortcut-Token` → bearer JWT (Phase 6f) → `X-User-Id` dev shim. (The SPA `fa_session` cookie branch was removed at 6f B16.) The strict `current_user_via_token` ignores the shim entirely.
 - `users.status = 'suspended'` returns 403, not 401, on every authenticated route.
 - `shortcut_token` is opaque (≥48 bytes `secrets.token_urlsafe`), returned **only once** at register/rotate. Rotation invalidates the previous token instantly.
 
@@ -1028,7 +1101,7 @@ The LLM's system prompt enforces this separation:
 - **Models**: SQLAlchemy 2.x `Mapped` + `mapped_column` syntax (not legacy `Column()`)
 - **Schemas**: Pydantic v2 with `model_validate`, not v1 `.from_orm()`
 - **Routes**: All under `/api/v1/` prefix. Use `APIRouter` with `prefix` and `tags`.
-- **Auth**: iPhone Shortcut uses `X-Shortcut-Token` resolved against `users.shortcut_token`. Phase 6d SPA uses the `fa_session` HttpOnly cookie. `current_user` resolves in order `X-Shortcut-Token` → session cookie → dev `X-User-Id` shim.
+- **Auth**: iPhone Shortcut uses `X-Shortcut-Token` resolved against `users.shortcut_token`. The native app sends `Authorization: Bearer <jwt>` (from magic-link/device-code exchange). `current_user` resolves in order `X-Shortcut-Token` → bearer JWT → dev `X-User-Id` shim. (The Phase 6d SPA `fa_session` cookie path was removed at 6f B16.)
 - **Errors**: Raise `HTTPException` with appropriate status codes. Don't return error dicts.
 - **Database**: Always use `get_db` dependency. Never create sessions manually in routes.
 - **Migrations**: Hand-written Alembic. Every schema change gets a migration file.
@@ -1041,7 +1114,7 @@ The LLM's system prompt enforces this separation:
 ## What NOT to Build (Until Phase 8 Is Done)
 
 - ❌ WhatsApp channel (use Telegram)
-- ❌ Web UI outside the existing Phase 6e SPA. The SPA is frozen at B13; no further SPA work. Phase 6f replaces it with a native iOS app.
+- ❌ Web UI. The Phase 6e SPA was retired at 6f B16 (`web/` deleted 2026-06-01); the native iOS app is the only structured surface. Do not re-add a web client without an explicit decision.
 - ❌ Investment portfolio analysis beyond manual tracking
 - ❌ ML-based categorization (rule-based first)
 - ❌ Family/household support
@@ -1085,13 +1158,12 @@ INSIGHTS_EXTRACTOR_ENABLED=false
 INSIGHTS_DISPATCHER_ENABLED=false
 
 # Magic-link / bearer-token session signing (Phase 6d B3 / 6f B2 + B3)
-# HMAC secret used by issue_session_jwt + decode_session_jwt for BOTH
-# the fa_session cookie and the Authorization: Bearer JWT body returned
-# from magic-link exchange and device-code exchange.
+# HMAC secret used by issue_session_jwt + decode_session_jwt for the
+# Authorization: Bearer JWT body returned from magic-link + device-code
+# exchange. (6f B16 removed the fa_session cookie + SESSION_COOKIE_* +
+# SPA_BASE_URL/SPA_CORS_ORIGINS with the SPA.)
 MAGIC_LINK_SESSION_SECRET=<strong random>
-SESSION_COOKIE_TTL_S=14400      # 4 hours
-SESSION_COOKIE_SECURE=false     # true in production
-SESSION_COOKIE_DOMAIN=          # empty for localhost host-only cookie
+SESSION_TTL_S=14400             # 4 hours (bearer JWT lifetime)
 
 # Native app deep links (Phase 6f B15) — custom URL scheme in mobile/app.json.
 # Bot mints `<scheme>://exchange?token=...` so a tap opens the native app.
@@ -1136,14 +1208,18 @@ iPhone + Expo flow end-to-end.
 - **Phase 6e B4: `accounts.is_active` and `accounts.archived` are mirrored.** Per Phase 6e §5.4 `archived` is canonical, but the bot's `services/accounts.py::list_active` and the `accounts(user_id, name) WHERE is_active` partial unique index still read `is_active`. The `accounts` router writes both on archive/restore to keep them in sync. Cleanup target: drop `is_active`, point all readers + the partial index at `archived`. Defer until B5 or a dedicated cleanup block.
 - **Phase 6e B5: materialized dashboard views don't yet exclude `transactions.archived=true`.** Live current-month dashboard queries and `compute_account_balances` correctly exclude archived rows in-code, so the user-visible balances stay right. But `mv_monthly_summary_by_user` / `mv_yearly_summary_by_user` (migration 0017) were defined before the archive column existed and will count archived rows after the nightly refresh. Impact is bounded: archived rows are rare and these views only feed historical-month summaries. Cleanup target: a small migration that drops + recreates both views with `archived = false` in the WHERE clause.
 - **Phase 6e B13: SPA build needs `NODE_OPTIONS=--experimental-global-webcrypto` on Node 18** because `workbox-build` (via `serialize-javascript`) reads `globalThis.crypto`. The npm `build` script wraps with `cross-env` so it's transparent locally and in CI; the flag becomes a no-op on Node 20+. Cleanup target: drop the `cross-env` wrapper once CI guarantees Node 20+. Also: PWA icons in `web/public/icons/` are placeholder PNGs generated by `scripts/generate_pwa_icons.py` (a navy disc with a blue dot). Swap for real brand assets before any public-facing release.
-- **Phase 6f: dual auth path during cutover.** From Phase 6f B2 onward, `api/dependencies.py::current_user` resolves four sources: `X-Shortcut-Token` → bearer JWT (new in 6f) → `fa_session` cookie → dev `X-User-Id` shim. The cookie path and the SPA both stay alive until Phase 6f B16 retires `web/`. After B16: delete the cookie-set branch in `api/routers/auth.py::exchange_magic_link()`, drop `session_cookie_*` settings from `api/config.py`, delete the cookie resolution branch in `current_user`, and remove `withCredentials` from any remaining clients.
+- **Phase 6f: dual auth path during cutover — RESOLVED at B16 (2026-06-01).** The `fa_session` cookie path was removed: no cookie-set in `exchange_magic_link()`, no cookie branch in `current_user`, `session_cookie_*` settings dropped (`session_cookie_ttl_s` → `session_ttl_s`). `current_user` now resolves `X-Shortcut-Token` → bearer JWT → dev `X-User-Id` shim. (`withCredentials` lived only in the deleted `web/` client.)
 - **Phase 6f: Redis state keys keep the `telegram:` prefix.** All durable bot state (`telegram:pending:{user_id}`, `telegram:clarification:{user_id}`, `telegram:account_creation:{user_id}`, `telegram:last_action:{user_id}`, etc.) is reused by the native chat without renaming because the prefix is historical, not semantic, and renaming would invalidate every Telegram user's in-flight state. Cleanup target: rename to `bot:` or `chat:` only when there is a separate migration window and a one-time copy step. Not before Phase 8.
 - **Phase 6f: receipt images stored base64-inline in `llm_extractions.raw_data`** (`raw_data->image_b64`, 4MB cap pre-base64). At 10 receipts/day per user that's a few MB/year per user — fine for the personal MVP. Cleanup target: move image bytes to Azure Blob with a signed-URL reference in `raw_data` during P8 hardening. Same migration should also redact base64 from any nightly logs or exports.
 - **Phase 6f B1: `mobile/` is pinned to Expo SDK 54** (`expo@~54.0.34`, `react@19.1.0`, `react-native@0.81.5`). Pinned because Apple's App Store ships only the latest Expo Go and Expo Go for SDK 54 is the version the operator's iPhone runs. When the App Store ships Expo Go for a newer SDK and the operator's device updates, bump `mobile/` to that SDK (or move to a custom dev build via EAS Build, which makes us SDK-independent — that's P8 prep). Node 20+ is required by SDK 53+; the host machine is on Node 20.20.2 via NodeSource apt.
-- **Phase 6f B3: two session-issuance endpoints coexist** (`POST /auth/magic-link/exchange` and `POST /auth/device-code/exchange`). Both terminate in `issue_session_jwt` and the resulting JWT is interchangeable downstream. Magic-link exchange ALSO sets the `fa_session` cookie for SPA backwards-compat; device-code exchange does NOT (native-only). When the SPA is retired at 6f B16, magic-link exchange can either be deleted (if `/setup` deep links land in B15 using `ledgercr://`) or kept and stripped of the cookie set. Cleanup target: pick one path post-B16.
+- **Phase 6f B3: two session-issuance endpoints coexist** (`POST /auth/magic-link/exchange` and `POST /auth/device-code/exchange`). Both terminate in `issue_session_jwt`, return a bearer JWT in the body, and set no cookie (since 6f B16). Magic-link exchange is kept because the native `ledgercr://exchange` deep link (`/setup`, `/start`/`/help`, `/login` B15) consumes magic-link tokens through it; device-code is the primary `/login` path. Cleanup target: collapse to one path only if the deep-link flow is dropped.
 - **Phase 6f B15: `users.expo_push_token` column exists (migration 0021) but no worker reads it.** Schema-only prep — nudges + shadow approvals continue to deliver only to Telegram during Phase 6f even when the operator uses the native app for everything else. No Expo push token is written by the app yet, and there is no APNs delivery worker. P8 prerequisites: Apple Developer Program enrollment for APNs certificates + an Expo push token registration call in the app + a delivery worker.
 - **Phase 6f: `ExtractionResult` is accreting per-intent flat fields** (`goal_*`, `income_*`, `bill_*`, `debt_*`, and `amount`/`currency`/`category_hint` reused across intents). It's explicit and validator-guarded, but wide. As of the debt slice (D1, 2026-06-01) all four conversational creators have landed, so the "wait until the pattern is proven" threshold is now reached: a future cleanup may consolidate to a per-intent nested payload (e.g. a discriminated `create: {...}` block) in the tool schema + dispatch if the flat shape proves unwieldy in practice. Deferred (not blocking) — the flat shape is still readable and each field is validator-guarded; revisit only if a 5th creator or noticeable drift appears.
 - **Phase 6f: no test catches mobile-API-helper ↔ backend request-body drift.** Backend tests use the correct schema field names; mobile `api/*.ts` bodies are untyped at the `axios` call and `tsc` can't see a wrong JSON key. This let the B9 `archiveTransaction`/`restoreTransaction` `{ ids }`-vs-`{ transaction_ids }` bug ship undetected (fixed 2026-05-30). There is no native CI (decision §3.8), so the only current guard is operator on-device testing. Cleanup target: when EAS/CI lands at P8, add a thin contract test (or generate mobile request types from the OpenAPI schema) so body-field drift fails in CI.
+
+- **Gmail OAuth consent screen is in GCP "Testing" mode → refresh tokens expire ~7 days.** Google revokes `gmail.readonly` refresh tokens after a week for unverified/testing apps, so the operator gets a recurring "se desconectó tu Gmail" and must reconnect weekly. The native app + bot now handle this gracefully (reconnect anytime; revoked scans still record a run; the scan-status endpoint surfaces it; transiently-failed messages retry on the next scan). The actual cure is publishing the OAuth consent screen to **Production** (publishing status), which for the sensitive `gmail.readonly` scope likely requires Google verification (privacy policy, app review). **P8 work** — tied to the existing Gmail-verification gate (the GCP project is also capped at 100 testers in Testing mode).
+
+- **Native Gmail connect is poll-based (no `ledgercr://` callback).** The OAuth callback redirects to a static success page, so the app opens the consent URL in a browser and then polls `GET /gmail/scan/status` for `connected`. Cleanup target: redirect the callback to `ledgercr://gmail-connected` so `expo-web-browser`'s auth session auto-closes — deferred until the universal-link/deep-link hostname work (B15-adjacent / P8).
 
 ---
 
