@@ -1030,6 +1030,13 @@ code-complete, **operator on-device sign-off pending**. Decision note:
   (validated: the envelope must belong to the caller and be non-archived, else
   400 "Sobre inválido."; the existing shadow/transfer/archived 409s still
   apply). `TransactionResponse` carries `envelope_id`.
+- **Query (read-only):** `app/queries/tools/envelopes.py::get_envelope_spending`
+  — a Phase 6a read-only tool so "¿cuánto gasté en <sobre>?" / "¿cuánto me
+  queda en mis sobres?" is answered by the Sonnet query dispatcher. It reuses
+  `compute_envelope_summary` (so the answer can't drift from the bars),
+  case-insensitively matches the envelope by name, and returns
+  `available_envelope_names` for a graceful "no tenés ese sobre" miss.
+  Registered before `compare_periods` (which stays the cache-anchor last).
 - **Capture flow (chat):** after an **expense** commits, `process_message()`
   returns an `open_screen` hint `screen="assign_envelope"` carrying the new
   `transaction_id`. The native chat renders an in-chat **"Asignar a un sobre"**
