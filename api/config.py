@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -52,8 +53,12 @@ class Settings(BaseSettings):
     gmail_discovery_cooldown_s: int = 600
     gmail_discovery_max_messages: int = 200
 
-    # Secret store (Phase 6b)
-    secret_store_backend: str = "env"  # env | file | azure_kv
+    # Secret store (Phase 6b). env | file | azure_kv. The `env`/`file` backends
+    # are DEV-ONLY (os.environ / plaintext .dev_secrets.json) — production MUST
+    # use azure_kv, enforced by `_enforce_prod_secret_store` below. The literal
+    # default stays `env` so local/CI runs work without Azure libs; the prod
+    # guard is the real protection.
+    secret_store_backend: str = "env"
     azure_key_vault_url: str = ""
     dev_secret_prefix: str = "DEV_SECRET_"
     file_secret_store_path: str = ""  # default .dev_secrets.json in cwd
@@ -76,6 +81,33 @@ class Settings(BaseSettings):
     @property
     def is_dev(self) -> bool:
         return self.environment == "development"
+
+    @model_validator(mode="after")
+    def _enforce_prod_secret_store(self) -> "Settings":
+        """Fail fast if production would store Gmail OAuth refresh tokens
+        insecurely.
+
+        `env` keeps them in `os.environ` (visible in `ps eww` / crash dumps and
+        lost on every container restart → silent disconnects); `file` writes
+        plaintext to the container's ephemeral disk (leaks via snapshots /
+        backups / `az containerapp exec`). Either one in production is an
+        OAuth-token exposure, so production must use Azure Key Vault. Raising
+        here means a misconfigured deploy fails loudly at boot instead of
+        silently persisting secrets to disk.
+        """
+        if self.environment == "production":
+            if self.secret_store_backend.lower() != "azure_kv":
+                raise ValueError(
+                    "SECRET_STORE_BACKEND must be 'azure_kv' in production "
+                    f"(got {self.secret_store_backend!r}); env/file store OAuth "
+                    "refresh tokens insecurely."
+                )
+            if not self.azure_key_vault_url:
+                raise ValueError(
+                    "AZURE_KEY_VAULT_URL is required in production "
+                    "(SECRET_STORE_BACKEND=azure_kv)."
+                )
+        return self
 
 
 settings = Settings()

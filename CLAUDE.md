@@ -1151,6 +1151,10 @@ LLM_DAILY_TOKEN_BUDGET_PER_USER=100000
 GMAIL_CLIENT_ID=...
 GMAIL_CLIENT_SECRET=...
 GMAIL_OAUTH_STATE_SECRET=...
+# env|file are DEV-ONLY (os.environ / plaintext .dev_secrets.json). Production
+# MUST use azure_kv (+ AZURE_KEY_VAULT_URL) — enforced by a Settings validator
+# that refuses to boot if ENVIRONMENT=production and the backend isn't azure_kv,
+# so a misconfigured deploy can't silently store Gmail OAuth refresh tokens on disk.
 SECRET_STORE_BACKEND=env|file|azure_kv
 
 # Insights (Phase 6c) — see Phase-6c-User-Memory.md
