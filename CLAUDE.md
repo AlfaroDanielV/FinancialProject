@@ -1225,6 +1225,8 @@ iPhone + Expo flow end-to-end.
 
 - **Native Gmail connect is poll-based (no `ledgercr://` callback).** The OAuth callback redirects to a static success page, so the app opens the consent URL in a browser and then polls `GET /gmail/scan/status` for `connected`. Cleanup target: redirect the callback to `ledgercr://gmail-connected` so `expo-web-browser`'s auth session auto-closes — deferred until the universal-link/deep-link hostname work (B15-adjacent / P8).
 
+- **Secret store: production is enforced to Key Vault (resolved 2026-06-05, commit `fe8db18`).** A `Settings` validator (`api/config.py::_enforce_prod_secret_store`) refuses to boot when `ENVIRONMENT=production` and `SECRET_STORE_BACKEND != azure_kv` (or `AZURE_KEY_VAULT_URL` unset), so a misconfigured prod deploy can't silently keep Gmail OAuth refresh tokens in `env`/`file` (plaintext / process env / ephemeral disk). The DB never stores the token — only the `gmail-refresh-{user_id}` Key Vault reference. `env`/`file` remain dev-only. Decision note: vault `Decision - Secrets in Key Vault (Prod-Enforced)`.
+
 ---
 
 ## Phase 5a — Auth model (current operational reference)
