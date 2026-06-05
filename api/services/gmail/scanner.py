@@ -29,6 +29,7 @@ import logging
 import re
 import time
 import uuid
+from html import unescape as _html_unescape
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Literal, Optional
@@ -67,6 +68,15 @@ RunMode = Literal["backfill", "daily", "manual"]
 # the reconciler unnecessarily.
 _MIN_SCAN_CONFIDENCE = 0.6
 
+# Below this many characters a text/plain part is treated as a stub and we fall
+# back to the stripped text/html. Some CR banks (e.g. Promerica) ship a
+# near-empty text/plain — a greeting or "activá HTML" line — with the real
+# transaction table only in the HTML part; the old unconditional plain
+# preference fed that stub to the extractor, which skipped every such email as
+# low-confidence. A real notification (merchant + amount + date) clears this
+# comfortably once flattened. Tunable.
+_MIN_BODY_CHARS = 120
+
 # Retry policy. Tuned so the worst-case scan still finishes within the
 # Container Apps Job's typical 30min wallclock.
 _MAX_429_RETRIES = 3
@@ -87,6 +97,10 @@ class ScanResult(BaseModel):
     transactions_created: int = 0
     transactions_matched: int = 0
     transactions_skipped: int = 0
+    # Message-level failures (fetch / extract raised). Tracked separately
+    # from `transactions_skipped` so the notifier can tell the user how many
+    # emails errored vs how many simply didn't look like transactions.
+    transactions_failed: int = 0
     # Tracked separately so the notifier can decide between per-row
     # messages and a batch summary without re-querying the DB. UUIDs of
     # rows that the reconciler created (CREATED_NEW or CREATED_SHADOW).
@@ -300,6 +314,17 @@ async def _list_message_ids(
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"[ \t]+\n")
+# <style>/<script>/<head> bodies and HTML comments must be removed *with their
+# contents* before tag-stripping. Bank emails (e.g. Promerica) ship large inline
+# CSS + MSO conditional comments; the CSS text is not inside `< >`, so plain
+# tag-stripping leaves it in place, where it floods the body and pushes the real
+# transaction past the extractor's 4000-char trim → the email is skipped as
+# low-confidence even though the transaction text is right there.
+_STYLE_SCRIPT_RE = re.compile(
+    r"<(style|script|head)\b[^>]*>.*?</\1\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
 def _b64url_decode(data: str) -> bytes:
@@ -314,8 +339,15 @@ def _b64url_decode(data: str) -> bytes:
 def _strip_html(html: str) -> str:
     """Crude tag stripper. Good enough for bank notifications, which are
     flat tables. We deliberately don't pull in beautifulsoup — adds 5MB
-    to the install for one helper that breaks the same way on weird HTML."""
+    to the install for one helper that breaks the same way on weird HTML.
+
+    Removes <style>/<script>/<head> blocks and HTML comments *with their
+    contents* first (see _STYLE_SCRIPT_RE), then strips remaining tags and
+    unescapes entities (&nbsp; &amp; &#162; …) so amounts/merchants survive."""
+    html = _STYLE_SCRIPT_RE.sub(" ", html)
+    html = _COMMENT_RE.sub(" ", html)
     text = _TAG_RE.sub(" ", html)
+    text = _html_unescape(text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
@@ -342,11 +374,17 @@ def _extract_body(payload: dict[str, Any]) -> str:
             _walk(child)
 
     _walk(payload or {})
-    if plain:
-        return plain.strip()
-    if html:
-        return _strip_html(html)
-    return ""
+    plain_clean = plain.strip() if plain else ""
+    html_clean = _strip_html(html) if html else ""
+    # Prefer text/plain when it's substantive, but fall back to the richer
+    # stripped HTML when the plain part is a short stub (see _MIN_BODY_CHARS).
+    # `plain_clean >= html_clean` keeps the plain-only and plain-richer cases
+    # unchanged; the stub case (short plain + longer html) falls through to html.
+    if plain_clean and (
+        len(plain_clean) >= _MIN_BODY_CHARS or len(plain_clean) >= len(html_clean)
+    ):
+        return plain_clean
+    return html_clean or plain_clean
 
 
 def _header_value(payload: dict[str, Any], name: str) -> Optional[str]:
@@ -628,6 +666,7 @@ async def _process_one_message(
             ingestion_run_id=run_id,
             error={"reason": str(e), "status": e.last_status},
         )
+        result.transactions_failed += 1
         await db.commit()
         return
     except _RevokedError:
@@ -647,6 +686,7 @@ async def _process_one_message(
             ingestion_run_id=run_id,
             error={"reason": "revoked"},
         )
+        result.transactions_failed += 1
         await db.commit()
         result.revoked = True
         return
@@ -695,6 +735,7 @@ async def _process_one_message(
         result.errors.append(
             {"phase": "extract", "msg_id": stub.id, "error": str(e)[:200]}
         )
+        result.transactions_failed += 1
         await db.commit()
         return
 
@@ -713,7 +754,12 @@ async def _process_one_message(
             outcome="skipped",
             transaction_id=None,
             ingestion_run_id=run_id,
-            error=None,
+            error={
+                "reason": "low_confidence",
+                "conf": float(candidate.confidence),
+                "type": candidate.transaction_type,
+                "body_len": len(body),
+            },
         )
         result.transactions_skipped += 1
         await db.commit()
@@ -740,6 +786,21 @@ async def _process_one_message(
         reconcile_mod.ReconcileOutcome.SKIPPED_LOW_CONFIDENCE: "skipped",
     }[outcome]
 
+    # Record why the reconciler skipped (low confidence / duplicate) so a later
+    # debugging pass can read it straight from gmail_messages_seen.error without
+    # re-fetching the email.
+    seen_error = None
+    if outcome in {
+        reconcile_mod.ReconcileOutcome.SKIPPED_LOW_CONFIDENCE,
+        reconcile_mod.ReconcileOutcome.DUPLICATE_GMAIL,
+    }:
+        seen_error = {
+            "reason": outcome.value,
+            "conf": float(candidate.confidence),
+            "type": candidate.transaction_type,
+            "body_len": len(body),
+        }
+
     await _mark_seen(
         db=db,
         user_id=user_id,
@@ -747,6 +808,7 @@ async def _process_one_message(
         outcome=seen_outcome,
         transaction_id=txn.id if txn is not None else None,
         ingestion_run_id=run_id,
+        error=seen_error,
     )
 
     if outcome == reconcile_mod.ReconcileOutcome.MATCHED_EXISTING:

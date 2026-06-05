@@ -319,7 +319,7 @@ GMAIL_SCAN_NO_RESULTS_MANUAL = (
 )
 GMAIL_SCAN_FINISH_SHADOW_TPL = (
     "Listo. Revisé {scanned} correos: {matched} ya estaban registradas, "
-    "{created} son nuevas en <b>modo sombra</b> esta semana. "
+    "{created} son nuevas en <b>modo sombra</b> esta semana{detail}. "
     "Mañana te mando un resumen y podés decidir si las apruebo o no."
 )
 GMAIL_SCAN_FINISH_BATCH_TPL = (
@@ -328,7 +328,20 @@ GMAIL_SCAN_FINISH_BATCH_TPL = (
 )
 GMAIL_SCAN_FINISH_QUIET_TPL = (
     "Listo. Revisé {scanned} correos: {matched} ya estaban registradas, "
-    "{created} son nuevas."
+    "{created} son nuevas{detail}."
+)
+# Fragments composed into the "{detail}" suffix of the finish templates so the
+# user sees how many emails were skipped vs errored (otherwise "0 nuevas" hides
+# the whole batch). Empty suffix when both counts are 0.
+GMAIL_SCAN_DETAIL_SKIPPED_TPL = "{n} no parecían transacciones"
+GMAIL_SCAN_DETAIL_FAILED_TPL = "{n} con errores"
+# Appended when a scan reviewed emails but produced zero matched + zero created
+# (everything was skipped). Points the user at the most likely cause: the
+# whitelisted sender isn't the one the bank sends transaction alerts from.
+GMAIL_SCAN_ALL_SKIPPED_HINT = (
+    " Ninguno parecía una notificación de transacción — puede que el "
+    "remitente que agregaste no sea el de las alertas del banco. "
+    "Revisá con /estado_gmail o agregá el correcto con /agregar_banco."
 )
 
 # Per-transaction notification (≤ batch threshold, outside shadow).
