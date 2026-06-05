@@ -53,6 +53,7 @@ from .account_creation import (
     AccountCreationError,
     clear_account_creation,
     handle_account_creation_reply,
+    is_awaiting_start_answer,
     load_account_creation,
     parse_account_creation_start,
     save_lazy_account_creation,
@@ -254,6 +255,18 @@ async def process_message(
     # including "sí" in the confirmation step. That must beat the generic
     # pending-action confirmation handler below.
     pending_account = await load_account_creation(user_id=user.id, redis=redis)
+    # The lazy-detection "¿La creamos?" prompt (step=awaiting_start) is a soft
+    # offer. If the user ignores it and types something else (e.g. a new
+    # expense), abandon the prompt and process the new message — don't trap
+    # them in the account dialog. Committed steps (asking_name/type/...) still
+    # own their replies.
+    if (
+        pending_account is not None
+        and pending_account.step == "awaiting_start"
+        and not is_awaiting_start_answer(text)
+    ):
+        await clear_account_creation(user_id=user.id, redis=redis)
+        pending_account = None
     if pending_account is not None:
         try:
             outcome = await handle_account_creation_reply(
@@ -435,7 +448,7 @@ async def _handle_confirm(
             )
         )
 
-    await commit_pending(user=user, pending=pending, db=db, redis=redis)
+    txn_id = await commit_pending(user=user, pending=pending, db=db, redis=redis)
     amt_decimal = Decimal(pending.payload["amount"])
     currency = pending.payload["currency"]
     amt_formatted = format_amount(amt_decimal, currency)
@@ -448,7 +461,25 @@ async def _handle_confirm(
     # Phase 6f B16: the SPA "Ver en Centro Financiero" deep-link button was
     # removed with the SPA. The committed transaction is visible in the
     # native app's Transactions tab.
-    return BotReply(text=tmpl.format(amount=amt_formatted))
+    #
+    # Envelope budgeting (Sobres): after an EXPENSE commits, hand the native
+    # chat a structured `assign_envelope` hint carrying the new transaction id
+    # so it can offer an in-chat "Asignar a un sobre" affordance (the user
+    # tags the spend to a cap envelope). The Telegram renderer ignores
+    # open_screen (envelopes are a native-only feature, like the debt form).
+    # Income never gets the hint — envelopes are spending caps only.
+    open_screen = None
+    if pending.action_type == "log_expense":
+        open_screen = OpenScreen(
+            screen="assign_envelope",
+            prefill={
+                "transaction_id": str(txn_id),
+                "amount": str(amt_decimal),
+                "currency": currency,
+                "merchant": pending.payload.get("merchant"),
+            },
+        )
+    return BotReply(text=tmpl.format(amount=amt_formatted), open_screen=open_screen)
 
 
 # ── dev/smoke entry: skip LLM, inject a pre-baked ExtractionResult ──────────

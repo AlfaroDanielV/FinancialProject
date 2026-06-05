@@ -14,6 +14,7 @@ export interface TransactionResponse {
   id: string;
   account_id: string | null;
   category_id: string | null;
+  envelope_id: string | null;
   amount: number;
   currency: string;
   merchant: string | null;
@@ -71,6 +72,33 @@ export async function fetchTransactions(
   return data;
 }
 
+/**
+ * Current-month confirmed expenses (date desc), for the envelope bulk-assign
+ * view. Envelopes reset monthly, so we only surface this month's spend. One
+ * page (no pagination) — months rarely exceed the limit, and stragglers can
+ * still be tagged from the per-transaction edit sheet.
+ */
+export async function fetchMonthExpenses(): Promise<TransactionResponse[]> {
+  const now = new Date();
+  const first = new Date(now.getFullYear(), now.getMonth(), 1)
+    .toISOString()
+    .slice(0, 10);
+  const today = now.toISOString().slice(0, 10);
+  const { data } = await api.get<TransactionListResponse>("/transactions", {
+    params: {
+      kind: "expense",
+      from_date: first,
+      to_date: today,
+      sort_by: "date",
+      sort_dir: "desc",
+      limit: 200,
+    },
+  });
+  // Only confirmed rows can be tagged — shadow rows 409 on PATCH. (kind=expense
+  // already excludes transfer legs; archived is excluded by default.)
+  return data.items.filter((t) => t.status === "confirmed");
+}
+
 export async function archiveTransaction(id: string): Promise<void> {
   // Body field is `transaction_ids` (TransactionBulkArchive), not `ids`.
   await api.post("/transactions/bulk/archive", { transaction_ids: [id] });
@@ -87,6 +115,9 @@ export interface TransactionUpdate {
   description?: string | null;
   category?: string | null;
   transaction_date?: string; // YYYY-MM-DD
+  // Envelope budgeting: which spending-cap envelope this expense counts
+  // against. null clears it. Backend 400s on a foreign/archived envelope.
+  envelope_id?: string | null;
 }
 
 export async function updateTransaction(

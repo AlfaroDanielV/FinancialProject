@@ -34,7 +34,10 @@ uv run pytest -p no:cacheprovider -q \
   tests/test_phase_6f_chat_create_income.py \
   tests/test_phase_6f_chat_create_bill.py \
   tests/test_phase_6f_chat_create_debt.py \
-  tests/test_phase_6f_debt_parse_document.py
+  tests/test_phase_6f_debt_parse_document.py \
+  tests/test_envelopes.py \
+  tests/test_phase_6f_chat_assign_envelope.py \
+  tests/test_phase_6f_chat_reset.py
 
 echo "== Phase 6f backend regression slice (magic-link + onboarding) =="
 # Phase 6d auth + onboarding tests guard the SPA cookie path that 6f

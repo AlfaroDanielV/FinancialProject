@@ -19,7 +19,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   fetchDashboardSummary,
@@ -28,6 +28,7 @@ import {
   type DashboardPeriod,
   type UpcomingFeedItem,
 } from "../api/dashboard";
+import { SobresSection } from "../components/SobresSection";
 import { CardShadow, Colors, FontSize, Radius, Spacing } from "../theme";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -308,6 +309,7 @@ function BillsList({ items }: BillsListProps) {
 
 export function DashboardScreen() {
   const [period, setPeriod] = useState<DashboardPeriod>("month_current");
+  const qc = useQueryClient();
 
   const {
     data: summary,
@@ -338,7 +340,11 @@ export function DashboardScreen() {
   const overdueBills = pendingBills.filter((i) => i.is_overdue);
 
   const onRefresh = async () => {
-    await Promise.all([refetchSummary(), refetchUpcoming()]);
+    await Promise.all([
+      refetchSummary(),
+      refetchUpcoming(),
+      qc.invalidateQueries({ queryKey: ["envelopes"] }),
+    ]);
   };
 
   return (
@@ -367,6 +373,8 @@ export function DashboardScreen() {
           currency={currency}
           loading={summaryLoading}
         />
+
+        <SobresSection />
 
         <ExpandableSection
           title="Categorías"

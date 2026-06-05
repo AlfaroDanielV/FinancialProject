@@ -2,7 +2,7 @@
 
 > A self-study path from "I can read Python" to "I can build and maintain this project alone."
 > Pair this with `CLAUDE.md` (canonical architectural reference, kept current).
-> Last refresh: 2026-05-27 (Phase 6e closed at B13 — SPA frozen, retires at 6f B16. Phase 6f active: native iOS app (Expo SDK 54), B0–B3 implemented. Bearer-token auth + `/chat/message` + device-code `/login` all landed.)
+> Last refresh: 2026-06-05 (Phase 6f closed B0–B16 — native iOS app is now the **only** structured UI surface; the Phase 6e SPA `web/` was deleted at B16, 2026-06-01. Post-6f work landed: conversational creation (goals/income/bills/debt), Native Gmail (connect + senders + shadow review), and Envelope budgeting "Sobres". Migration head is `0022`.)
 
 ---
 
@@ -16,38 +16,57 @@ This is a 3-part document:
 
 **Don't try to learn everything before touching the code.** The codebase is the textbook. Run it locally, break it on purpose, and use Part C to fill the gaps you actually hit.
 
+### Where this project is headed (the end goal)
+
+Everything in this guide serves one arc, stated in `CLAUDE.md`:
+
+1. **Personal MVP** — a system you trust enough to check *instead of* your bank app. (Largely reached: the native app + chat is the daily driver.)
+2. **Stabilization** — 4+ weeks of reliable daily use with accurate reports.
+3. **Product** — a multi-tenant SaaS financial assistant that lives in a chat thread + native app.
+
+The **core thesis** gates the whole thing: *if the ledger is wrong, the agent is useless.* Data accuracy is a prerequisite to any AI layer. That is why the write path is deterministic and the LLM only ever *extracts* and *explains* — never decides or calculates. Keep this in mind; it explains almost every "why is it built this way" question.
+
+The two big features still ahead — and therefore the highest-value things to understand deeply — are:
+
+- **P7, the affordability / pushback engine** (`CLAUDE.md` → "The Pushback Engine"). Deterministic math decides feasibility; the LLM only wraps the result in Spanish. This is called out as "the hardest feature."
+- **P8/P9, multi-tenancy + SaaS hardening.** Every domain table already carries `user_id`; the work is auth, billing, isolation, compliance, observability.
+
 ---
 
 # PART A — Codebase Tour
 
 ## A.1 The big picture in 60 seconds
 
-You're looking at a **FastAPI + Postgres + Redis** backend with a **Telegram bot** as the primary capture/query interface and a **React Native (Expo) native iOS app** as the primary UI surface (Phase 6f). The product captures financial transactions from four sources (manual API, iPhone Shortcut, Telegram bot / in-app chat, Gmail parser for BAC/Davivienda/Promerica), stores them in Postgres, and exposes:
+You're looking at a **FastAPI + Postgres + Redis** backend with **two primary input surfaces** and **one structured UI surface**:
 
-1. A chat interface where Claude (Haiku for extraction, Sonnet for queries) extracts intent from Spanish messages and answers via tool-use — available both in Telegram and in the native app via `POST /api/v1/chat/message`.
-2. A frozen Vite + React SPA at `web/` (Phase 6e, closed at B13) that stays deployed until Phase 6f B16 retires it.
-3. A native iOS app at `mobile/` (Phase 6f, active) built in Expo SDK 54.
+- **Input:** a **Telegram bot** (aiogram) and an **in-app chat** in the native app — both run the *same* server-side pipeline (`bot/pipeline.py::process_message()`), so there is exactly one extractor and one write dispatcher. Capture also arrives from the iPhone Shortcut webhook and the Gmail parser (BAC / Davivienda / Promerica).
+- **Structured UI:** a **React Native (Expo SDK 54) iOS app** under `mobile/`. This is the *only* structured read/edit surface. The Phase 6e Vite SPA (`web/`) was retired and **deleted** at Phase 6f B16 (2026-06-01); do not look for it and do not re-add a web client without an explicit decision.
 
-Six top-level packages matter:
+What the system does: captures transactions from those sources, stores them in Postgres as the source-of-truth ledger, and layers on:
+
+1. **Conversational capture + queries.** Claude (Haiku for extraction, Sonnet for queries) turns Spanish messages into structured intents; deterministic Python routes and commits. Reachable from Telegram and from `POST /api/v1/chat/message`.
+2. **Conversational *creation*.** Goals, recurring incomes, and recurring bills are created *in chat* (the LLM proposes structured fields, deterministic code writes). Debt is chat-initiated then finished in a pre-filled native form (amortization fields are too complex for free text).
+3. **Structured native screens** for accounts, transactions, bills, debts, incomes, goals, categories, memoria, Gmail, and **envelope budgeting ("Sobres")**.
+
+Five top-level Python packages matter, plus the native app:
 
 | Package | Role | When you'll touch it |
 |---|---|---|
 | `api/` | FastAPI HTTP layer + ORM models + business services | Adding endpoints, schema changes, business logic |
-| `app/queries/` | Read-only conversational query layer (LLM + tools) | Adding a new "answerable question" the bot can handle |
-| `bot/` | Telegram pipeline (aiogram) — extractor → router → dispatcher → delivery | Bot behavior, Spanish messages, callback flows |
-| `mobile/` | Expo SDK 54 + React Native + TypeScript native iOS app | Phase 6f screens, in-app chat, receipt upload (B6+) |
-| `web/` | Vite + React 18 SPA — **frozen at Phase 6e B13, retires at 6f B16** | Bug-fixes only until retirement |
+| `app/queries/` | Read-only conversational query layer (LLM + tools) | Adding a new "answerable question" the chat can handle |
+| `bot/` | Pipeline shared by Telegram **and** the native chat — extractor → router → dispatcher → delivery | Capture behavior, conversational creation, Spanish copy, callback flows |
+| `mobile/` | **Expo SDK 54 + React Native + TypeScript native iOS app — the only structured UI** | Every UI feature: screens, in-app chat, receipt upload, envelopes |
 | `workers/` | Background job entrypoints (Gmail daily, insights nightly + lifecycle) | Container Apps Jobs |
 
 Plus three support directories:
 
 | Directory | Role |
 |---|---|
-| `migrations/versions/` | Hand-written Alembic migrations, numbered `0001_…` through `0020_…` |
-| `tests/` | Pytest async suite (~85 test files; per-block focused tests under `tests/test_phase_*.py`) |
-| `docs/` | Per-phase decisions (`docs/phase-*-decisions.md`) and curl smokes (`docs/curl/`); `scripts/` holds bash phase-gate runners |
+| `migrations/versions/` | Hand-written Alembic migrations, numbered `0001_…` through `0022_envelopes.py` |
+| `tests/` | Pytest async suite (~109 test files; per-block focused tests under `tests/test_phase_*.py`) |
+| `docs/` | Per-phase decisions (`docs/phase-*-decisions.md`) and curl smokes (`docs/curl/`); `scripts/` holds bash phase-gate runners (`scripts/test_phase_6f.sh` is the current gate) |
 
-Old empty placeholders (`agent/`, `jobs/`, `parsers/`) have been replaced by real packages — `workers/` is the live one for scheduled work, and the bot owns what `agent/` was meant to do.
+> **`web/` is gone.** If you find a reference to a Vite SPA, a `fa_session` cookie, Static Web Apps, or `localhost:5173`, it is historical. `git log -- web/` shows the retired code; nothing in the live tree depends on it.
 
 ---
 
@@ -57,188 +76,187 @@ Follow this exact sequence. Each file builds on the previous.
 
 ### Step 1 — Boot path (understand startup)
 
-1. `pyproject.toml` — pinned dependency versions. Note: SQLAlchemy 2.x async, Pydantic v2, anthropic SDK, aiogram v3.
+1. `pyproject.toml` — pinned dependency versions. Note: SQLAlchemy 2.x async, Pydantic v2, anthropic SDK, aiogram v3, `python-multipart` (receipt/PDF upload).
 2. `docker-compose.yml` — three services: `db` (Postgres 16), `redis` (Redis 7), `api` (Uvicorn).
 3. `.env.example` — every config knob the app reads.
-4. `api/config.py` — Pydantic `BaseSettings` that consumes `.env`.
+4. `api/config.py` — Pydantic `BaseSettings` that consumes `.env`. Note the `_enforce_prod_secret_store` validator: it refuses to boot if `ENVIRONMENT=production` and Gmail OAuth tokens aren't in Azure Key Vault.
 5. `api/database.py` — async SQLAlchemy engine + `get_db` FastAPI dependency.
 6. `api/redis_client.py` — singleton async Redis connection.
-7. `api/main.py` — `lifespan` context manager, router registration, `/health` and `/health/ready`.
+7. `api/main.py` — `lifespan` context manager, router registration, `/health` and `/health/ready`. (CORS middleware was removed at 6f B16 — native + Shortcut are non-browser clients.)
 
 Stop here and run it: `docker compose up -d`, then `curl localhost:8000/health`.
 
 ### Step 2 — Domain model (understand the data)
 
-8. `api/models/base.py` — `DeclarativeBase` for all ORM classes.
+8. `api/models/base.py` — `DeclarativeBase` for all ORM classes. `api/models/enums.py` — shared enums.
 9. `api/models/__init__.py` — imports every model; this is what Alembic sees.
 10. Read models in this order to understand relationships:
-    - `user.py` → `account.py` → `transaction.py` (the spine; `transaction.py` carries `transfer_id` + `category_id` FKs from 6e and `archived` from 6e B5)
+    - `user.py` → `account.py` → `transaction.py` (the spine; `transaction.py` carries `transfer_id` + `category_id` (6e), `archived` (6e B5), and **`envelope_id`** (Sobres) FKs)
     - `recurring_bill.py` → `bill_occurrence.py` → `notification_rule.py` → `notification_event.py` (Phase 4)
+    - `budget.py`, `debt.py`, `custom_event.py`, `weekly_report.py`
     - `pending_confirmation.py` → `user_nudge.py` (Phase 5d)
     - `llm_extraction.py` → `llm_query_dispatch.py` (Phase 5b/6a observability)
     - `gmail_credential.py`, `gmail_sender_whitelist.py`, `bank_notification_sample.py`, `gmail_message_seen.py`, `gmail_ingestion_run.py`, `gmail_discovery_run.py` (Phase 6b)
     - `user_insight.py` (Phase 6c — typed user memory)
     - `magic_link_token.py`, `recurring_income.py`, `lazy_detection_event.py` (Phase 6d onboarding + magic-link auth)
     - `goal.py`, `goal_contribution.py`, `transfer.py`, `user_category.py`, `currency_rate.py` (Phase 6e Centro Financiero)
-11. `migrations/versions/0001_initial_schema.py` through `0020_phase6e_b8_recurring_incomes_archived.py` — read in numeric order. This is the schema's history. Phase landmarks: `0006` (multi-tenant `users`), `0011` (Phase 6b Gmail + status CHECK), `0013/0014` (Phase 6c insights), `0016` (Phase 6d magic links + recurring incomes), `0017` (Phase 6e foundation), `0018` (Phase 6e B5 `transactions.archived`), `0019` (Phase 6e B7 `debts.archived`), `0020` (Phase 6e B8 `recurring_incomes.archived`).
+    - `envelope.py` (Sobres — spending-cap envelopes)
+11. `migrations/versions/0001_initial_schema.py` through `0022_envelopes.py` — read in numeric order; this is the schema's history. Phase landmarks: `0006` (multi-tenant `users`), `0011` (Phase 6b Gmail + status CHECK), `0013/0014` (Phase 6c insights), `0016` (Phase 6d magic links + recurring incomes), `0017` (Phase 6e foundation + `currency_rates` + materialized views), `0018/0019/0020` (the three `archived` columns), `0021` (`users.expo_push_token`, schema-only P8 prep), `0022` (`envelopes` table + `transactions.envelope_id`).
 
 ### Step 3 — HTTP surface (understand the API)
 
-12. `api/dependencies.py` — `current_user` resolves in order: `X-Shortcut-Token` → **Phase 6f bearer JWT** (`Authorization: Bearer <jwt>`) → Phase 6d `fa_session` cookie → `X-User-Id` dev shim. The strict `current_user_via_token` is what `POST /transactions/shortcut` and every `POST /jobs/*` use.
-13. `api/schemas/transaction.py` — Pydantic v2 request/response models. Notice the dual `ShortcutTransactionCreate` schema and the Phase 6e additions: `TransactionUpdate`, `TransactionListResponse.next_cursor`, and the bulk request bodies.
-14. `api/routers/transactions.py` — the most-developed router. Pattern to copy. Phase 6e B4/B5 grew it with filters, cursor pagination, CSV export, and bulk archive/categorize endpoints.
+12. `api/dependencies.py` — `current_user` resolves in order: **`X-Shortcut-Token` → bearer JWT (`Authorization: Bearer <jwt>`) → `X-User-Id` dev shim.** (The SPA `fa_session` cookie branch was removed at 6f B16 — there is no cookie path anymore.) The strict `current_user_via_token` is what `POST /transactions/shortcut` and every `POST /jobs/*` use; it ignores the dev shim.
+13. `api/schemas/transaction.py` — Pydantic v2 request/response models. Notice `ShortcutTransactionCreate`, the 6e additions (`TransactionUpdate`, `TransactionListResponse.next_cursor`, bulk bodies), and that `TransactionResponse` now carries `envelope_id` and `PATCH` accepts `envelope_id`.
+14. `api/routers/transactions.py` — the most-developed router; the pattern to copy. Filters, cursor pagination, CSV export, bulk archive/categorize, and the `envelope_id` assignment validation all live here.
 15. `api/routers/users.py` — registration + token rotation.
 16. `api/routers/jobs.py` — the three Phase 4 batch jobs + Phase 5d evaluator/delivery jobs + Phase 6c insights compute trigger.
-17. `api/routers/auth.py` — Phase 6d magic-link exchange (issues `fa_session` cookie for SPA + JWT body for native) plus Phase 6f `POST /auth/device-code/exchange` (native-only, no cookie). Both terminate in `issue_session_jwt`; the resulting JWT is interchangeable in `current_user`. Device-code codes are minted/consumed by `api/services/auth/device_code.py` (Redis, TTL 5 min, alphabet `[A-HJ-NP-Z2-9]`).
-17b. `api/routers/chat.py` — Phase 6f B2. `POST /api/v1/chat/message` calls `bot/pipeline.py::process_message()` directly and returns a serialized `BotReply`. This is how the native app's in-app chat reuses the entire bot pipeline without duplication.
-18. `api/routers/onboarding.py`, `api/routers/recurring_incomes.py` — Phase 6d hybrid SPA flow.
-19. `api/routers/dashboard.py` — Phase 6e B2/B3 dashboard summary, daily cash-flow, category breakdown.
-20. `api/routers/goals.py`, `api/routers/transfers.py`, `api/routers/categories.py` — Phase 6e B2 entities.
-21. `api/routers/recurring_bills.py` — Phase 6e B6 added `POST /{id}/mark-paid` with Redis-backed idempotency on top of the Phase 4 CRUD.
-22. Then skim the rest of `api/routers/`. They follow the same shape.
+17. `api/routers/auth.py` — `POST /auth/magic-link/exchange` and Phase 6f `POST /auth/device-code/exchange`. **Both are bearer-only** (no cookie since B16); both terminate in `issue_session_jwt` and return `{token, expires_at, user_id, email, full_name}`. Device-code codes are minted/consumed by `api/services/auth/device_code.py` (Redis, TTL 5 min, alphabet `[A-HJ-NP-Z2-9]`).
+18. `api/routers/chat.py` — Phase 6f B2/B6. `POST /chat/message` calls `bot/pipeline.py::process_message()` directly and returns a serialized `BotReply`; `POST /chat/image` (multipart) routes a receipt photo through `api/services/llm_extractor/vision.py`. This is how the native chat reuses the entire bot pipeline without duplication.
+19. `api/routers/onboarding.py`, `api/routers/recurring_incomes.py` — Phase 6d onboarding + incomes (incl. the `derive-cycles` aguinaldo/salario_escolar action).
+20. `api/routers/dashboard.py` — Phase 6e dashboard summary, daily cash-flow, category breakdown.
+21. `api/routers/goals.py`, `api/routers/transfers.py`, `api/routers/categories.py`, `api/routers/debts.py` — Phase 6e entities (debts incl. `/schedule` and `/payoff-scenarios`).
+22. `api/routers/recurring_bills.py` — Phase 6e B6 `POST /{id}/mark-paid` with Redis-backed idempotency on top of the Phase 4 CRUD.
+23. `api/routers/envelopes.py` — **Sobres.** `POST/GET /envelopes`, `GET /envelopes/summary` (declared *before* `/{id}`), `GET/PATCH/DELETE /envelopes/{id}` (soft archive by default; `?hard=true` removes the row — the `transactions.envelope_id` FK is `ON DELETE SET NULL`, so tagged transactions are unlinked, never deleted).
+24. `api/routers/gmail.py` — the native Gmail surface: `POST /gmail/scan` (+ `/scan/status`), `GET/POST/DELETE /gmail/senders`, `GET /gmail/shadow`, `POST /gmail/shadow/{confirm,discard}`. `current_user`-authed; OAuth `/oauth/start` + `/status` predate it.
+25. `api/routers/privacy_insights.py` — the memoria read/edit/delete/export endpoints (`GET/PATCH/DELETE /users/me/insights`, group + all-delete, export).
+26. Then skim the rest of `api/routers/`. They follow the same shape.
 
 ### Step 4 — Services (understand the business logic)
 
-The `api/services/` tree has grown into clear subsystems. Read in this order:
+The `api/services/` tree is the heart of the deterministic layer. Read in this order:
 
-18. `api/services/recurrence.py` — RRULE + frequency expansion → `bill_occurrences`. The hardest pure-Python file. Phase 6e B6 reused `link_transaction_to_occurrence` for the new bill-level mark-paid.
-19. `api/services/transactions.py` — narrow telegram dispatcher helpers: `create_transaction`, `delete_telegram_transaction` (the /undo guard), `recent_for_user`, `sum_in_window`, `window_bounds` for natural-language windows.
-20. `api/services/accounts.py` — `resolve_account` (fuzzy match for the bot) plus Phase 6e B4's `compute_account_balances` (one-pass per-account current + month-start balance; excludes archived rows).
-21. `api/services/transfers.py` — Phase 6e B2 atomic transfer creation that emits the two linked `transactions` rows.
-22. `api/services/categories.py` — Phase 6e B2 user-category CRUD + archival rules (`(user_id, lower(name)) WHERE archived=false` uniqueness).
-23. `api/services/dashboard/` — `summary.py` (live current-month aggregator + daily/cash-flow series) and `materialized.py` (helper that refreshes `mv_monthly_summary_by_user` / `mv_yearly_summary_by_user`).
-24. `api/services/auth/` — Phase 6d magic-link issuance + exchange + `fa_session` JWT minting.
-25. `api/services/finance/` — Phase 6d backend-owned finance derivations (e.g. aguinaldo / salario_escolar dates, French amortization input validation).
-26. `api/services/insights/` — Phase 6c user-memory pipeline: `computed.py` (deterministic SQL-driven insights), `extractor.py` (Haiku → typed `InsightContent`), `lifecycle.py` (TTL/dedup/redaction), `persister.py`.
-27. `api/services/gmail/` — Phase 6b OAuth + scanner + reconciler + parsers (BAC, Davivienda, Promerica) + sender discovery.
-28. `api/services/nudges/` — read in this order:
+27. `api/services/recurrence.py` — RRULE + frequency expansion → `bill_occurrences`. The hardest pure-Python file. `link_transaction_to_occurrence` backs the bill-level mark-paid.
+28. `api/services/transactions.py` — narrow dispatcher helpers: `create_transaction`, `delete_telegram_transaction` (the /undo guard), `recent_for_user`, `sum_in_window`, `window_bounds`.
+29. `api/services/accounts.py` — `resolve_account` (fuzzy match for the chat) plus `compute_account_balances` (one-pass per-account current + month-start balance; excludes archived rows).
+30. `api/services/transfers.py` — atomic transfer creation that emits the two linked `transactions` rows.
+31. `api/services/categories.py` — user-category CRUD + archival rules (`(user_id, lower(name)) WHERE archived=false` uniqueness).
+32. `api/services/envelopes.py` — **`compute_envelope_summary`.** One grouped query over confirmed, non-archived, non-transfer, `amount < 0` rows in the current month, grouped by `envelope_id` + currency; per-class subtotals; a best-effort `monthly_income` line. **Spend is computed live from transactions** — there is no stored running balance, so a bar can never drift from the ledger.
+33. `api/services/fx.py` — **`convert`.** Cross-currency spend (a US$ expense tagged to a CRC envelope) is converted at `FALLBACK_USD_TO_CRC = ₡500/US$`. **₡500 is a placeholder** pending the BCCR API (tech-debt in `CLAUDE.md`); `currency_rates` (migration 0017) exists but nothing reads it yet.
+34. `api/services/dashboard/` — `summary.py` (live current-month aggregator + daily/cash-flow series) and `materialized.py` (refreshes `mv_monthly_summary_by_user` / `mv_yearly_summary_by_user`).
+35. `api/services/auth/` — magic-link issuance + exchange, device-code mint/consume, and the bearer JWT codec (`issue_session_jwt` / `decode_session_jwt`).
+36. `api/services/finance/` — backend-owned finance derivations (aguinaldo / salario_escolar dates, French amortization input validation).
+37. `api/services/insights/` — Phase 6c user-memory pipeline: `computed.py` (deterministic SQL-driven), `extractor.py` (Haiku → typed `InsightContent`), `lifecycle.py` (TTL/dedup/redaction), `persister.py`. **Two writers, never crossed** — computed never calls an LLM; the extractor never queries aggregates.
+38. `api/services/gmail/` — Phase 6b OAuth + scanner (`scan_user_inbox`) + reconciler + parsers (BAC, Davivienda, Promerica) + sender discovery, plus `shadow_review.py` (`list_shadow` / `confirm_shadow` / `discard_shadow`, shared by the bot's `/aprobar_shadow` and the native review screen — shadow rows can't be PATCHed, so per-row edits apply atomically inside confirm).
+39. `api/services/nudges/` — read in this order:
     - `policy.py` (constants — rate limit, silence threshold, quiet hours)
-    - `evaluators/` (3 pure functions that emit candidate nudges)
+    - `evaluators/` (pure functions that emit candidate nudges)
     - `orchestrator.py` (dedup + silence filter + insert)
     - `delivery.py` (the 4 anti-saturation rules in code)
     - `actions.py` (state machine — dismiss/act + auto-silence)
-    - `phrasing.py` (LLM call that writes the Spanish copy)
-29. `api/services/llm_extractor/` — the Anthropic tool-use call that powers the bot:
-    - `schema.py` (`ExtractionResult` Pydantic contract)
-    - `prompt.py` (system prompt + cache_control blocks)
-    - `client.py` (Anthropic SDK wrapper)
+    - `phrasing.py` (LLM call that writes the Spanish copy — it NEVER decides whether to nudge)
+40. `api/services/llm_extractor/` — the Anthropic tool-use call that powers capture *and* conversational creation:
+    - `schema.py` (`ExtractionResult` + the `Intent` enum, incl. `CREATE_GOAL/INCOME/BILL/DEBT`)
+    - `prompt.py` (system prompt + `cache_control` blocks — keep caching ON)
+    - `client.py` (Anthropic SDK wrapper; `LLMClient` protocol)
     - `runner.py` (glue + persistence to `llm_extractions`)
-30. `api/services/dispatch/`, `api/services/extraction/` — Phase 6c-era reorganization that split the dispatcher seams from the raw extractor; mostly thin glue.
+    - `vision.py` (receipt photo → same `ExtractionResult`, Haiku→Sonnet retry < 0.65)
+    - `document.py` (loan-contract PDF → `DebtTermsExtraction`, same retry pattern)
+41. `api/services/telegram_dispatcher.py` — **the deterministic write/route brain.** `_dispatch_create_goal/income/bill/debt` validate the LLM-proposed fields and either clarify, propose, or (for debt) return an `OpenScreenAction`. This is the "LLM extracts; rules decide" rule in code — read it to understand why the write dispatcher never asks an LLM what to do.
+42. `api/services/dispatch/`, `api/services/extraction/`, `api/services/secrets.py` — thin glue + the Key-Vault-backed secret store.
 
-### Step 5 — Bot pipeline (understand the chat layer)
+### Step 5 — Bot pipeline (understand the shared chat layer)
 
-The bot package keeps growing as new flows land — count it as ~25 modules now (`ls bot/`).
+The bot package is ~26 modules (`ls bot/`). **Everything here is shared by Telegram and the native chat** — `process_message()` is channel-agnostic.
 
-31. `bot/redis_keys.py` — every Redis key the bot uses, with TTL contracts.
-32. `bot/app.py` — aiogram `Bot` + `Dispatcher` + start/stop hooks for `lifespan`.
-33. `bot/handlers.py` — aiogram routes (text, callbacks, commands).
-34. `bot/pipeline.py` — **the brain.** ~655 lines. Resolve user → rate limit → command short-circuit → LLM → route → dispatch → reply. Read top-to-bottom twice.
-35. `bot/pending.py` + `bot/pending_db.py` — the two-tier proposal store (Redis 5 min + Postgres 48 h).
-36. `bot/delivery_send.py` — sanitize HTML → split for Telegram's 4096-char limit → send.
-37. `bot/clarification.py` + `bot/commit.py` — Phase 5b/5d clarification + write-commit seams shared across the dispatcher.
-38. `bot/gmail_handlers.py`, `bot/gmail_listener.py`, `bot/gmail_onboarding.py`, `bot/gmail_pubsub.py` — Phase 6b Gmail flow (OAuth init → discovery → daily worker hand-off).
-39. `bot/memory_handlers.py` — Phase 6c `/memoria`, `/olvidar`, `/editar_memoria`, `/recalcular_memoria`.
-40. `bot/onboarding_handlers.py`, `bot/onboarding_welcome.py`, `bot/account_creation.py` — Phase 6d hybrid SPA + lazy-account-creation Redis flow.
+43. `bot/redis_keys.py` — every Redis key, with TTL contracts. Keys keep the historical `telegram:` prefix even though the native chat reuses them (renaming would break in-flight Telegram state — tracked tech debt).
+44. `bot/app.py` — aiogram `Bot` + `Dispatcher` + start/stop hooks for `lifespan`.
+45. `bot/handlers.py` — aiogram routes (text, callbacks, commands).
+46. `bot/pipeline.py` — **the brain.** Resolve user → rate limit → command short-circuit → LLM → route → dispatch → reply. `BotReply` now carries `open_screen` (e.g. `screen="assign_envelope"` after an expense commits, `screen="debt_create"` for the debt flow) and `url_buttons`. Read it top-to-bottom twice.
+47. `bot/pending.py` + `bot/pending_db.py` — the two-tier proposal store (Redis 5 min + Postgres 48 h).
+48. `bot/commit.py` — the write-commit seam. `_commit_goal` / `_commit_income` / `_commit_bill` write the rows for conversational creation (mirroring the matching routers). Debt has no chat commit — it commits via the native form's `POST /debts`.
+49. `bot/clarification.py` — the clarify loop shared across dispatchers (`merge_reply`, the Spanish field-by-field prompts).
+50. `bot/delivery_send.py` — sanitize HTML → split for Telegram's 4096-char limit → sequential send. (The native chat renders `BotReply` directly; only Telegram needs the split.)
+51. `bot/gmail_handlers.py`, `bot/gmail_listener.py`, `bot/gmail_onboarding.py`, `bot/gmail_pubsub.py` — Phase 6b Gmail flow (OAuth init → discovery → daily worker hand-off).
+52. `bot/memory_handlers.py` — Phase 6c `/memoria`, `/olvidar`, `/editar_memoria`, `/recalcular_memoria`.
+53. `bot/onboarding_handlers.py`, `bot/onboarding_welcome.py`, `bot/account_creation.py` — onboarding + the lazy-account-creation Redis flow (the pattern conversational creation extends).
+54. `bot/deep_link.py` — `mint_native_deep_link` only (the SPA `mint_edit_session_url` was removed at B16). Mints `ledgercr://exchange?token=...` so a tap in Telegram signs into the native app.
 
-### Step 5b — SPA (understand the web surface — frozen at Phase 6e B13)
+### Step 6 — Native iOS app (the only structured UI surface)
 
-> **The SPA is feature-frozen.** No new routes or features. Bug-fixes only until Phase 6f B16 retires `web/`. Read this section for context, not as a template for new work — use Step 5c (native app) for that.
+The native app lives entirely under `mobile/`. Expo SDK 54 (managed workflow), TypeScript, React Navigation 7, TanStack Query 5, React Hook Form + Zod, Axios with a bearer-token interceptor, `expo-secure-store`. iOS-only. Read in this order:
 
-The Centro Financiero SPA lives entirely under `web/`. It's React 18 + TypeScript + Tailwind + TanStack Query, lazy-loaded route chunks, no Redux. Read in this order:
+55. `mobile/package.json` — pinned deps. Critical: `expo@~54.0.34`, `react@19.1.0`, `react-native@0.81.5`, `expo-secure-store` (JWT storage), `expo-web-browser` + `expo-linking` (Gmail connect + magic-link fallback), `expo-image-picker` (receipts, B6), `expo-document-picker` (loan PDF, debt D3), `@react-navigation/native` + `bottom-tabs` + `native-stack`.
+56. `mobile/.env.local` — **not checked in.** `EXPO_PUBLIC_API_BASE_URL=http://<LAN-IP>:8000` (the client appends `/api/v1`) and `EXPO_PUBLIC_SENTRY_DSN` (empty = console no-op in Expo Go). See `docs/LOCAL_DEV.md §8`.
+57. `mobile/src/lib/` — the plumbing: `client.ts`-equivalent lives here too (`env.ts`, `queryClient.ts`), plus `auth.ts` + `AuthContext.tsx` (JWT lifecycle), `exchange.ts` (device-code/magic-link exchange), `deepLink.ts`, `format.ts` (shared `formatMoney`), `amortization.ts` (lifted from the SPA — French amortization + early-payoff, mirrors `api/services/amortization.py`), `observability.ts` (Sentry scaffold, deliberately not importing the native module under Expo Go).
+58. `mobile/src/api/client.ts` — Axios instance with the bearer-token interceptor. Reads the JWT from `expo-secure-store`; 401 clears the token and bounces to Login.
+59. `mobile/src/screens/Login.tsx` — device-code login. User gets a 6-char code from `/login` in Telegram, types it; the screen auto-submits at 6 valid chars → `POST /auth/device-code/exchange` → JWT into Secure Store.
+60. `mobile/src/hooks/useMagicLinkListener.ts` — silent fallback mounted in `App.tsx`. Listens for `ledgercr://exchange?token=...` so a bot-sent deep link signs in without typing the code.
+61. `mobile/src/navigation/` — the 5-tab bottom navigator (`AppNavigator.tsx`: Home / Chat / Accounts / Transactions / Más). Per-tab stacks: `ChatNavigator` (Chat → DebtCreate modal), `AccountsNavigator`, `TransactionsNavigator`, `MasNavigator` (the "Más" hub → bills, debts, incomes, goals, categories, memoria, Gmail).
+62. `mobile/src/theme.ts` — the design system (warm parchment palette, Feather icons, red reserved for expense/overdue). There is **no Tailwind** — styling is React Native `StyleSheet`.
+63. `mobile/src/screens/` — work through the screen set against its backend:
+    - `Dashboard.tsx` (+ `components/SobresSection.tsx`) — period picker, balance, income/expense/net, expandable category + upcoming-bills sections, and the **Sobres** money-left bars.
+    - `Chat.tsx` — inverted FlatList, confirm/cancel + URL chips, receipt camera, and the in-chat **"Asignar a un sobre"** chip after an expense commit.
+    - Accounts / Transactions / Bills / Debts / Incomes / Goals / Categories / Memory screens — each pairs with a `mobile/src/api/<resource>.ts` helper.
+    - `DebtCreateScreen.tsx` — the chat-handoff debt form: prefill from `open_screen`, live cuota preview, Ley 7472 warning, loan-PDF upload, and the no-rate "llamá a tu entidad" fallback.
+    - `GmailScreen.tsx` / `GmailSendersScreen.tsx` / `GmailReviewScreen.tsx` — connect (poll-based), sender whitelist, and per-row keep/discard shadow review.
+64. `mobile/src/components/` — reused widgets: `TransactionEditModal.tsx` (amount/merchant/desc/category/date + a **Sobre** field for expenses), `EnvelopePickerModal.tsx`, `EnvelopeEditModal.tsx`, `EnvelopeDetailModal.tsx`, `ErrorBoundary.tsx`. Envelope bar direction (drain vs fill) + the 5%-red threshold live in `api/envelopes.ts::envelopeProgress`.
 
-41. `web/package.json` — locked deps. Notable: `@tanstack/react-query`, `react-hook-form`, `zod`, `recharts` (lazy), `react-day-picker` (added in 6e B6).
-42. `web/src/main.tsx` — `QueryClient` defaults (30s stale time, retry=1) and the `BrowserRouter` + `AuthProvider` mount.
-43. `web/src/App.tsx` — route table. Eager: `Dashboard`, `Expired`, the four 6d creation forms (`AccountsNew`, `IncomesNew`, `DebtsNew`, `BillsNew`). Lazy via `Suspense`: `AccountsIndex`, `AccountDetail`, `TransactionsIndex`, `BillsIndex`.
-44. `web/src/lib/auth.tsx` — cookie-session resolver (`/users/me` ping). 401 → `/expired`.
-45. `web/src/api/client.ts` — axios instance with `withCredentials: true` and a 401 interceptor.
-46. `web/src/api/dashboard.ts`, `web/src/api/accounts.ts`, `web/src/api/transactions.ts`, `web/src/api/bills.ts` — the per-resource fetchers + Zod parsers. TanStack queries always go through these wrappers, never raw `axios`.
-47. `web/src/schemas/entities.ts` + `web/src/schemas/dashboard.ts` — single source of truth for the wire types (Zod).
-48. `web/src/routes/Dashboard.tsx` — Phase 6e B3 home. Read alongside `web/src/components/dashboard/DashboardCharts.tsx` (lazy Recharts chunk).
-49. `web/src/routes/AccountsIndex.tsx` + `web/src/routes/AccountDetail.tsx` — Phase 6e B4 read/edit surface. Detail reuses `web/src/components/transactions/TransactionEditModal.tsx` (extracted in B5).
-50. `web/src/routes/TransactionsIndex.tsx` — Phase 6e B5 with cursor pagination, multi filters, bulk actions, CSV export trigger.
-51. `web/src/routes/BillsIndex.tsx` + `web/src/components/bills/BillActionsModal.tsx` — Phase 6e B6 calendar + actions modal with Redis-backed idempotency on the mark-paid call.
-52. `web/src/routes/DebtsIndex.tsx` + `web/src/routes/DebtDetail.tsx` — Phase 6e B7 debts index (top metrics + DTI) and detail with three tabs (Amortización, Calculadora cancelación browser-side, Escenarios Ley 7472 server-side). `web/src/lib/amortization.ts` extends with `earlyPayoffLumpSum` / `earlyPayoffExtraMonthly` / `calculatePrepaymentPenalty` mirroring `api/services/amortization.py`.
-53. `web/src/routes/IncomesIndex.tsx` — Phase 6e B8 recurring incomes index. CR-cycle nudge banner triggers the new atomic `POST /recurring-incomes/{salary_id}/derive-cycles` to create both `aguinaldo` and `salario_escolar` from a single salary. Inline-edit per row (with derived rows' amount input disabled), Pausar/Reanudar/Archivar/Restaurar actions. The existing `IncomesNew.tsx` at `/incomes/new` still serves the creation form; its slimming is logged as cleanup.
-54. `web/src/routes/GoalsIndex.tsx` + `web/src/routes/GoalDetail.tsx` + `web/src/routes/GoalsNew.tsx` — Phase 6e B9 goals module. Index has status + currency filters. Detail shows progress, linked-account saldo as a read-only sanity snapshot (NOT auto-overwrite — contributions still drive `current_amount`), full contribution history, server-computed forecast at the last 3 complete months' average pace, and status actions. New backend endpoints: `GET /goals/{id}/contributions` and `GET /goals/{id}/forecast`.
-55. `web/src/routes/MemoryIndex.tsx` — Phase 6e B10 memoria SPA. Mirrors the bot's `/memoria` groups (`metas` / `conozco` / `patrones` / `banderas`) via the new `GET /api/v1/users/me/insights`. Per-row edit modal dispatches by `insight_type` to enum radios or text inputs; saves through `PATCH /api/v1/users/me/insights/{id}` which sets `source='user_override'`, `user_locked=true`, `confidence=1.00` and emits a `locked` audit. Per-row + per-group + two-step "Borrar todo" delete flows. "Descargar mi memoria" reuses the Phase 6c export endpoint. Backend: `api/routers/privacy_insights.py` carries the new endpoints alongside the existing 6c delete-all + export.
-56. `web/src/routes/CategoriesIndex.tsx` — Phase 6e B11 categories management. No backend changes — Phase 6e B2 (`api/routers/categories.py`) already shipped the CRUD with auto-seeding, transaction counts, and the "default cannot be archived" 400 guard. The SPA renders an inline create form on top of the list and per-row inline edit (name / kind / color via native `<input type="color">` / icon text). Defaults render Archivar as disabled.
-57. `bot/deep_link.py` + `web/src/lib/auth.tsx` (`?path=` handling) — Phase 6e B12 bot ↔ SPA deep linking. The bot helper wraps `api.services.auth.magic_link.generate_link` (which already supported `purpose='edit_session'` + `target_path` from Phase 6d B3) with swallow-on-fail. `BotReply` and `NudgeMessage` both grew URL-button support, so any bot or nudge reply can attach a single-use SPA deep link. Two callsites wired: post-commit ("Ver en Centro Financiero") and `/memoria` end ("Editar en SPA"). The SPA's `AuthProvider` validates `?path=` client-side via `isSafeRelativePath` and `navigate(safePath, { replace: true })` after exchange.
-58. `web/vite.config.ts` (VitePWA) + `web/public/icons/` + `web/src/components/shell/` — Phase 6e B13 PWA + mobile polish. The build emits `dist/sw.js`, `dist/workbox-*.js`, and `dist/manifest.webmanifest` with the three locked caching strategies (shell precache, API `NetworkFirst` 4s/24h, images `CacheFirst` 7d). Icons are placeholder PNGs synthesized by `scripts/generate_pwa_icons.py` (stdlib-only — no Pillow). Shell components: `OfflineBanner` (`useOnlineState` hook, banner-only — mutations are NOT blocked), `InstallBanner` (`useInstallPrompt` hook, gated to ≥ 3rd visit via localStorage), `BottomNav` (mobile-only, hidden at `sm:` and above, safe-area-inset padding for the iPhone home indicator). On Node 18 the build needs `NODE_OPTIONS=--experimental-global-webcrypto` for `workbox-build`; the npm script wraps with `cross-env` so it's transparent.
-
-### Step 5c — Native iOS App (understand the Phase 6f mobile surface)
-
-The native app lives entirely under `mobile/`. It's Expo SDK 54 (managed workflow), TypeScript, React Navigation 7, TanStack Query 5, React Hook Form + Zod, and Axios with a bearer-token interceptor. iOS-only in Phase 6f. Read in this order:
-
-59. `mobile/package.json` — pinned deps. Critical: `expo@~54.0.34`, `expo-secure-store` (JWT storage), `expo-web-browser` + `expo-linking` (magic-link fallback), `@react-navigation/native` + `@react-navigation/bottom-tabs`.
-60. `mobile/.env.local` — **not checked in.** Contains `EXPO_PUBLIC_API_BASE_URL=http://<LAN-IP>:8000`. The Expo client appends `/api/v1` to this. See `docs/LOCAL_DEV.md §8` for setup.
-61. `mobile/src/api/client.ts` — Axios instance with bearer-token interceptor (`Authorization: Bearer <jwt>`). Reads JWT from `expo-secure-store`. 401 → clears token + navigates to Login.
-62. `mobile/src/screens/Login.tsx` — device-code login flow. User gets a 6-char code from `/login` in Telegram, types it here. Auto-submits at 6 valid chars → `POST /auth/device-code/exchange` → JWT stored in Secure Store.
-63. `mobile/src/navigation/` — 5-tab bottom navigator (Home / Chat / Accounts / Transactions / More). Lazy screens via React Navigation stack navigators nested in each tab.
-64. `mobile/src/hooks/useMagicLinkListener.tsx` — silent fallback mounted in `App.tsx`. Listens for `ledgercr://exchange?token=...` deep links so a future bot-sent magic link can sign in automatically without the user typing the code.
-
-**Auth flow to understand (B3 final shape):**
+**Auth flow to understand (final shape):**
 1. Operator runs `/login` (or `/iniciar`) in Telegram.
-2. Bot replies with a 6-char code.
-3. Operator types it in the Login screen; app auto-submits at 6 valid chars.
+2. Bot replies with a 6-char code (and a tappable `ledgercr://` deep link).
+3. Operator types the code in Login; app auto-submits at 6 valid chars.
 4. `POST /auth/device-code/exchange` returns `{token, expires_at, user_id, email, full_name}`.
-5. JWT stored in `expo-secure-store`. All subsequent API calls send `Authorization: Bearer <jwt>`.
-6. Backend resolves the caller via the second branch in `api/dependencies.py::current_user`.
+5. JWT stored in `expo-secure-store`; every call sends `Authorization: Bearer <jwt>`.
+6. Backend resolves the caller via the **bearer branch** in `api/dependencies.py::current_user`.
 
-**Key hard rules for Phase 6f code:**
-- The chat screen calls `POST /chat/message` — it does NOT replicate the extractor or dispatcher. `bot/pipeline.py::process_message()` runs on the server.
-- The bearer JWT is decoded by the *same* `decode_session_jwt` the cookie path uses. No second secret.
-- All user-facing copy stays Spanish (voseo, CR), same as the bot.
-- Redis state keys keep the `telegram:` prefix — the native chat reuses them unchanged.
+**Hard rules for native/chat code:**
+- The chat calls `POST /chat/message` — it does NOT replicate the extractor or dispatcher. `process_message()` runs on the server.
+- The bearer JWT is decoded by the *same* `decode_session_jwt` everything else uses. No second secret, no second token shape.
+- Receipt/PDF extraction emits the *same* `ExtractionResult` / typed payload as text, so the deterministic write dispatcher consumes it identically.
+- `open_screen` is native-only; Telegram ignores it. That's how envelopes and the debt form stay native without forking the pipeline.
+- All user-facing copy stays Spanish (voseo, CR).
 
-### Step 6 — Query layer (understand how questions are answered)
+### Step 7 — Query layer (understand how questions are answered)
 
-52. `app/queries/prompts/system.py` — system prompt for the query LLM.
-53. `app/queries/tools/base.py` — the `Tool` abstraction.
-54. `app/queries/tools/transactions.py` — the most-used tool. Read it carefully.
-55. The full tool roster (registered in `app/queries/tools/__init__.py`): `transactions`, `accounts`, `compare_periods`, `debts`, `pending`, `recurring_bills`, `user_context` (Phase 6c), plus `_common` and `_test_only` infra. Phase 6c added `user_context` as the *only* surface the LLM uses to read user memory — insights never inline in the system prompt.
-56. `app/queries/llm_client.py` — Anthropic tool-use loop (iteration cap 4, cache_control on the last tool only, token accounting).
-57. `app/queries/dispatcher.py` — orchestrates the loop + history + audit row.
-58. `app/queries/history.py` — Redis-backed conversation history (24h TTL).
-59. `app/queries/delivery.py` — error→Spanish-message mapping.
+65. `app/queries/prompts/system.py` — system prompt for the query LLM. **Insights never inline here** — Sonnet reads user memory only through the `user_context` tool.
+66. `app/queries/tools/base.py` — the `Tool` abstraction.
+67. `app/queries/tools/transactions.py` — the most-used tool. Read it carefully.
+68. The full tool roster (registered in `app/queries/tools/__init__.py`): `transactions`, `accounts`, `compare_periods`, `debts`, `pending`, `recurring_bills`, `user_context`, plus `_common` and `_test_only` infra.
+69. `app/queries/llm_client.py` — Anthropic tool-use loop (iteration cap 4, `cache_control` on the last tool only, token accounting).
+70. `app/queries/dispatcher.py` — orchestrates the loop + history + audit row. **Read-only; it cannot mutate state.**
+71. `app/queries/history.py` — Redis-backed conversation history (24h TTL). `app/queries/delivery.py` — error→Spanish-message mapping.
 
-### Step 7 — Workers + scheduled jobs
+### Step 8 — Workers + scheduled jobs
 
-60. `workers/gmail_daily.py` — Phase 6b scanner; runs as an Azure Container Apps Job (cron 9am UTC).
-61. `workers/insights_nightly.py` — Phase 6c computed-insight refresh + Phase 6e B2 dashboard materialized-view refresh (same job).
-62. `workers/insights_lifecycle.py` — Phase 6c TTL/dedup/`raw_quote` redaction sweep.
+72. `workers/gmail_daily.py` — Phase 6b scanner; runs as an Azure Container Apps Job.
+73. `workers/insights_nightly.py` — Phase 6c computed-insight refresh + dashboard materialized-view refresh (same job).
+74. `workers/insights_lifecycle.py` — Phase 6c TTL/dedup/`raw_quote` redaction sweep.
 
-### Step 8 — Tests (understand what "correct" means)
+### Step 9 — Tests (understand what "correct" means)
 
-63. `tests/conftest.py` — the per-test NullPool engine pattern. **Critical.** Async tests share an event loop — connection pools that span loops cause flaky failures. Note the `_insights_dispatcher_flag_on` autouse fixture (defaults the 6c production flag to True for tests) and the `_reset_redis_singleton` fixture (avoids cached event-loop bindings).
-64. Pick one passing test from each phase and trace the assertions back to the code:
+75. `tests/conftest.py` — the per-test NullPool engine pattern. **Critical.** Async tests share an event loop; pools that span loops cause flaky failures. Note the `_insights_dispatcher_flag_on` autouse fixture and `_reset_redis_singleton`.
+76. Pick one passing test from each era and trace assertions back to the code:
     - `tests/test_telegram_dispatcher.py` (write dispatch)
     - `tests/test_nudges_evaluators.py` (Phase 5d)
     - `tests/test_phase_6a_block5b_e2e.py` (full query loop)
-    - `tests/test_phase_6c_*.py` (insights pipeline; dozens of files)
-    - `tests/test_phase_6d_b11_e2e.py` (hybrid onboarding E2E)
-    - `tests/test_phase_6e_b2_backend.py` → `tests/test_phase_6e_b6_bills.py` (Centro Financiero per block)
-65. `scripts/test_phase_6d.sh`, `scripts/phase5b_smoke.sh`, `docs/curl/phase-5d.sh`, `docs/curl/phase-6a.sh` — end-to-end manual smokes. Run these locally to see the system breathe.
+    - `tests/test_phase_6c_*.py` (insights pipeline)
+    - `tests/test_phase_6f_chat_create_goal.py` / `_income` / `_bill` / `_debt` (conversational creation, FixtureLLMClient + direct dispatch)
+    - `tests/test_phase_6f_b6_vision.py` (receipt path), `tests/test_phase_6f_debt_parse_document.py` (PDF path)
+    - `tests/test_gmail_native.py` (native Gmail REST + shadow review)
+    - `tests/test_envelopes.py` + `tests/test_phase_6f_chat_assign_envelope.py` (Sobres)
+77. `scripts/test_phase_6f.sh` — the current end-to-end gate: mobile `tsc --noEmit` + the focused backend slices + regression. Run it before and after any change. Older smokes (`scripts/phase5b_smoke.sh`, `docs/curl/phase-6a.sh`) still exercise the pipeline.
 
 ---
 
 ## A.3 Mental model cheat sheet
 
-Pin these in your head — they show up everywhere:
+Pin these — they show up everywhere:
 
 - **Money is `NUMERIC(12,2)` or `NUMERIC(14,2)`.** Negative = expense, positive = income. Never use `float`.
-- **All timestamps are `TIMESTAMPTZ` in UTC.** The user's local timezone (`users.timezone`, default `America/Costa_Rica`) is applied at display/quiet-hours time.
+- **All timestamps are `TIMESTAMPTZ` in UTC.** The user's local timezone (`users.timezone`, default `America/Costa_Rica`) is applied at display/quiet-hours/month-reset time.
 - **All PKs are UUIDv4** via `gen_random_uuid()`.
-- **Multi-tenancy = `user_id` FK on every domain table.** `ON DELETE RESTRICT`. The `current_user` dependency resolves the tenant.
-- **The LLM never decides whether to act.** Extractor produces structured JSON; deterministic Python code routes and commits. The query dispatcher is the *only* LLM-on-the-hot-path component.
-- **Redis is the source of truth for durable bot state.** aiogram FSM is for transient in-handler bookkeeping only.
-- **Migrations are hand-written.** No `--autogenerate`. Every schema change → new numbered file.
-- **Auth resolves in this order: `X-Shortcut-Token` → bearer JWT (Phase 6f) → `fa_session` cookie (Phase 6d) → `X-User-Id` dev shim** (`api/dependencies.py::current_user`). The strict variant ignores the dev shim. Both the magic-link and device-code paths issue identical JWTs through `issue_session_jwt`.
-- **Two dimensions of "this row is gone": `status` and `archived`.** `status` (confirmed/shadow/pending_review) is the Phase 6b ingestion lifecycle; `archived` is the Phase 6e user-driven soft-delete. Balance + dashboard exclude both `status != 'confirmed'` and `archived = true`. The materialized views currently miss the `archived` predicate (logged in CLAUDE.md tech debt).
-- **Bot and native in-app chat are both primary input.** The native app's chat calls `POST /chat/message` which runs `bot/pipeline.py::process_message()` server-side — there is no second extractor or dispatcher. The SPA is frozen.
-- **Insights never inline in the system prompt.** Sonnet reads user memory through the `get_user_context` tool and nothing else (Phase 6c).
-- **Cache breakpoint limit is 4.** Apply `cache_control` only on the last tool, not all of them. Exceeding silently breaks caching.
-- **The Centro Financiero SPA is a separate deploy** to Azure Static Web Apps (workflow under `.github/workflows/`). Its dev URL is `http://localhost:5173`. It is frozen at Phase 6e B13 and retires at Phase 6f B16. Telegram inline-button URLs reject `localhost` so local SPA testing still needs an HTTPS tunnel for the magic-link flow.
-- **The native iOS app (Phase 6f) runs via Expo Go** on the operator's iPhone during development. Set `EXPO_PUBLIC_API_BASE_URL` to the machine's LAN IP in `mobile/.env.local` so the phone can reach the API. See `docs/LOCAL_DEV.md §8`.
+- **Multi-tenancy = `user_id` FK on every domain table.** The `current_user` dependency resolves the tenant. This is the seam P8 multi-tenancy builds on — it's already there.
+- **The LLM never decides whether to act, and never calculates.** The extractor/vision/document calls produce structured payloads; deterministic Python routes, validates, and commits. The query dispatcher is the *only* LLM-on-the-hot-path component, and it's read-only. The P7 pushback engine will keep this discipline: math decides feasibility, the LLM only phrases it.
+- **One pipeline, two channels.** Telegram and the native chat both call `process_message()`. There is no second extractor or dispatcher.
+- **Redis is the source of truth for durable bot/chat state.** aiogram FSM is for transient in-handler bookkeeping only. Keys keep the `telegram:` prefix for historical reasons.
+- **Migrations are hand-written.** No `--autogenerate`. Every schema change → new numbered file. Head is `0022`.
+- **Auth resolves in this order: `X-Shortcut-Token` → bearer JWT → `X-User-Id` dev shim** (`api/dependencies.py::current_user`). No cookie path (removed at 6f B16). The strict variant ignores the dev shim. Magic-link and device-code exchange both issue identical bearer JWTs.
+- **Three dimensions of "this row is special": `status`, `archived`, and `envelope_id`.** `status` (confirmed/shadow/pending_review) is the ingestion lifecycle; `archived` is user soft-delete; `envelope_id` tags an expense to one spending-cap envelope. Balance/dashboard/envelope math all exclude non-`confirmed` and `archived=true`. (The materialized views still miss the `archived` predicate — tech debt.)
+- **Envelope spend is computed live, never stored.** A money-left bar is derived from transactions each render, so it can't drift from the ledger. Cross-currency spend converts via `api/services/fx.py` at the ₡500/US$ placeholder.
+- **`open_screen` is the native-only escape hatch.** The pipeline returns it to hand off to a native screen (debt form, envelope assignment); Telegram ignores it. This keeps native-only features out of the shared pipeline.
+- **Insights never inline in the system prompt.** Sonnet reads user memory through `get_user_context` only (Phase 6c).
+- **Cache breakpoint limit is 4.** Apply `cache_control` only on the last tool/block, not all of them. Exceeding silently breaks caching.
+- **The native iOS app runs via Expo Go** on the operator's iPhone during development. Set `EXPO_PUBLIC_API_BASE_URL` to the machine's LAN IP in `mobile/.env.local`. See `docs/LOCAL_DEV.md §8`.
 
 ---
 
@@ -248,40 +266,55 @@ Recipes you'll repeat dozens of times. Bookmark this section.
 
 ## B.1 "I want to add a new HTTP endpoint"
 
-1. **Schema first.** Add Pydantic v2 request/response classes in `api/schemas/<resource>.py`. Use `model_config = ConfigDict(from_attributes=True)` for ORM read models.
+1. **Schema first.** Add Pydantic v2 request/response classes in `api/schemas/<resource>.py`. Use `model_config = ConfigDict(from_attributes=True)` for ORM read models; `extra="forbid"` for PATCH bodies that must reject immutable fields (see `EnvelopeUpdate`, the debts/incomes PATCH schemas).
 2. **Model.** If a new table: create `api/models/<name>.py`, register it in `api/models/__init__.py`.
 3. **Migration.** Copy the latest `migrations/versions/00XX_…py` as a template. Bump the prefix. Hand-write `upgrade()` and `downgrade()`.
-4. **Router.** Create or edit `api/routers/<resource>.py`. Use `APIRouter(prefix="/api/v1/<resource>", tags=["<resource>"])`. Inject `db: AsyncSession = Depends(get_db)` and `user = Depends(current_user)` (or `current_user_via_token` if it must reject the dev shim).
+4. **Router.** Create or edit `api/routers/<resource>.py`. Use `APIRouter(prefix="/api/v1/<resource>", tags=["<resource>"])`. Inject `db: AsyncSession = Depends(get_db)` and `user = Depends(current_user)` (or `current_user_via_token` if it must reject the dev shim). **Declare specific paths before `/{id}`** (see `GET /envelopes/summary`).
 5. **Mount.** Add `app.include_router(<resource>.router)` in `api/main.py`.
 6. **Test.** New file in `tests/test_<resource>.py`. Follow the NullPool pattern from `conftest.py`.
-7. **Smoke.** Add a curl example to `docs/curl/` if it's a phase-gate feature.
+7. **Native helper.** If the app consumes it, add a typed fetcher to `mobile/src/api/<resource>.ts` — and double-check the JSON body field names match the schema (see B.6, drift bug #4).
 
-## B.2 "I want to add a new query the bot can answer"
+## B.2 "I want to add a new query the chat can answer"
 
-1. **Tool definition.** New file in `app/queries/tools/<name>.py`. Subclass `Tool`. Define `input_schema` (JSON Schema dict), `name`, `description`, and `async def run(ctx, args)`.
+1. **Tool definition.** New file in `app/queries/tools/<name>.py`. Subclass `Tool`. Define `input_schema`, `name`, `description`, and `async def run(ctx, args)`.
 2. **Register.** Add to `app/queries/tools/__init__.py`.
 3. **Update system prompt.** `app/queries/prompts/system.py` — Claude needs to know the tool exists and when to call it.
-4. **Test.** Write a unit test in `tests/test_tool_<name>.py` (no LLM). Then add an e2e to one of the `tests/test_phase_6a_block*_e2e.py` patterns (uses real Anthropic — gate behind an env var).
-5. **No new dispatcher logic needed.** The loop in `llm_client.py` picks up registered tools automatically.
+4. **Test.** Unit test in `tests/` (no LLM). Then an e2e against the `tests/test_phase_6a_block*_e2e.py` pattern (real Anthropic — gate behind an env var).
+5. **No new dispatcher logic.** The loop in `llm_client.py` picks up registered tools automatically.
 
-## B.3 "I want to add a Telegram command (e.g. `/foo`)"
+## B.3 "I want to add a conversational *creation* flow (chat creates a row)"
 
-1. **Handler.** Add an aiogram handler in `bot/handlers.py` decorated with `@router.message(Command("foo"))`.
-2. **If it's a new pipeline branch:** edit `bot/pipeline.py`. Add the command short-circuit *before* the LLM extractor block — commands must never burn tokens.
-3. **Spanish copy.** Add the user-facing strings to `bot/messages_es.py`. Don't inline them.
-4. **Test.** Drive it via `POST /api/v1/telegram/_simulate` in dev.
+This is the post-6f pattern for goals/income/bills (debt is the hybrid variant). Follow the existing four as templates.
 
-## B.4 "I want to change a Pydantic schema"
+1. **Intent + fields.** Add to the `Intent` enum and the flat `<thing>_*` fields on `ExtractionResult` in `api/services/llm_extractor/schema.py`. Add prompt guidance + examples in `prompt.py`.
+2. **Dispatcher.** Add `_dispatch_create_<thing>` in `api/services/telegram_dispatcher.py`. Validate each NOT-NULL field; clarify field-by-field via `bot/clarification.py`; resolve date hints server-side; then **propose** (don't write).
+3. **Commit.** Add `_commit_<thing>` in `bot/commit.py`, mirroring the matching router's create logic. The commit is deterministic Python — never an LLM call.
+4. **Native-only finish (optional).** If the form is too complex for chat (like debt's amortization fields), return an `OpenScreenAction` instead of committing, and build/extend the native screen to consume `open_screen.prefill`.
+5. **Test.** Drive it with `FixtureLLMClient` + direct dispatch (see `tests/test_phase_6f_chat_create_goal.py`). No real LLM needed for the deterministic path.
+6. **Preserve the rule:** the LLM proposes structured fields; deterministic code decides and writes. Never let the dispatcher ask an LLM what to do.
 
-- **Backwards compat.** Pydantic v2 `model_config = ConfigDict(extra="forbid")` is used in some places (e.g. `ExtractionResult`). Adding a field there breaks deserialization of stored rows. Use `extra="allow"` or migrate the data.
-- **Schema is also part of the LLM contract.** If the field is in `ExtractionResult` or a query-tool input schema, the system prompt and fixture tests must be updated too. Re-record extractor fixtures: see notes in `tests/test_llm_extractor.py`.
+## B.4 "I want to add a Telegram/chat command (e.g. `/foo`)"
 
-## B.5 "I want to add a new migration"
+1. **Handler.** aiogram handler in `bot/handlers.py` decorated with `@router.message(Command("foo"))`.
+2. **New pipeline branch?** Edit `bot/pipeline.py`. Add the command short-circuit *before* the LLM extractor block — commands must never burn tokens.
+3. **Spanish copy.** Add user-facing strings to the Spanish copy module; don't inline them.
+4. **Test.** Drive it via `POST /api/v1/telegram/_simulate` or `POST /chat/message` in dev.
+
+## B.5 "I want to add a native screen"
+
+1. **API helper first.** Add a typed fetch/mutate helper to `mobile/src/api/<resource>.ts` (or create one). All network goes through `mobile/src/api/client.ts` (bearer interceptor + 401 handling); never raw `axios`.
+2. **Screen.** New file in `mobile/src/screens/<Name>Screen.tsx`. Use TanStack Query (`useQuery`/`useMutation`/`useInfiniteQuery`); never `useEffect + fetch`. Style with `StyleSheet` + `mobile/src/theme.ts` tokens — no Tailwind.
+3. **Navigation.** Register it in the right stack under `mobile/src/navigation/` (a tab stack, or the `MasNavigator` hub for secondary modules).
+4. **Spanish + voseo.** All copy in Spanish, consistent with the bot.
+5. **Verify.** `cd mobile && npx tsc --noEmit` (the only automated native guard — there is no native CI yet). Then on-device via Expo Go.
+6. **Watch for body-field drift.** `tsc` can't see a wrong JSON key in an axios body (the B9 `{ids}` vs `{transaction_ids}` bug). Cross-check the request body against the backend schema by hand.
+
+## B.6 "I want to add a new migration"
 
 ```bash
-# 1. Copy the latest migration as a template (current head: 0020 — no schema changes in Phase 6f B1-B3)
-cp migrations/versions/0020_phase6e_b8_recurring_incomes_archived.py \
-   migrations/versions/0021_<your_change>.py
+# 1. Copy the latest migration as a template (current head: 0022_envelopes.py)
+cp migrations/versions/0022_envelopes.py \
+   migrations/versions/0023_<your_change>.py
 
 # 2. Edit revision/down_revision. Write upgrade()/downgrade() by hand.
 
@@ -292,39 +325,29 @@ alembic upgrade head
 alembic downgrade -1 && alembic upgrade head
 ```
 
-**Never run `alembic revision --autogenerate`.** Project policy.
+**Never run `alembic revision --autogenerate`.** Project policy. The head shifts every feature — don't hardcode a number into a script; read it with `alembic current` or `ls migrations/versions/ | tail -1`.
 
-The latest head shifts every block — don't hardcode a number into your script. Read it with `alembic current` or `ls migrations/versions/ | tail -1`.
+## B.7 "I want to change a Pydantic / LLM schema"
 
-## B.5b "I want to add a new SPA route"
+- **Backwards compat.** `ExtractionResult` is `extra`-guarded and validator-heavy. It's accreting per-intent flat fields (`goal_*`, `income_*`, `bill_*`, `debt_*`); a future cleanup may nest them, but for now add fields explicitly and guard them with a validator.
+- **Schema is part of the LLM contract.** If the field is in `ExtractionResult` or a query-tool `input_schema`, update the system prompt and the fixture tests too. Re-record extractor fixtures — drift in assertions is a *signal*, investigate before relaxing them.
 
-1. **Schema first.** Add or extend the Zod model in `web/src/schemas/entities.ts` (or `web/src/schemas/dashboard.ts` for dashboard-scoped contracts). The Zod object IS the wire contract; never `as any`-coerce.
-2. **API helper.** Add a fetch + parse helper to the matching `web/src/api/<resource>.ts` (or create one). Always go through the shared `web/src/api/client.ts` axios instance — it carries `withCredentials: true` and the 401 interceptor.
-3. **Route component.** New file in `web/src/routes/<Name>.tsx`. Default export. Use TanStack Query (`useQuery` / `useMutation`); never `useEffect + fetch`.
-4. **Mount.** Add `const X = lazy(() => import("./routes/X"));` at the top of `web/src/App.tsx`, then a `<Route>` inside the `<Suspense>` block. Lazy-loading is the only way to keep the initial bundle under the 200KB gzip budget.
-5. **Verify.** `npm --prefix web run lint` and `npm --prefix web run build`. Watch the printed `index` chunk size — if it jumped, you forgot to lazy-load something.
-6. **Mobile-first.** Design first at 375px width, verify nothing breaks at 320px (decision 3.10 in `docs/phase-6e-decisions.md`). Touch targets ≥ 44×44 px.
-
-## B.5c "I want to share a SPA component across routes"
-
-If two routes need the same modal/widget, extract it to `web/src/components/<area>/<Component>.tsx` BEFORE the second route is finished — Phase 6e B5 did this with `TransactionEditModal` (used by `AccountDetail` and `TransactionsIndex`). Vite's chunk splitter rewards shared components with their own chunk, so the initial bundle gets smaller, not bigger, when you extract.
-
-## B.6 "Tests are flaky — what do I check first?"
+## B.8 "Tests are flaky — what do I check first?"
 
 In order of likelihood:
 
-1. **Cross-event-loop asyncpg connection.** The pattern in `tests/conftest.py` creates a `NullPool` engine *per test* so connections never escape their loop. New test files must follow it.
-2. **Redis state leaking between tests.** Use a fixture that flushes the test DB index, or scope keys to a unique test-run UUID.
-3. **Tool-loop tests calling the real Anthropic API.** Mark them `@pytest.mark.skipif(not ANTHROPIC_KEY)` or use the `FixtureLLMClient` pattern from `tests/test_llm_extractor.py`.
-4. **`datetime.utcnow()` deprecation warnings.** Tracked tech debt — not a real failure but pytest may surface them.
+1. **Cross-event-loop asyncpg connection.** The `tests/conftest.py` pattern creates a `NullPool` engine *per test* so connections never escape their loop. New test files must follow it.
+2. **Redis state leaking between tests.** Flush the test DB index or scope keys to a unique test-run UUID.
+3. **Tool-loop tests calling the real Anthropic API.** Use the `FixtureLLMClient` pattern (or `@pytest.mark.skipif(not ANTHROPIC_KEY)`).
+4. **Mobile-API ↔ backend body drift.** `tsc` won't catch a wrong JSON key; only operator on-device testing or a hand cross-check does. No native CI yet (tech debt).
 
-## B.7 "I want to run the system end-to-end locally"
+## B.9 "I want to run the system end-to-end locally"
 
 ```bash
 # 1. Boot infra + API
 docker compose up -d
 
-# 2. Apply migrations (head should print 0020 or higher)
+# 2. Apply migrations (head should print 0022 or higher)
 alembic upgrade head
 alembic current
 
@@ -333,58 +356,53 @@ curl -X POST localhost:8000/api/v1/users/register \
   -H 'Content-Type: application/json' \
   -d '{"email":"you@test.local","full_name":"You"}'
 
-# 4. Run the phase smokes
-bash scripts/phase5a_smoke.sh
-bash scripts/phase5b_smoke.sh
-bash docs/curl/phase-5d.sh
-bash docs/curl/phase-6a.sh
-bash scripts/test_phase_6d.sh   # focused 6d verification (pytest + npm)
+# 4. Run the gate + smokes
+bash scripts/test_phase_6f.sh         # current end-to-end gate (mobile tsc + backend)
+bash scripts/phase5b_smoke.sh         # bot pipeline against _simulate
+bash docs/curl/phase-6a.sh            # query loop
 ```
 
-If `phase5b_smoke.sh` passes against `_simulate`, the entire bot pipeline (minus a real Telegram connection) is healthy.
+If `phase5b_smoke.sh` passes against `_simulate`, the entire chat pipeline (minus a real Telegram connection) is healthy.
 
-To poke the SPA locally (frozen — read-only):
-
-```bash
-# 5. Boot the SPA (separate terminal)
-npm --prefix web install        # first time only
-npm --prefix web run dev        # http://localhost:5173, Vite proxies /api to :8000
-```
-
-To run the native iOS app locally (Phase 6f active work):
+To run the native iOS app locally:
 
 ```bash
-# 6. Set the LAN IP so the phone can reach the API
+# 5. Set the LAN IP so the phone can reach the API
 echo "EXPO_PUBLIC_API_BASE_URL=http://$(hostname -I | awk '{print $1}'):8000" > mobile/.env.local
 
-# 7. Boot Expo dev server (separate terminal)
+# 6. Boot Expo dev server (separate terminal)
 cd mobile && npx expo start
 
-# 8. Scan the QR with Expo Go on iPhone — or press 'i' for iOS Simulator
+# 7. Scan the QR with Expo Go on iPhone — or press 'i' for iOS Simulator.
+#    Get a 6-char login code by sending /login to the Telegram bot.
 ```
 
-Full walkthrough (including Expo Go sideload, `/login` device-code test) is in `docs/LOCAL_DEV.md §8`.
+Full walkthrough (Expo Go sideload, `/login` device-code test) is in `docs/LOCAL_DEV.md §8`.
 
-## B.8 "I want to change the LLM prompt"
+## B.10 "I want to change the LLM prompt"
 
-- **Extractor prompt:** `api/services/llm_extractor/prompt.py`. Has `cache_control={"type":"ephemeral"}` on the system + tool-schema blocks — keep those when editing.
+- **Extractor prompt:** `api/services/llm_extractor/prompt.py`. Keep the `cache_control={"type":"ephemeral"}` blocks on the system + tool-schema sections.
 - **Query prompt:** `app/queries/prompts/system.py`.
-- **After any prompt change:** re-record the relevant fixtures (`tests/fixtures/`). Drift in test assertions is a *signal*, not a nuisance — investigate before relaxing them.
-- **Cost watch.** Phase 6a uses Sonnet for queries, Haiku for extraction. Don't swap to Opus in production code without checking `LLM_DAILY_TOKEN_BUDGET_PER_USER`.
+- **After any prompt change:** re-record the relevant fixtures (`tests/fixtures/`). Investigate assertion drift before relaxing it.
+- **Cost watch.** Sonnet for queries, Haiku for extraction/vision/document. Don't swap to Opus in production code without checking `LLM_DAILY_TOKEN_BUDGET_PER_USER`.
 
-## B.9 "How do I find where X is implemented?"
+## B.11 "How do I find where X is implemented?"
 
 | Looking for | Search this |
 |---|---|
-| An endpoint by URL | `grep -r '@router' api/routers/ \| grep -i <path-fragment>` |
-| A Spanish error message | `grep -r '<text>' bot/messages_es.py bot/onboarding_welcome.py` |
-| A DB column | `grep -r '<column_name>' api/models/ migrations/versions/` |
-| A Redis key | `grep -r '<prefix>' bot/redis_keys.py app/queries/history.py api/services/auth/ api/routers/recurring_bills.py` |
-| A tool the LLM calls | `app/queries/tools/__init__.py` — single registry |
+| An endpoint by URL | `grep -rn '@router' api/routers/ \| grep -i <path-fragment>` |
+| A Spanish error message | `grep -rn '<text>' bot/ api/` |
+| A DB column | `grep -rn '<column_name>' api/models/ migrations/versions/` |
+| A Redis key | `grep -rn '<prefix>' bot/redis_keys.py app/queries/history.py api/services/auth/` |
+| A query tool the LLM calls | `app/queries/tools/__init__.py` — single registry |
+| A conversational create flow | `api/services/telegram_dispatcher.py::_dispatch_create_*` + `bot/commit.py::_commit_*` |
+| An `open_screen` handoff (native-only feature) | `grep -rn 'open_screen\|OpenScreenAction' api/services/ bot/ mobile/src/` |
+| Envelope spend math | `api/services/envelopes.py::compute_envelope_summary` |
+| FX / currency conversion | `api/services/fx.py::convert` |
 | A migration that touched a table | `grep -l '<table>' migrations/versions/` |
-| A SPA route component | `web/src/App.tsx` — single route table |
-| A SPA fetch call | `grep -rn '<endpoint-fragment>' web/src/api/` |
-| A locked decision | `docs/phase-*-decisions.md` — phase-by-phase canonical contract |
+| A native screen | `mobile/src/navigation/AppNavigator.tsx` + `mobile/src/screens/` |
+| A native API call | `grep -rn '<endpoint-fragment>' mobile/src/api/` |
+| A locked decision | `docs/phase-*-decisions.md` + `~/Finance_project/.../05_Decisions/` |
 | Phase status / what's open | `CLAUDE.md` Phase tables + `~/Finance_project/30_Projects/Finance-Agent/00_Project-Brain.md` |
 
 ---
@@ -394,20 +412,20 @@ Full walkthrough (including Expo Go sideload, `/login` device-code test) is in `
 > Resources are listed by **canonical title and author/creator** so you can find the current edition. Avoid pirated or out-of-date copies — these technologies move fast (especially the LLM tooling).
 
 Each section has:
-- **Why this matters here** — the line in *this* codebase the topic shows up
+- **Why this matters here** — where in *this* codebase the topic shows up
 - **Resources** — books and video creators worth your time, ordered beginner → pro
 
 ---
 
-## C.1 Foundations: Modern Python (3.10+)
+## C.1 Foundations: Modern Python (3.12)
 
-**Why this matters here:** Type hints everywhere, `async/await` on every DB and HTTP call, Pydantic models, `match` statements, dataclasses. If you can't read `async def get_user(db: AsyncSession) -> User | None:` instantly, start here.
+**Why this matters here:** Type hints everywhere, `async/await` on every DB and HTTP call, Pydantic models, `match` statements, enums, dataclasses. If you can't read `async def get_user(db: AsyncSession) -> User | None:` instantly, start here.
 
 ### Books
 
 1. **"Python Crash Course" — Eric Matthes** *(no Python at all? start here)*
-2. **"Fluent Python" (2nd ed) — Luciano Ramalho** ⭐ *the* book for going from "I write Python" to "I understand Python." Chapters on iterators, decorators, async, and typing are directly applicable.
-3. **"Robust Python" — Patrick Viafore** — type hints, protocols, structural patterns. Maps onto every `Mapped[...]` and `Annotated[...]` in this repo.
+2. **"Fluent Python" (2nd ed) — Luciano Ramalho** ⭐ *the* book for going from "I write Python" to "I understand Python." Iterators, decorators, async, and typing are directly applicable.
+3. **"Robust Python" — Patrick Viafore** — type hints, protocols, structural patterns. Maps onto every `Mapped[...]`, `Annotated[...]`, and the `LLMClient` protocol in `llm_extractor/`.
 4. **"Python Concurrency with asyncio" — Matthew Fowler** — once you've seen `async`, this is where you understand it.
 
 ### Video creators (search by name on YouTube)
@@ -424,7 +442,7 @@ Each section has:
 
 ### Official docs (treat as a textbook)
 
-- **fastapi.tiangolo.com** — the official tutorial is exceptional. Read "Tutorial - User Guide" cover to cover, then "Advanced User Guide."
+- **fastapi.tiangolo.com** — the official tutorial is exceptional. Read "Tutorial - User Guide" cover to cover, then "Advanced User Guide" (esp. dependencies, `UploadFile` for the multipart chat-image/PDF endpoints).
 
 ### Books
 
@@ -433,27 +451,27 @@ Each section has:
 
 ### Videos
 
-- **ArjanCodes** — multiple FastAPI architecture videos. Good for "how do I structure a real app."
+- **ArjanCodes** — multiple FastAPI architecture videos.
 - **Tiangolo's own talks** (search "Sebastián Ramírez FastAPI") — design rationale from the author.
-- **TestDriven.io** — paid, but their FastAPI + async + Postgres course is the closest thing to "build this exact stack" in tutorial form.
+- **TestDriven.io** — paid, but their FastAPI + async + Postgres course is the closest thing to "build this exact stack."
 
 ---
 
 ## C.3 Databases: PostgreSQL + SQL
 
-**Why this matters here:** Postgres-only project. UUIDs, JSONB, partial indexes, CHECK constraints, FKs with `ON DELETE` semantics, composite indexes. See `migrations/versions/0006_phase5a_users_multitenant.py` for a tour.
+**Why this matters here:** Postgres-only project. UUIDs, JSONB, partial indexes, CHECK constraints, FKs with `ON DELETE` semantics (the `envelope_id … ON DELETE SET NULL` unlink-not-delete is a deliberate design choice), composite indexes, materialized views. See `migrations/versions/0006_…` and `0017_…` for tours.
 
 ### Books
 
 1. **"Learning SQL" (3rd ed) — Alan Beaulieu** *(ground floor)*
 2. **"PostgreSQL: Up and Running" — Regina Obe & Leo Hsu** — Postgres-specific features. JSONB chapter is gold.
-3. **"The Art of PostgreSQL" — Dimitri Fontaine** ⭐ Postgres as a *design tool*, not just a store. Window functions, CTEs, `LATERAL`, advanced JSONB. Read this when you stop being scared of writing SQL by hand.
+3. **"The Art of PostgreSQL" — Dimitri Fontaine** ⭐ Postgres as a *design tool*. Window functions, CTEs, `LATERAL`, advanced JSONB. Read this when you stop being scared of writing SQL by hand — `compute_envelope_summary`'s single grouped query is exactly this skill.
 4. **"Database Internals" — Alex Petrov** *(pro level)* — how the engine actually works. Read once you've hit a real performance problem.
 
 ### Videos
 
-- **Hussein Nasser** (YouTube) — networking and database fundamentals. Pragmatic and excellent on indexes and replication.
-- **PGCon / PostgresOpen recorded talks** — the conferences are on YouTube. "Postgres Indexing Internals" by Bruce Momjian is a classic.
+- **Hussein Nasser** (YouTube) — pragmatic, excellent on indexes and replication.
+- **PGCon / PostgresOpen recorded talks** — "Postgres Indexing Internals" by Bruce Momjian is a classic.
 
 ---
 
@@ -463,27 +481,27 @@ Each section has:
 
 ### Documentation (primary source)
 
-- **docs.sqlalchemy.org** — the "Unified Tutorial" for 2.0 is the right starting point. The legacy 1.x tutorial is *still* indexed — make sure the URL says `2.0/` or `latest/`.
-- **alembic.sqlalchemy.org** — official Alembic tutorial.
+- **docs.sqlalchemy.org** — the "Unified Tutorial" for 2.0. Make sure the URL says `2.0/` or `latest/`.
+- **alembic.sqlalchemy.org** — official Alembic tutorial (note: this project hand-writes every migration; never autogenerate).
 
 ### Books / longform
 
-1. **"Essential SQLAlchemy" (2nd ed) — Jason Myers & Rick Copeland** — pre-2.0 syntax but the conceptual model is unchanged.
-2. **"Architecture Patterns with Python" — Harry Percival & Bob Gregory** ⭐ uses SQLAlchemy as the persistence layer of a clean-architecture app. The repository + unit-of-work patterns illuminate why this codebase keeps services and routers thin.
+1. **"Essential SQLAlchemy" (2nd ed) — Jason Myers & Rick Copeland** — pre-2.0 syntax, but the conceptual model is unchanged.
+2. **"Architecture Patterns with Python" — Harry Percival & Bob Gregory** ⭐ uses SQLAlchemy in a clean-architecture app. The repository + unit-of-work patterns illuminate why this codebase keeps services and routers thin.
 
 ### Videos
 
-- **Mike Bayer's PyCon talks** (the SQLAlchemy maintainer) — search "Mike Bayer SQLAlchemy 2.0." Authoritative.
+- **Mike Bayer's PyCon talks** (the SQLAlchemy maintainer) — search "Mike Bayer SQLAlchemy 2.0."
 
 ---
 
 ## C.5 Validation: Pydantic v2
 
-**Why this matters here:** Every request/response in `api/schemas/` and the LLM contract in `ExtractionResult`. v2 is a near-rewrite of v1 — `model_validate`, `model_config`, `Field(...)`, `Annotated[...]`, validators. Old StackOverflow answers will mislead you.
+**Why this matters here:** Every request/response in `api/schemas/` and the LLM contract in `ExtractionResult`. v2 is a near-rewrite of v1 — `model_validate`, `model_config`, `Field(...)`, `Annotated[...]`, validators, discriminated unions (the insights `InsightContent`). Old StackOverflow answers will mislead you.
 
 ### Resources
 
-- **docs.pydantic.dev** — official migration guide v1→v2 is essential if you've used v1 before.
+- **docs.pydantic.dev** — official migration guide v1→v2 is essential if you've used v1.
 - **Tiangolo + Pydantic talks on YouTube** — short, focused.
 
 No book yet matches v2 in depth — the docs are the primary source.
@@ -492,147 +510,122 @@ No book yet matches v2 in depth — the docs are the primary source.
 
 ## C.6 Async Python and Concurrency
 
-**Why this matters here:** Every IO operation in this app is `async`. The bot's `typing_action()` background task, the query LLM loop, asyncpg connections, Redis. Mistakes here look like flaky tests (see B.6) or 30-second hangs.
+**Why this matters here:** Every IO operation is `async` — asyncpg, Redis, the Anthropic SDK calls, the query LLM loop. Mistakes here look like flaky tests (B.8) or 30-second hangs.
 
 ### Resources
 
 1. **"Python Concurrency with asyncio" — Matthew Fowler** ⭐ best single resource.
 2. **"Using Asyncio in Python" — Caleb Hattingh** — short, opinionated, excellent.
 3. **mCoding YouTube** — "Asyncio is hard but really good" and similar.
-4. **Łukasz Langa's PyCon keynotes** on asyncio internals (search his name).
+4. **Łukasz Langa's PyCon keynotes** on asyncio internals.
 
 ---
 
 ## C.7 Caching, Queues, Sessions: Redis
 
-**Why this matters here:** Every line in `bot/redis_keys.py` and `app/queries/history.py`. Pairing codes, pending proposals, rate limits, query history all live in Redis.
+**Why this matters here:** Every line in `bot/redis_keys.py` and `app/queries/history.py`. Device-codes, pending proposals, clarification state, account-creation flows, rate limits, query history all live in Redis. Redis is the source of truth for durable chat state.
 
 ### Books
 
 1. **"Redis in Action" — Josiah Carlson** — older but the data-model chapters age well.
-2. **"Redis: The Definitive Guide" — by O'Reilly** — newer reference.
+2. **"Redis: The Definitive Guide"** (O'Reilly) — newer reference.
 
 ### Videos
 
 - **Hussein Nasser's Redis playlist.**
-- **Redis University** (free courses at university.redis.com) — official, well-paced.
+- **Redis University** (free at university.redis.com) — official, well-paced.
 
 ---
 
 ## C.8 LLMs and Tool-Use: Anthropic Claude API
 
-**Why this matters here:** `api/services/llm_extractor/`, `app/queries/llm_client.py`, the system prompts, the cache-control blocks, the tool-use loop. This is the *core differentiator* of the project.
+**Why this matters here:** `api/services/llm_extractor/` (text + `vision.py` + `document.py`), `app/queries/llm_client.py`, the system prompts, the cache-control blocks, the tool-use loop. This is the *core differentiator* — and the discipline (LLM extracts/explains, never decides/calculates) is what makes the ledger trustworthy.
 
-### Primary sources (treat as required reading)
+### Primary sources (required reading)
 
 - **docs.anthropic.com** — read in this order:
   1. "Messages API" reference
   2. "Tool use" guide (the entire flow this project implements)
-  3. "Prompt caching" guide (`cache_control={"type":"ephemeral"}` is how Phase 5b/6a survives token costs)
-  4. "Vision" and "Extended thinking" — useful background even if unused here
-- **Anthropic Cookbook** (github.com/anthropics/anthropic-cookbook) — runnable notebooks for tool-use, structured output, RAG.
+  3. "Prompt caching" guide (`cache_control={"type":"ephemeral"}` is how this survives token costs)
+  4. "Vision" and "PDF support" — now *used*, not just background: the receipt + loan-contract paths.
+- **Anthropic Cookbook** (github.com/anthropics/anthropic-cookbook) — runnable notebooks for tool-use, structured output, vision.
+- **The `claude-api` skill** in this environment — for building/optimizing Claude API code and migrating between model versions.
 
 ### Books and longform
 
-LLM-engineering books age in months, not years. Treat any book older than ~12 months as stale on tool-use, but durable on principles.
+LLM-engineering books age in months. Treat any book older than ~12 months as stale on tool-use, durable on principles.
 
-1. **"Building LLM Apps" — Valentina Alto** — broad introduction.
-2. **"AI Engineering" — Chip Huyen** — production patterns. The cost/eval/observability chapters apply directly to this codebase's `llm_extractions` and `llm_query_dispatches` tables.
-3. **"Designing Machine Learning Systems" — Chip Huyen** *(adjacent but useful — production ML thinking)*.
+1. **"AI Engineering" — Chip Huyen** ⭐ production patterns. The cost/eval/observability chapters map directly onto `llm_extractions` and `llm_query_dispatches`.
+2. **"Building LLM Apps" — Valentina Alto** — broad introduction.
+3. **"Designing Machine Learning Systems" — Chip Huyen** *(adjacent, useful production-ML thinking)*.
 
 ### Videos
 
-- **Anthropic's official YouTube channel** — short, frequent, and matched to current API features.
+- **Anthropic's official YouTube channel** — short, frequent, matched to current API features.
 - **Hamel Husain** (blog + talks) — practical eval and prompt engineering.
-- **Jason Liu** (Instructor library author) — structured output. The patterns he teaches are exactly what `ExtractionResult` does.
+- **Jason Liu** (Instructor author) — structured output; exactly what `ExtractionResult` does.
 
 ---
 
 ## C.9 Telegram Bots: aiogram v3
 
-**Why this matters here:** The entire `bot/` package. v3 is a rewrite from v2 — old tutorials and StackOverflow answers reference incompatible APIs.
+**Why this matters here:** The `bot/` package — and remember it's *shared* with the native chat via `process_message()`. v3 is a rewrite from v2; old tutorials reference incompatible APIs.
 
 ### Primary sources
 
 - **docs.aiogram.dev** — official docs. The "Migration FAQ" v2→v3 is critical context.
-- **core.telegram.org/bots** — Telegram's own bot platform docs. You need to understand webhooks, inline keyboards, callback data, and message limits (4096 chars — see `bot/delivery_send.py`).
+- **core.telegram.org/bots** — webhooks, inline keyboards, callback data, the 4096-char limit (`bot/delivery_send.py`).
 
 ### Videos
 
-- aiogram doesn't have a flagship YouTube creator. Search the official docs first; community videos are often v2.
+- aiogram has no flagship YouTube creator; trust the official docs first (community videos are often v2).
 
 ---
 
-## C.9b SPA: React 18 + Vite + TanStack Query + Tailwind
+## C.10 Native App: Expo + React Native + TanStack Query (the frontend you actually maintain)
 
-**Why this matters here:** The entire `web/` package — Phase 6d onboarding forms and Phase 6e Centro Financiero. TypeScript-strict, function components only, Tailwind for styling, Zod for wire validation, TanStack Query for server state, react-hook-form for the create flows, react-day-picker for the bills calendar, Recharts for the dashboard.
-
-### Primary sources
-
-- **react.dev** — the new React docs (post-2023 rewrite). The "Learn React" path is excellent; the "Reference" path is what you'll hit daily.
-- **vite.dev** — config + build pipeline. Read the chunking + lazy import sections for context on why the SPA's bundle stays under 200KB.
-- **tanstack.com/query/v5** — official TanStack Query docs. The "Important Defaults" page is mandatory.
-- **react-hook-form.com** + **zod.dev** — both well-documented; the integration via `@hookform/resolvers/zod` is the pattern the project standardizes on.
-- **tailwindcss.com** — utility-first; the docs are searchable and most class names are intuitive.
-
-### Books
-
-1. **"Learning React" (3rd ed) — Alex Banks & Eve Porcello** — modern hooks-first React.
-2. **"React Key Concepts" — Maximilian Schwarzmüller** — denser; covers Suspense, transitions, and the new compiler context.
-3. **"Effective TypeScript" — Dan Vanderkam** — the TS rules the SPA enforces (strict null checks, discriminated unions, branded types). Chapters 4 and 6 are gold.
-
-### Videos
-
-- **Theo (t3.gg) on YouTube** — pragmatic React + TypeScript + Tailwind explainers.
-- **Jack Herrington** — patterns videos. His Suspense + lazy-loading walkthroughs map directly onto the `<Suspense>` blocks in `web/src/App.tsx`.
-- **TanStack channel on YouTube** — short videos by Tanner Linsley on Query semantics.
-
-### Things to *not* learn yet (for the SPA)
-
-- **Next.js / Remix** — different runtime + routing model. The SPA is plain Vite SPA + React Router; learning Next would conflate concerns.
-- **CSS-in-JS (Emotion, styled-components)** — rejected; Tailwind is the standard.
-- **Redux** — rejected; TanStack Query owns server state, Zustand is allowed for lightweight client state but isn't used yet.
-
----
-
-## C.9c Native App: Expo + React Native (Phase 6f)
-
-**Why this matters here:** The entire `mobile/` package. Phase 6f makes the native iOS app the primary UI surface. Expo managed workflow means no native Xcode build steps until you need a custom native module (not planned until P8).
+**Why this matters here:** The entire `mobile/` package — the *only* structured UI surface. Expo managed workflow means no Xcode build steps until you need a custom native module (not planned until P8/EAS). The data-layer skills (TanStack Query, React Hook Form, Zod, strict TypeScript) are the durable core; they carried over from the retired SPA and are where most of your UI-bug time will go.
 
 ### Primary sources
 
-- **docs.expo.dev** — the canonical reference. Read "Get Started" → "Develop" → "Deploy." The "Managed workflow" path is what this project uses.
-- **reactnative.dev** — core React Native primitives (`View`, `Text`, `ScrollView`, `FlatList`, `Pressable`). Expo wraps but does not hide these.
-- **reactnavigation.org** — React Navigation 7 docs. The project uses `@react-navigation/bottom-tabs` + `@react-navigation/native-stack`.
-- **docs.expo.dev/versions/latest/sdk/secure-store** — `expo-secure-store` is how the JWT is stored. Read the async API.
-- **tanstack.com/query/v5** — same TanStack Query used in the SPA; the mental model transfers.
+- **docs.expo.dev** — the canonical reference. "Get Started" → "Develop" → "Deploy." The "Managed workflow" path is what this project uses.
+- **reactnative.dev** — core primitives (`View`, `Text`, `ScrollView`, `FlatList`, `Pressable`, `StyleSheet`). Expo wraps but does not hide these.
+- **reactnavigation.org** — React Navigation 7. The project uses `bottom-tabs` + `native-stack` (NOT Expo Router — don't conflate them).
+- **tanstack.com/query/v5** — the server-state model for every screen. The "Important Defaults" page is mandatory; `useInfiniteQuery` powers the cursor-paginated lists.
+- **react-hook-form.com** + **zod.dev** — form state + validation (the debt/create forms).
+- **docs.expo.dev/versions/latest/sdk/secure-store** — `expo-secure-store` holds the JWT; the API is async even for reads.
 
 ### Books
 
-There are no mature Expo SDK 54–specific books. Use the official docs as the textbook.
+There are no mature Expo SDK 54–specific books — the docs are the textbook.
 
-1. **"React Native in Action" — Nader Dabit** — foundational React Native concepts. Some APIs are dated; focus on the mental model chapters.
-2. **"Fullstack React Native" — Devin Abbott** — project-driven; builds several screens end-to-end.
+1. **"Learning React" (3rd ed) — Alex Banks & Eve Porcello** — hooks-first React; the mental model transfers to React Native.
+2. **"React Native in Action" — Nader Dabit** — foundational RN concepts; some APIs are dated, focus on the mental-model chapters.
+3. **"Effective TypeScript" — Dan Vanderkam** — strict null checks, discriminated unions, branded types. Chapters 4 and 6 are gold; the whole app is TS-strict.
 
 ### Videos
 
-- **Simon Grimm (galaxies.dev)** — the best Expo-specific YouTube channel. Covers navigation, auth patterns, and TanStack Query integration.
-- **Theo (t3.gg)** — covers React Native tooling decisions (managed vs bare, EAS Build); opinionated and current.
-- **Expo's official YouTube channel** — short feature walkthroughs by the Expo team.
+- **Simon Grimm (galaxies.dev)** — the best Expo-specific channel. Navigation, auth patterns, TanStack Query integration.
+- **Jack Herrington** — React/TS patterns; his Suspense + data-fetching videos transfer.
+- **Theo (t3.gg)** — RN tooling decisions (managed vs bare, EAS Build); opinionated and current.
+- **Expo's official YouTube channel** — short feature walkthroughs.
 
 ### Things specific to this project's stack
 
-- **`expo-secure-store`** replaces `localStorage` / cookies for the JWT. Always await it; it's async even for reads.
-- **`expo-linking`** handles the `ledgercr://` deep link scheme (B15). Register the scheme in `app.json` under `scheme`.
-- **`expo-image-picker`** is planned for B6 (receipt photo upload). Read the permissions model before touching it.
-- **Metro bundler** (not Vite). TypeScript config lives in `tsconfig.json` at `mobile/`; it extends Expo's base config.
-- **No Tailwind in the native app.** Use React Native `StyleSheet` objects or `StyleSheet.create`. The SPA's Tailwind knowledge does not transfer (though the design tokens should stay consistent).
+- **`expo-secure-store`** replaces `localStorage`/cookies for the JWT. Always await it.
+- **`expo-linking`** handles the `ledgercr://` deep link (registered in `app.json` under `scheme`).
+- **`expo-web-browser`** drives the Gmail OAuth connect (poll-based callback).
+- **`expo-image-picker`** (receipts) and **`expo-document-picker`** (loan PDFs) — read each permissions model before touching it.
+- **Metro bundler** (not Vite). `tsconfig.json` extends Expo's base config; `npx tsc --noEmit` is the only automated guard (no native CI yet).
+- **No Tailwind.** Styling is React Native `StyleSheet` + the tokens in `mobile/src/theme.ts`.
+
+> **Note on the retired SPA.** Phase 6e shipped a Vite + React web SPA under `web/`; it was deleted at 6f B16 (2026-06-01). The React/TanStack/Zod/RHF knowledge fully transfers to the native app, but **do not study Tailwind, Vite, PWA/Workbox, or React Router for this project** — none ship anymore. `git log -- web/` is the only place that code lives now.
 
 ---
 
-## C.10 Containers and Deployment
+## C.11 Containers and Deployment
 
-**Why this matters here:** `Dockerfile`, `Dockerfile.prod`, `docker-compose.yml`. Production target is a single container with Uvicorn + the bot in webhook mode.
+**Why this matters here:** `Dockerfile`, `Dockerfile.prod`, `docker-compose.yml`. Production target is Azure Container Apps; scheduled work runs as Container Apps Jobs (`workers/`).
 
 ### Resources
 
@@ -643,33 +636,36 @@ There are no mature Expo SDK 54–specific books. Use the official docs as the t
 
 ---
 
-## C.11 Testing: Pytest + pytest-asyncio
+## C.12 Testing: Pytest + pytest-asyncio
 
-**Why this matters here:** ~85 async test files (per-block focused tests live under `tests/test_phase_*.py`). The NullPool-engine-per-test pattern in `conftest.py` is the *only* way the suite stays stable.
+**Why this matters here:** ~109 async test files. The NullPool-engine-per-test pattern in `conftest.py` is the *only* way the suite stays stable. `scripts/test_phase_6f.sh` is the gate.
 
 ### Resources
 
 1. **"Python Testing with pytest" (2nd ed) — Brian Okken** ⭐ canonical.
-2. **Brian Okken's "Test & Code" podcast** — short episodes, applied.
-3. **pytest-asyncio docs** — read for the `mode=auto` and event-loop scoping rules used here.
+2. **Brian Okken's "Test & Code" podcast** — short, applied.
+3. **pytest-asyncio docs** — the `mode=auto` and event-loop scoping rules used here.
 
 ---
 
-## C.12 Software Architecture (the glue)
+## C.13 Software Architecture (the glue, and the end goal)
 
-**Why this matters here:** The "deterministic dispatcher + LLM extractor" split, the "data before AI" gating, the "single migration per change" rule — these are *architectural decisions*. Reading the books below will help you make analogous decisions for new features without breaking the project's principles.
+**Why this matters here:** The "deterministic dispatcher + LLM extractor" split, the "data before AI" gating, the "one pipeline / two channels" reuse, the `open_screen` escape hatch, the "single migration per change" rule — these are *architectural decisions* that protect the core thesis. The forthcoming P7 pushback engine (deterministic affordability math + LLM phrasing) is the next big test of this discipline. Reading the books below helps you make analogous decisions without breaking the project's principles.
 
 ### Books
 
-1. **"The Pragmatic Programmer" (20th anniv ed) — Hunt & Thomas** — universal.
-2. **"Architecture Patterns with Python" — Percival & Gregory** ⭐ already mentioned. The single most relevant book.
-3. **"Designing Data-Intensive Applications" — Martin Kleppmann** — durable, multi-year reference.
-4. **"A Philosophy of Software Design" — John Ousterhout** — short, sharp, opinionated. "Modules should be deep" is exactly the discipline this codebase tries to maintain.
-5. **"Refactoring" (2nd ed) — Martin Fowler** *(JavaScript edition, but principles apply).*
+1. **"The Pragmatic Programmer" (20th anniv ed) — Hunt & Thomas** — universal. (Already integrated into the project vault.)
+2. **"A Philosophy of Software Design" — John Ousterhout** ⭐ short, sharp. "Modules should be deep" is exactly the discipline the services layer tries to keep. (In the vault.)
+3. **"Architecture Patterns with Python" — Percival & Gregory** — the single most relevant book for this stack.
+4. **"Designing Data-Intensive Applications" — Martin Kleppmann** — durable multi-year reference; the lens for P8/P9 multi-tenancy + isolation. (In the vault.)
+5. **"Clean Code" — Robert C. Martin** — naming/function discipline. (In the vault.)
+6. **"Refactoring" (2nd ed) — Martin Fowler** *(JS edition, principles apply)*.
+
+> The project vault (`~/Finance_project/30_Projects/Finance-Agent/`) already integrates source notes for several of these — read `04_Architecture.md` and the `05_Decisions/` notes alongside them.
 
 ---
 
-## C.13 Recommended order if you're starting from scratch
+## C.14 Recommended order if you're starting from scratch
 
 If you can read Python loops and functions but everything in this repo looks like static, work in this order:
 
@@ -680,47 +676,46 @@ If you can read Python loops and functions but everything in this repo looks lik
 | 3–4 | FastAPI tutorial | tiangolo.com/tutorial — build their toy app from scratch |
 | 4–5 | SQLAlchemy 2.0 | Official 2.0 Unified Tutorial + read 5 models in `api/models/` |
 | 5–6 | Async Python | "Python Concurrency with asyncio" |
-| 6 | Pydantic v2 | Official docs migration guide |
+| 6 | Pydantic v2 | Official docs migration guide + read `ExtractionResult` |
 | 7 | Pytest async | "Python Testing with pytest" + read `tests/conftest.py` |
-| 7–8 | Anthropic API + tool use | docs.anthropic.com + Cookbook notebooks |
-| 8 | aiogram v3 | Official docs + read `bot/handlers.py` and `bot/pipeline.py` |
-| 9 | Architecture | "Architecture Patterns with Python" |
-| 9–10 | React + TanStack Query | react.dev + TanStack Query docs + read `web/src/routes/Dashboard.tsx` |
-| 10–11 | React Native + Expo | docs.expo.dev + Simon Grimm's channel + read `mobile/src/screens/Login.tsx` and `mobile/src/navigation/` |
-| 11+ | Postgres mastery | "The Art of PostgreSQL" + run `EXPLAIN ANALYZE` on this app's slow queries |
+| 7–8 | Anthropic API + tool use | docs.anthropic.com + Cookbook + read `llm_extractor/` and `app/queries/` |
+| 8 | aiogram v3 + the shared pipeline | Official docs + read `bot/handlers.py`, `bot/pipeline.py`, `bot/commit.py` |
+| 9 | Architecture | "Architecture Patterns with Python" + the vault `04_Architecture.md` |
+| 9–10 | React + TanStack Query mental model | react.dev + TanStack Query docs |
+| 10–11 | React Native + Expo | docs.expo.dev + Simon Grimm + read `mobile/src/screens/Login.tsx`, `mobile/src/navigation/`, one full screen+API pair |
+| 11+ | Postgres mastery + the pushback engine | "The Art of PostgreSQL" + `EXPLAIN ANALYZE` on slow queries; study `CLAUDE.md` → "The Pushback Engine" for P7 |
 
-After week 4 you can add a CRUD endpoint solo. After week 8, you can extend the bot. After week 10, you can ship a native app screen end-to-end (API helper → screen → navigation registration → test on device). Beyond that, you can confidently rework the architecture.
-
----
-
-## C.14 What to skip (for now)
-
-These are dead ends for *this* project. Save them for later or never:
-
-- **Django, Flask tutorials** — wrong framework. Skills don't transfer cleanly to FastAPI's dependency-injection model.
-- **SQLAlchemy 1.x material** — the syntax is incompatible. Verify everything you read targets 2.0+.
-- **LangChain / LlamaIndex courses** — this project deliberately uses the raw Anthropic SDK. Frameworks would hide the cache-control discipline that keeps token cost under control.
-- **Vector databases / RAG** — explicitly excluded by `CLAUDE.md` ("What NOT to Build").
-- **Self-hosted LLM tutorials** — same reason.
-- **WhatsApp Baileys tutorials** — banned by Meta; this project uses Telegram + (eventually) the official WhatsApp Cloud API.
-- **Expo EAS Build / TestFlight** — not needed until P8. The Phase 6f dev distribution is Expo Go sideloaded onto the operator's iPhone.
-- **React Native Web** — not used. The SPA is a separate Vite + React project; they don't share components.
-- **Expo Router** — this project uses React Navigation (not Expo Router's file-based routing). Don't conflate the two.
+After week 4 you can add a CRUD endpoint solo. After week 8 you can extend the chat (a query tool *or* a conversational-creation flow). After week 11 you can ship a native screen end-to-end (API helper → screen → navigation → on-device test). Beyond that, you're ready to take on the P7 pushback engine and P8 multi-tenancy — the two features that turn this from a personal tool into a product.
 
 ---
 
-## C.15 Two-hour weekly maintenance routine
+## C.15 What to skip (for now)
+
+Dead ends for *this* project. Save them for later or never:
+
+- **Django, Flask tutorials** — wrong framework; skills don't transfer to FastAPI's DI model.
+- **SQLAlchemy 1.x material** — incompatible syntax. Verify everything targets 2.0+.
+- **LangChain / LlamaIndex courses** — this project uses the raw Anthropic SDK deliberately; frameworks hide the cache-control discipline.
+- **Vector databases / RAG / fine-tuning** — explicitly excluded by `CLAUDE.md` ("What NOT to Build").
+- **Self-hosted LLM tutorials** — same reason; API LLM until ~10k+ DAU.
+- **WhatsApp Baileys tutorials** — banned by Meta; Telegram now, official WhatsApp Cloud API only later.
+- **The retired web stack — Vite, Tailwind, React Router, PWA/Workbox, Static Web Apps.** The SPA is deleted (6f B16). Learn the React *data layer* (TanStack Query, RHF, Zod, TS) for the native app, not the web shell.
+- **Expo Router** — this project uses React Navigation, not file-based routing.
+- **Expo EAS Build / TestFlight / Android** — not needed until P8. Dev distribution is Expo Go sideloaded onto the operator's iPhone; iOS-only for now.
+
+---
+
+## C.16 Two-hour weekly maintenance routine
 
 Once you're up to speed, this keeps the project healthy:
 
 1. `git log --since="1 week"` — review what changed.
-2. `pytest -q` — confirm the suite is green. Use the focused phase slices (e.g. the B5/B6 verification command in `docs/phase-6e-decisions.md`) when you only changed one phase's code.
-3. Run `scripts/phase5b_smoke.sh`, `docs/curl/phase-5d.sh`, and `scripts/test_phase_6d.sh` against a clean DB.
-4. `npm --prefix web run lint && npm --prefix web run build` — SPA is frozen; `index` chunk should stay ~122 KB gzip (workbox-window). Any jump means an accidental import crept into the SPA.
-5. For the native app: `cd mobile && npx expo-doctor` — checks that installed deps match the SDK 54 compatible range. Run before upgrading any `mobile/` dependency.
-6. Skim Anthropic's changelog (docs.anthropic.com → release notes) — model deprecations and new tool-use features land regularly.
-7. Skim aiogram + Expo SDK GitHub releases for breaking changes. Expo SDK bumps require operator iPhone's Expo Go to be updated first.
-7. Review the **Technical Debt** section of `CLAUDE.md`. Pick one item if you have spare cycles.
+2. `bash scripts/test_phase_6f.sh` — the gate (mobile `tsc --noEmit` + focused backend slices + regression). Use narrower `pytest -k` slices when you only touched one area.
+3. `cd mobile && npx expo-doctor` — checks installed deps match the SDK 54 range. Run before upgrading any `mobile/` dependency. (Expo SDK bumps require the operator's iPhone Expo Go to update first.)
+4. On-device sanity: capture an expense in the chat, assign it to a Sobre, check the Dashboard bar drained correctly. Several post-6f features (Native Gmail, Envelopes, the bulk B10–B14 commit) still list *operator on-device sign-off pending* in `CLAUDE.md` — that's the gap automated tests can't close.
+5. Skim Anthropic's changelog (docs.anthropic.com → release notes) — model deprecations and new tool-use/vision features land regularly.
+6. Skim aiogram + Expo SDK GitHub releases for breaking changes.
+7. Review the **Technical Debt** section of `CLAUDE.md`. Pick one item if you have spare cycles — the BCCR FX API (replace the ₡500 placeholder) and the Gmail OAuth "Testing → Production" publish are the two with real user impact.
 
 ---
 
@@ -728,4 +723,4 @@ Once you're up to speed, this keeps the project healthy:
 
 The codebase rewards readers who follow the phase order. If something doesn't make sense, the answer is almost always in the migration that introduced the table, the corresponding `docs/phase-*-decisions.md`, or the phase section of `CLAUDE.md`. When in doubt, `git log -p <file>` tells you why.
 
-The decisions docs (`docs/phase-Nx-decisions.md`) are *load-bearing*. They're the canonical contract for everything in that phase — including what we explicitly chose NOT to do. If you're about to "improve" something that feels weird, check the decisions doc first.
+The decisions docs (`docs/phase-Nx-decisions.md`) and the vault `05_Decisions/` notes are *load-bearing* — the canonical contract for everything in that phase, including what was explicitly chosen *not* to do (no web client, no LLM in the write path, no normalization maps, deterministic pushback). If you're about to "improve" something that feels weird, check the decisions doc first. The weirdness is usually protecting the core thesis: **if the ledger is wrong, the agent is useless.**

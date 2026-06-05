@@ -127,7 +127,7 @@ finance-agent/
 ├── workers/                    # gmail_daily.py, insights_nightly.py, insights_lifecycle.py
 │                               # (web/ Phase 6d/6e SPA — DELETED at 6f B16, 2026-06-01)
 ├── mobile/                     # Phase 6f native iOS app (Expo, React Native) — created at 6f B1
-├── migrations/versions/        # Hand-written Alembic (0001 → 0021)
+├── migrations/versions/        # Hand-written Alembic (0001 → 0022)
 ├── tests/                      # pytest suite
 ├── scripts/                    # Phase smoke scripts (phase5a/5b/6b/6c/etc.)
 ├── docs/phase-*/               # Per-phase operational docs (privacy, deployment, etc.)
@@ -579,6 +579,12 @@ App Store Expo Go release.
 - New router `api/routers/chat.py`: `POST /chat/message` (calls
   `bot/pipeline.py::process_message()` directly, returns serialized
   `BotReply`). — B2
+- `POST /chat/reset` ("Nueva conversación" in the app) — clears all durable
+  conversational state for the caller: pending write, clarification, the
+  account-creation flow, the memory-edit flow, and the LLM query history
+  (mirrors the bot's `/cancel` + `/clear`). The native Chat screen clears its
+  local message list and calls this, so a stuck flow (e.g. a stale
+  account-creation prompt) can't leak across conversations.
 - `POST /chat/image` (multipart) routes through
   `api/services/llm_extractor/vision.py` (Haiku → Sonnet retry on
   confidence < 0.65). Same `ExtractionResult` the text path produces;
@@ -985,6 +991,82 @@ on-device sign-off pending**. No schema change (`alembic` still `0021`).
 
 ---
 
+## Envelope budgeting ("Sobres", post-6f) — spending caps
+
+The interactive home-tab feature: user-named monthly **spending-cap** envelopes,
+each classed `needs | wants | savings | investing`. The bar shows **money left**
+— it starts full (100% of the limit) and **drains** with each expense, going
+**red in the last 5%** (and once over the limit). Spend is **computed live** from transactions (no
+stored running balance, so a bar can never drift from the ledger); the month
+window resets in the user's timezone. An expense is tagged to at most one
+envelope via `transactions.envelope_id`. Sub-plan E1–E5; backend + mobile
+code-complete, **operator on-device sign-off pending**. Decision note:
+`05_Decisions/Decision - Envelope Budgeting - Spending Caps.md`.
+
+- **Schema (migration 0022):** `envelopes` table (`id`, `user_id` FK CASCADE,
+  `name`, `envelope_class` [CHECK in needs/wants/savings/investing],
+  `limit_amount` NUMERIC(12,2) [CHECK > 0], `currency` default CRC, `period`
+  default monthly, `is_active`, `archived`, timestamps; partial index
+  `ix_envelopes_user_active WHERE archived=false`). `transactions.envelope_id`
+  UUID nullable FK → `envelopes.id` `ON DELETE SET NULL` (deleting an envelope
+  unlinks, never deletes the transaction) + partial index
+  `ix_transactions_envelope WHERE envelope_id IS NOT NULL`.
+- **Backend:** `api/models/envelope.py`; `api/schemas/envelopes.py`
+  (`EnvelopeUpdate` is `extra="forbid"` — `currency`/`period` immutable
+  post-create); `api/services/envelopes.py::compute_envelope_summary` (one
+  grouped query: confirmed, non-archived, non-transfer, `amount < 0` rows in the
+  current month, grouped by `envelope_id` **+ currency**; per-class subtotals; a
+  best-effort `monthly_income` line from active recurring incomes).
+  **Cross-currency spend is converted** via `api/services/fx.py::convert` — a
+  US$ expense tagged to a CRC envelope counts at the fixed reference rate
+  (`FALLBACK_USD_TO_CRC = ₡500/US$`); per-envelope figures stay in the
+  envelope's currency, class subtotals + `total_limit` in the user's currency.
+  **₡500 is a placeholder pending the BCCR API (tech-debt below).** Router
+  `api/routers/envelopes.py` — `POST/GET /envelopes`, `GET /envelopes/summary`
+  (declared **before** `/{id}`), `GET/PATCH/DELETE /envelopes/{id}` (DELETE =
+  soft archive by default; `?hard=true` permanently removes the row — the
+  `transactions.envelope_id` FK is `ON DELETE SET NULL`, so tagged transactions
+  are unlinked, never deleted). `PATCH /transactions/{id}` now also accepts `envelope_id`
+  (validated: the envelope must belong to the caller and be non-archived, else
+  400 "Sobre inválido."; the existing shadow/transfer/archived 409s still
+  apply). `TransactionResponse` carries `envelope_id`.
+- **Capture flow (chat):** after an **expense** commits, `process_message()`
+  returns an `open_screen` hint `screen="assign_envelope"` carrying the new
+  `transaction_id`. The native chat renders an in-chat **"Asignar a un sobre"**
+  chip → a picker sheet → `PATCH /transactions/{id}{envelope_id}`. Income never
+  gets the hint (envelopes are spending caps). Telegram ignores `open_screen`
+  (envelopes are native-only, same pattern as the debt form). **Account is
+  immutable post-create**, so an explicit at-capture account picker is NOT part
+  of this slice — it's a separate pre-commit concern (see parity note below).
+- **Mobile:** `mobile/src/api/envelopes.ts` (CRUD + `/summary` +
+  `assignTransactionEnvelope` + `archiveEnvelope`/`deleteEnvelope`);
+  `api/transactions.ts::fetchMonthExpenses` (current-month confirmed expenses
+  for the bulk-assign view); `lib/format.ts` (shared `formatMoney`);
+  `components/EnvelopePickerModal.tsx` (reused by Chat + the edit modal),
+  `components/EnvelopeEditModal.tsx` (create/edit + **Archivar** soft +
+  **Eliminar** hard-delete), `components/EnvelopeDetailModal.tsx` (tap an
+  envelope → spend bar + this month's expenses with per-row assign toggles +
+  "Editar"), `components/SobresSection.tsx` (home-tab section: per-class
+  roll-ups + per-envelope money-left bars that drain from full and go red in
+  the last 5%, "+ Nuevo", tap-to-detail). The bar direction (drain vs fill) +
+  the 5% red threshold live in `api/envelopes.ts::envelopeProgress` (shared by
+  the section + detail). The create/edit sheet carries a voseo help text under
+  the limit field explaining the drain model. Wired into `screens/Dashboard.tsx`;
+  `components/TransactionEditModal.tsx` gained a "Sobre" field (expenses only).
+- **Verification:** `tests/test_envelopes.py` (CRUD, hard-delete unlinks
+  transactions, `/summary` spend math + exclusions, over-limit + per-class
+  subtotals, transaction envelope_id assignment) +
+  `tests/test_phase_6f_chat_assign_envelope.py` (post-commit expense hint
+  present / income hint absent) — both in `scripts/test_phase_6f.sh`. Full gate
+  green: mobile `tsc` clean, 118 focused backend tests + 27 regression.
+  `alembic current` → `0022 (head)`.
+- **Sharing an envelope between users is deferred to P8** (multi-tenant
+  membership work) — vault `Decision - Shared Household Envelopes (Deferred
+  P8)`. An at-capture *account* picker is likewise deferred (account is
+  immutable post-create; it's a pre-commit proposal change).
+
+---
+
 ## Closed phases — hard rules to preserve
 
 These are extracted from the closed-phase notes in `11_Phases/`. **Do not relax without an explicit decision in `05_Decisions/`.**
@@ -1226,6 +1308,8 @@ iPhone + Expo flow end-to-end.
 - **Native Gmail connect is poll-based (no `ledgercr://` callback).** The OAuth callback redirects to a static success page, so the app opens the consent URL in a browser and then polls `GET /gmail/scan/status` for `connected`. Cleanup target: redirect the callback to `ledgercr://gmail-connected` so `expo-web-browser`'s auth session auto-closes — deferred until the universal-link/deep-link hostname work (B15-adjacent / P8).
 
 - **Secret store: production is enforced to Key Vault (resolved 2026-06-05, commit `fe8db18`).** A `Settings` validator (`api/config.py::_enforce_prod_secret_store`) refuses to boot when `ENVIRONMENT=production` and `SECRET_STORE_BACKEND != azure_kv` (or `AZURE_KEY_VAULT_URL` unset), so a misconfigured prod deploy can't silently keep Gmail OAuth refresh tokens in `env`/`file` (plaintext / process env / ephemeral disk). The DB never stores the token — only the `gmail-refresh-{user_id}` Key Vault reference. `env`/`file` remain dev-only. Decision note: vault `Decision - Secrets in Key Vault (Prod-Enforced)`.
+
+- **FX rate is a hardcoded ₡500/US$ placeholder — wire the BCCR API.** `api/services/fx.py::convert` (used by envelope spend to count a USD expense against a CRC envelope) uses `FALLBACK_USD_TO_CRC = Decimal("500")`, a round placeholder, NOT a market rate. Cleanup target: a small daily worker that pulls the Banco Central de Costa Rica "Indicadores Económicos" SOAP service (`GetIndicadoresEconomicos`; indicador 317 = compra, 318 = venta), persists the rate into the existing `currency_rates` table (`base_currency`/`quote_currency`/`rate`/`as_of`, migration 0017 — already defined, currently unused), and has `convert` read the latest row (falling back to the constant when the table is empty/stale). Until then all CRC↔USD conversion in the app is at the fixed 500 rate. The `currency_rates` table has existed since Phase 6e but nothing reads or writes it yet.
 
 ---
 

@@ -23,6 +23,7 @@ from .routers import (
     custom_events,
     dashboard,
     debts,
+    envelopes,
     gmail,
     goals,
     insights,
@@ -96,6 +97,7 @@ app.include_router(categories.router)
 app.include_router(dashboard.router)
 app.include_router(reports.router)
 app.include_router(goals.router)
+app.include_router(envelopes.router)
 app.include_router(insights.router)
 app.include_router(recurring_bills.router)
 app.include_router(bill_occurrences.router)

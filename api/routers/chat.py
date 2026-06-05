@@ -34,7 +34,12 @@ from ..schemas.chat import (
     ChatUrlButton,
 )
 
+from app.queries.history import clear_history
+from bot.account_creation import clear_account_creation
 from bot.app import get_llm_client
+from bot.clarification import clear_clarification
+from bot.pending import clear_pending, load_pending
+from bot.pending_db import resolve_from_pending
 from bot.pipeline import process_message
 
 
@@ -83,6 +88,38 @@ async def post_chat_message(
         llm_model=settings.llm_extraction_model,
     )
     return _build_response(reply)
+
+
+@router.post("/reset")
+async def reset_chat(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> dict:
+    """Start a new conversation — clear all durable conversational state for the
+    caller: pending write, clarification, the account-creation flow, the
+    memory-edit flow, and the LLM query history. Mirrors the bot's `/cancel`
+    (write/flow state) + `/clear` (query history). The visible message list is
+    client-local; the native app clears it and calls this to reset the server
+    side, so a stuck flow (e.g. a stale account prompt) can't leak across.
+    """
+    redis = get_redis()
+    existing = await load_pending(user_id=user.id, redis=redis)
+    if existing is not None:
+        # Close the Phase 5d audit row before dropping the Redis key.
+        await resolve_from_pending(
+            session=db, pending=existing, resolution="cancelled"
+        )
+        await db.commit()
+    await clear_pending(user_id=user.id, redis=redis)
+    await clear_clarification(user_id=user.id, redis=redis)
+    await clear_account_creation(user_id=user.id, redis=redis)
+    # Imported lazily, matching the bot's /cancel handler (avoids a heavy import
+    # at module load for a rarely-hit path).
+    from bot.memory_handlers import clear_memory_edit_state
+
+    await clear_memory_edit_state(user_id=user.id, redis=redis)
+    await clear_history(user.id, redis=redis)
+    return {"reset": True}
 
 
 @router.post("/image", response_model=ChatImageResponse)

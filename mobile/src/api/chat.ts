@@ -27,9 +27,21 @@ export interface DebtPrefill {
   currency: string;
 }
 
+/**
+ * Envelope budgeting (Sobres) — emitted after an EXPENSE commits
+ * (`screen: "assign_envelope"`). The chat offers an in-chat "Asignar a un
+ * sobre" affordance for the just-created transaction; no navigation.
+ */
+export interface AssignEnvelopePrefill {
+  transaction_id: string;
+  amount: string;
+  currency: string;
+  merchant: string | null;
+}
+
 export interface ChatOpenScreen {
   screen: string;
-  prefill: DebtPrefill;
+  prefill: DebtPrefill | AssignEnvelopePrefill;
 }
 
 export interface ChatMessageResponse {
@@ -42,6 +54,15 @@ export interface ChatMessageResponse {
 export async function postChatMessage(text: string): Promise<ChatMessageResponse> {
   const { data } = await api.post<ChatMessageResponse>("/chat/message", { text });
   return data;
+}
+
+/**
+ * Start a new conversation — clears durable server-side conversational state
+ * (pending write, clarification, account-creation flow, memory-edit flow, and
+ * the LLM query history). The visible message list is cleared client-side.
+ */
+export async function resetChat(): Promise<void> {
+  await api.post("/chat/reset");
 }
 
 export async function postChatImage(

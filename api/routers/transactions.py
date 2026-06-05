@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..dependencies import current_user, current_user_via_token
 from ..models.account import Account
+from ..models.envelope import Envelope
 from ..models.transaction import Transaction
 from ..models.user import User
 from ..models.user_category import UserCategory
@@ -650,6 +651,17 @@ async def update_transaction(
         )
         if category_result.scalar_one_or_none() is None:
             raise HTTPException(status_code=400, detail="Categoría inválida.")
+
+    if "envelope_id" in update_data and update_data["envelope_id"] is not None:
+        envelope_result = await db.execute(
+            select(Envelope.id).where(
+                Envelope.id == update_data["envelope_id"],
+                Envelope.user_id == user.id,
+                Envelope.archived.is_(False),
+            )
+        )
+        if envelope_result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=400, detail="Sobre inválido.")
 
     for field, value in update_data.items():
         setattr(txn, field, value)

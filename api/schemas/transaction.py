@@ -40,6 +40,7 @@ class TransactionResponse(BaseModel):
     account_id: Optional[uuid.UUID]
     transfer_id: Optional[uuid.UUID] = None
     category_id: Optional[uuid.UUID] = None
+    envelope_id: Optional[uuid.UUID] = None
     amount: float
     currency: str
     merchant: Optional[str]
@@ -83,6 +84,9 @@ class TransactionUpdate(BaseModel):
     description: Optional[str] = Field(None, max_length=2000)
     category: Optional[str] = Field(None, max_length=100)
     category_id: Optional[uuid.UUID] = None
+    # Envelope budgeting — assign/recategorize the expense to a spending-cap
+    # envelope. Validated against the caller's envelopes in the router.
+    envelope_id: Optional[uuid.UUID] = None
     transaction_date: Optional[date] = None
 
 

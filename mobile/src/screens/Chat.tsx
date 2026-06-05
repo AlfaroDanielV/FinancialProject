@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Image,
   KeyboardAvoidingView,
@@ -17,14 +18,19 @@ import * as ImagePicker from "expo-image-picker";
 import { Feather } from "@expo/vector-icons";
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import {
   postChatImage,
   postChatMessage,
+  resetChat,
+  type AssignEnvelopePrefill,
   type ChatButton,
   type ChatUrlButton,
+  type DebtPrefill,
 } from "../api/chat";
+import { assignTransactionEnvelope } from "../api/envelopes";
+import { EnvelopePickerModal } from "../components/EnvelopePickerModal";
 import type { ChatStackParamList } from "../navigation/ChatNavigator";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
 
@@ -39,6 +45,9 @@ type Message = {
   imageUri?: string;
   buttons?: ChatButton[];
   urlButtons?: ChatUrlButton[];
+  // Envelope budgeting: set when the bot reply carried an `assign_envelope`
+  // hint — renders an "Asignar a un sobre" chip for this transaction.
+  assignTxId?: string;
 };
 
 let _nextId = 1;
@@ -48,12 +57,23 @@ function nextId() {
 
 export function ChatScreen() {
   const nav = useNavigation<NativeStackNavigationProp<ChatStackParamList, "Chat">>();
+  const qc = useQueryClient();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [usedChips, setUsedChips] = useState<Set<string>>(new Set());
+  // Envelope budgeting: the message id whose "Asignar a un sobre" chip opened
+  // the picker, and the transaction it targets.
+  const [assigning, setAssigning] = useState<{ messageId: string; txId: string } | null>(
+    null,
+  );
   const listRef = useRef<FlatList<Message>>(null);
 
   const onBotReply = (data: Awaited<ReturnType<typeof postChatMessage>>) => {
+    const screen = data.open_screen?.screen;
+    const assignTxId =
+      screen === "assign_envelope"
+        ? (data.open_screen!.prefill as AssignEnvelopePrefill).transaction_id
+        : undefined;
     setMessages((prev) => [
       ...prev,
       {
@@ -62,14 +82,42 @@ export function ChatScreen() {
         text: stripHtml(data.reply_text),
         buttons: data.buttons.length > 0 ? data.buttons : undefined,
         urlButtons: data.url_buttons.length > 0 ? data.url_buttons : undefined,
+        assignTxId,
       },
     ]);
     // Phase 6f debt slice: the chat hands off to a native form instead of
     // committing. Show the reply bubble (above), then open the pre-filled form.
-    if (data.open_screen?.screen === "debt_create") {
-      nav.navigate("DebtCreate", { prefill: data.open_screen.prefill });
+    if (screen === "debt_create") {
+      nav.navigate("DebtCreate", {
+        prefill: data.open_screen!.prefill as DebtPrefill,
+      });
     }
   };
+
+  const assignMutation = useMutation({
+    mutationFn: ({ txId, envelopeId }: { txId: string; envelopeId: string | null }) =>
+      assignTransactionEnvelope(txId, envelopeId),
+    onSuccess: (_data, { envelopeId }) => {
+      void qc.invalidateQueries({ queryKey: ["envelopes"] });
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextId(),
+          role: "bot",
+          text:
+            envelopeId == null
+              ? "Listo, le quité el sobre a ese gasto."
+              : "Listo, asigné ese gasto al sobre.",
+        },
+      ]);
+    },
+    onError: () => {
+      setMessages((prev) => [
+        ...prev,
+        { id: nextId(), role: "bot", text: "No pude asignar el sobre. Intentá de nuevo." },
+      ]);
+    },
+  });
 
   const onError = () => {
     setMessages((prev) => [
@@ -96,7 +144,35 @@ export function ChatScreen() {
     },
   });
 
+  const resetMutation = useMutation({
+    mutationFn: resetChat,
+    onSettled: () => {
+      // Clear the visible conversation regardless of the server result — the
+      // local list is what the user sees as "the chat".
+      setMessages([]);
+      setUsedChips(new Set());
+      setAssigning(null);
+      setInput("");
+    },
+  });
+
   const isPending = mutation.isPending || imageMutation.isPending;
+
+  const newConversation = () => {
+    if (messages.length === 0 || resetMutation.isPending) return;
+    Alert.alert(
+      "Nueva conversación",
+      "Se borra lo que ves acá y se reinicia el asistente. Tus movimientos guardados no se tocan.",
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Nueva conversación",
+          style: "destructive",
+          onPress: () => resetMutation.mutate(),
+        },
+      ],
+    );
+  };
 
   const send = (text: string, sourceMessageId?: string) => {
     const trimmed = text.trim();
@@ -128,7 +204,29 @@ export function ChatScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.safe} edges={["bottom"]}>
+    <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>Ledger CR</Text>
+        <Pressable
+          onPress={newConversation}
+          disabled={messages.length === 0 || resetMutation.isPending}
+          hitSlop={8}
+          style={({ pressed }) => [
+            styles.newChatBtn,
+            (messages.length === 0 || resetMutation.isPending) && { opacity: 0.4 },
+            pressed && { opacity: 0.6 },
+          ]}
+        >
+          {resetMutation.isPending ? (
+            <ActivityIndicator size="small" color={Colors.accent} />
+          ) : (
+            <>
+              <Feather name="edit" size={15} color={Colors.accent} />
+              <Text style={styles.newChatText}>Nueva</Text>
+            </>
+          )}
+        </Pressable>
+      </View>
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -142,6 +240,11 @@ export function ChatScreen() {
               message={item}
               chipsUsed={usedChips.has(item.id)}
               onTapButton={(label) => send(label, item.id)}
+              onTapAssign={
+                item.assignTxId
+                  ? () => setAssigning({ messageId: item.id, txId: item.assignTxId! })
+                  : undefined
+              }
             />
           )}
           contentContainerStyle={styles.listContent}
@@ -198,6 +301,18 @@ export function ChatScreen() {
           </Pressable>
         </View>
       </KeyboardAvoidingView>
+
+      <EnvelopePickerModal
+        visible={assigning != null}
+        onClose={() => setAssigning(null)}
+        onSelect={(envelopeId) => {
+          if (assigning) {
+            setUsedChips((prev) => new Set(prev).add(assigning.messageId));
+            assignMutation.mutate({ txId: assigning.txId, envelopeId });
+          }
+          setAssigning(null);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -220,9 +335,15 @@ interface MessageBubbleProps {
   message: Message;
   chipsUsed: boolean;
   onTapButton: (label: string) => void;
+  onTapAssign?: () => void;
 }
 
-function MessageBubble({ message, chipsUsed, onTapButton }: MessageBubbleProps) {
+function MessageBubble({
+  message,
+  chipsUsed,
+  onTapButton,
+  onTapAssign,
+}: MessageBubbleProps) {
   const isUser = message.role === "user";
 
   return (
@@ -284,6 +405,24 @@ function MessageBubble({ message, chipsUsed, onTapButton }: MessageBubbleProps) 
           ))}
         </View>
       )}
+
+      {message.assignTxId && onTapAssign && (
+        <View style={styles.actionRow}>
+          <Pressable
+            onPress={() => !chipsUsed && onTapAssign()}
+            disabled={chipsUsed}
+            style={({ pressed }) => [
+              styles.chip,
+              chipsUsed && styles.chipUsed,
+              !chipsUsed && pressed && { opacity: 0.7 },
+            ]}
+          >
+            <Text style={[styles.chipLabel, chipsUsed && styles.chipLabelUsed]}>
+              Asignar a un sobre
+            </Text>
+          </Pressable>
+        </View>
+      )}
     </View>
   );
 }
@@ -295,6 +434,36 @@ const styles = StyleSheet.create({
   },
   flex: {
     flex: 1,
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.borderLight,
+    backgroundColor: Colors.bgCard,
+  },
+  headerTitle: {
+    fontSize: FontSize.md,
+    fontWeight: "700",
+    color: Colors.textPrimary,
+  },
+  newChatBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    borderWidth: 1,
+    borderColor: Colors.accent,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+  },
+  newChatText: {
+    color: Colors.accent,
+    fontSize: FontSize.sm,
+    fontWeight: "600",
   },
   listContent: {
     flexGrow: 1,

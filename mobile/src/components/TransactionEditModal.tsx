@@ -22,14 +22,17 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { useMutation } from "@tanstack/react-query";
+import { Feather } from "@expo/vector-icons";
+import { useMutation, useQuery } from "@tanstack/react-query";
 
+import { fetchEnvelopes } from "../api/envelopes";
 import {
   type TransactionResponse,
   type TransactionUpdate,
   updateTransaction,
 } from "../api/transactions";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
+import { EnvelopePickerModal } from "./EnvelopePickerModal";
 
 interface Props {
   visible: boolean;
@@ -60,6 +63,8 @@ export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
   const [description, setDescription] = useState(tx.description ?? "");
   const [category, setCategory] = useState(tx.category ?? "");
   const [date, setDate] = useState(tx.transaction_date);
+  const [envelopeId, setEnvelopeId] = useState<string | null>(tx.envelope_id);
+  const [pickerVisible, setPickerVisible] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Re-seed the form whenever a different row is opened.
@@ -69,8 +74,17 @@ export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
     setDescription(tx.description ?? "");
     setCategory(tx.category ?? "");
     setDate(tx.transaction_date);
+    setEnvelopeId(tx.envelope_id);
     setError(null);
   }, [tx, visible]);
+
+  // Only expenses can be assigned to a spending-cap envelope.
+  const { data: envelopes } = useQuery({
+    queryKey: ["envelopes", "active"],
+    queryFn: () => fetchEnvelopes(false),
+    enabled: visible && isExpense,
+  });
+  const selectedEnvelope = envelopes?.find((e) => e.id === envelopeId) ?? null;
 
   const mutation = useMutation({
     mutationFn: (payload: TransactionUpdate) => updateTransaction(tx.id, payload),
@@ -95,6 +109,8 @@ export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
       description: description.trim() || null,
       category: category.trim() || null,
       transaction_date: date,
+      // Only send envelope_id for expenses (income/transfers never carry one).
+      ...(isExpense ? { envelope_id: envelopeId } : {}),
     });
   };
 
@@ -174,6 +190,28 @@ export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
                 autoCapitalize="none"
               />
             </Field>
+            {isExpense && (
+              <Field label="Sobre">
+                <Pressable
+                  onPress={() => setPickerVisible(true)}
+                  style={({ pressed }) => [
+                    styles.input,
+                    styles.selectRow,
+                    pressed && { opacity: 0.7 },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.selectText,
+                      selectedEnvelope == null && styles.selectPlaceholder,
+                    ]}
+                  >
+                    {selectedEnvelope?.name ?? "Sin sobre"}
+                  </Text>
+                  <Feather name="chevron-right" size={18} color={Colors.textMuted} />
+                </Pressable>
+              </Field>
+            )}
             {errorText != null && <Text style={styles.error}>{errorText}</Text>}
           </ScrollView>
           <View style={styles.actions}>
@@ -207,6 +245,16 @@ export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
           </View>
         </View>
       </KeyboardAvoidingView>
+
+      <EnvelopePickerModal
+        visible={pickerVisible}
+        currentEnvelopeId={envelopeId}
+        onClose={() => setPickerVisible(false)}
+        onSelect={(id) => {
+          setEnvelopeId(id);
+          setPickerVisible(false);
+        }}
+      />
     </Modal>
   );
 }
@@ -256,6 +304,13 @@ const styles = StyleSheet.create({
     fontSize: FontSize.md,
     color: Colors.textPrimary,
   },
+  selectRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  selectText: { fontSize: FontSize.md, color: Colors.textPrimary },
+  selectPlaceholder: { color: Colors.textMuted },
   error: {
     color: Colors.expense,
     fontSize: FontSize.sm,

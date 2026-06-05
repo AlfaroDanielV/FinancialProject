@@ -38,6 +38,28 @@ BASIC_EXPENSE_CRC = RecordedLLMResponse(
 )
 
 
+# ── 1b. Basic CRC income ──────────────────────────────────────────────────────
+# Input: "me pagaron 100000 colones"
+BASIC_INCOME_CRC = RecordedLLMResponse(
+    tool_input={
+        "intent": "log_income",
+        "dispatcher": "write",
+        "amount": 100000,
+        "currency": "CRC",
+        "merchant": None,
+        "category_hint": "ingreso",
+        "account_hint": None,
+        "occurred_at_hint": None,
+        "query_window": None,
+        "confidence": 0.92,
+        "raw_notes": None,
+    },
+    input_tokens=430,
+    output_tokens=45,
+    cache_read_input_tokens=380,
+)
+
+
 # ── 2. Slang amount ("5k"), no currency ───────────────────────────────────────
 # Input: "5k en gasolina"
 SLANG_AMOUNT_NO_CURRENCY = RecordedLLMResponse(

@@ -37,7 +37,7 @@ HELP_TEXT = (
     "• Registrar ingresos: «me pagaron 400 mil»\n"
     "• Consultar: «¿cuánto gasté esta semana?»\n"
     "• Crear cuentas: «crear cuenta BAC»\n"
-    "• Abrir el setup web: /setup\n"
+    "• Configurar tu cuenta: /setup\n"
     "• Deshacer la última acción: /undo\n"
     "• Cancelar lo que estoy esperando: /cancel\n\n"
     "Siempre te pido confirmación antes de guardar nada."

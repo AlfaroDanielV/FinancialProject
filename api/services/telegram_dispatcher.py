@@ -304,8 +304,8 @@ async def _dispatch_log(
             return LazyDetectionPrompt(
                 message_es=(
                     "No tengo registrada una cuenta llamada "
-                    f"{extraction.account_hint}. ¿La creamos? Decime crear "
-                    'para hacerlo acá rápido, o link para abrirlo en el SPA.'
+                    f"{extraction.account_hint}. ¿La creamos? Respondé *crear* "
+                    "y la hacemos acá; si no, seguí normal con otra cosa."
                 ),
                 hint_text=extraction.account_hint,
                 origin_extraction=extraction.model_dump(mode="json"),

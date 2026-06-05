@@ -28,6 +28,7 @@ from .user_insight import UserInsight, UserInsightAudit
 from .recurring_income import RecurringIncome
 from .magic_link_token import MagicLinkToken
 from .lazy_detection_event import LazyDetectionEvent
+from .envelope import Envelope
 
 __all__ = [
     "User",
@@ -63,4 +64,5 @@ __all__ = [
     "RecurringIncome",
     "MagicLinkToken",
     "LazyDetectionEvent",
+    "Envelope",
 ]

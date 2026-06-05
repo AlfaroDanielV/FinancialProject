@@ -125,6 +125,17 @@ def parse_account_creation_start(text: str) -> tuple[bool, Optional[str]]:
     return False, None
 
 
+# Affirmatives that answer the soft lazy-detection "¿La creamos?" prompt
+# (step=awaiting_start). Any other input means the user moved on, so the
+# pipeline abandons the prompt and reprocesses the message as fresh input
+# instead of trapping them in the account dialog.
+_AWAITING_START_ANSWERS = frozenset({"crear", "crearla", "si", "sí", "dale", "ok"})
+
+
+def is_awaiting_start_answer(text: str) -> bool:
+    return _normalize(text) in _AWAITING_START_ANSWERS
+
+
 async def start_account_creation(
     *, user_id: uuid.UUID, redis: Redis, name: Optional[str] = None
 ) -> str:
@@ -151,18 +162,12 @@ async def handle_account_creation_reply(
     lowered = _normalize(reply)
 
     if state.step == "awaiting_start":
-        if lowered in {"crear", "crearla", "si", "sí", "dale", "ok"}:
-            state.step = "asking_type"
-            await save_account_creation(user_id=user.id, state=state, redis=redis)
-            return AccountCreationOutcome(text=_ask_type(state.name or "esa cuenta"))
-        if lowered == "link":
-            await clear_account_creation(user_id=user.id, redis=redis)
-            return AccountCreationOutcome(
-                text="Dale. Mandá /setup y te paso un link nuevo al setup web."
-            )
-        return AccountCreationOutcome(
-            text="Decime crear para hacerla acá rápido, o link para abrir el setup web."
-        )
+        # Only reached with an affirmative — the pipeline abandons this soft
+        # prompt and reprocesses the message on any other input (so a new
+        # expense isn't swallowed by a stale "¿La creamos?" prompt).
+        state.step = "asking_type"
+        await save_account_creation(user_id=user.id, state=state, redis=redis)
+        return AccountCreationOutcome(text=_ask_type(state.name or "esa cuenta"))
 
     if state.step == "asking_name":
         if len(reply) < 2:
