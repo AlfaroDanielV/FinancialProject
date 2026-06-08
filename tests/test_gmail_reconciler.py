@@ -344,8 +344,8 @@ async def test_no_match_when_amount_differs_beyond_tolerance(db_with_user):
     outcome, _ = await reconcile(
         db=db, user_id=user_id, candidate=candidate, gmail_message_id="msg-4"
     )
-    # Shouldn't match → should CREATE_NEW (post-shadow).
-    assert outcome == ReconcileOutcome.CREATED_NEW
+    # Shouldn't match → new row, which always lands as shadow now.
+    assert outcome == ReconcileOutcome.CREATED_SHADOW
 
 
 async def test_no_match_when_currency_differs(db_with_user):
@@ -366,7 +366,7 @@ async def test_no_match_when_currency_differs(db_with_user):
     outcome, _ = await reconcile(
         db=db, user_id=user_id, candidate=candidate, gmail_message_id="msg-5"
     )
-    assert outcome == ReconcileOutcome.CREATED_NEW
+    assert outcome == ReconcileOutcome.CREATED_SHADOW
 
 
 async def test_match_picks_closest_amount_when_two_candidates(db_with_user):
@@ -423,9 +423,12 @@ async def test_created_shadow_when_in_window(db_with_user):
     assert txn.amount == Decimal("-7000")
 
 
-async def test_created_confirmed_when_outside_window(db_with_user):
+async def test_created_shadow_even_outside_old_window(db_with_user):
+    """The 7-day auto-trust window was retired (operator decision
+    2026-06-08). Even a long-activated user gets shadow rows now, so
+    every Gmail transaction is reviewable in 'revisar correos'."""
     db, user_id = db_with_user
-    await _activate_with_window(db, user_id, days_ago=10)  # OUT of shadow
+    await _activate_with_window(db, user_id, days_ago=10)  # past old window
 
     candidate = ExtractedEmailTransaction(
         transaction_type="deposit",
@@ -437,9 +440,9 @@ async def test_created_confirmed_when_outside_window(db_with_user):
     outcome, txn = await reconcile(
         db=db, user_id=user_id, candidate=candidate, gmail_message_id="msg-8"
     )
-    assert outcome == ReconcileOutcome.CREATED_NEW
+    assert outcome == ReconcileOutcome.CREATED_SHADOW
     assert txn is not None
-    assert txn.status == "confirmed"
+    assert txn.status == "shadow"
     assert txn.amount == Decimal("100000")  # deposit → positive
 
 

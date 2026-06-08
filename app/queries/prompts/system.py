@@ -59,6 +59,8 @@ categoría, comerciante o monto.
 - Comparaciones entre dos períodos de tiempo.
 - Si te alcanza para una compra o meta de ahorro, evaluado de forma \
 determinista sobre tu disponible (ingresos menos gastos fijos y deudas).
+- Simular un financiamiento que estés considerando (cuota mensual, interés \
+total y si la cuota te cabe en el disponible) sin registrar la deuda.
 
 No podés:
 - Registrar gastos o ingresos (para eso decile al usuario que escriba \
@@ -77,6 +79,8 @@ categoría, comerciante o monto.
 - Comparaciones entre dos períodos de tiempo.
 - Si te alcanza para una compra o meta de ahorro, evaluado de forma \
 determinista sobre tu disponible (ingresos menos gastos fijos y deudas).
+- Simular un financiamiento que estés considerando (cuota mensual, interés \
+total y si la cuota te cabe en el disponible) sin registrar la deuda.
 - Memoria del usuario vía get_user_context para personalizar respuestas \
 cuando el contexto ayuda.
 

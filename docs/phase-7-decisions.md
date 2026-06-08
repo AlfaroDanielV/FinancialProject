@@ -170,6 +170,54 @@ endpoint + act-clears-it) and mobile `tsc --noEmit`.
 
 ---
 
+## 5d. Financing advisor + advise-first debt handoff
+
+**Problem (observed):** a user explored financing a car — *"si pido un préstamo
+para la prima y luego financiarlo a 20 años al 45%"* — and the agent replied
+*"Perfecto, te abro el formulario de préstamo"*. It went into **register mode**
+when the user wanted **advisor mode**. Root cause: "advisor vs register" already
+maps to the `query` vs `write` dispatcher, but (a) there was no read-only tool
+that could analyze a *hypothetical* loan, so the only financing intent in the
+system was `CREATE_DEBT`, and (b) the affordability tool literally asks
+"¿estás considerando financiarlo?" with no tool to answer it. The conditional
+"si…" was ignored and routing fell through to the form.
+
+**Fix — three parts, same "rules decide; LLM explains" split:**
+
+1. **`assess_financing` read-only query tool** (`app/queries/tools/financing.py`).
+   Reuses `amortization.compute_french_payment` (same cuota math as the debt
+   module) + the affordability engine's `gather_affordability_inputs` /
+   `SAFETY_MARGIN`. Given price / rate% / term / optional down-payment → cuota,
+   total interest, interest-multiple-of-price, and a **cuota-vs-safe-disposable**
+   verdict. No income on file → `cuota_fits_disposable=None` (honest), still
+   simulates the loan. Registered before the `compare_periods` cache anchor.
+   This is advisor mode for loans and closes the loop `assess_purchase` opens.
+2. **Routing (extractor prompt, examples not synonym maps).** `create_debt` is
+   narrowed to *registering* a decided/existing loan ("registrá", "saqué",
+   "tengo", "debo"); **exploratory financing** ("si lo financio…", "cuánto sería
+   la cuota", "¿me conviene?") → `dispatcher=query`. Two contrasting examples
+   added, plus a `query` system-prompt capabilities bullet for loan simulation.
+3. **Advise-first debt handoff** (`_dispatch_create_debt`, now async). When the
+   register path *does* fire and already carries principal + rate + term, it
+   computes the deterministic cost and **leads the form handoff** with it
+   ("Ojo: a esa tasa la cuota rondaría ₡X/mes y pagarías ~₡Y en intereses.
+   Supera tu disponible seguro…") instead of opening blind. No rate → plain
+   handoff (the form's PDF-upload / no-rate path is unchanged). Debt still never
+   commits in chat.
+
+**Why not a sticky "mode" toggle:** a global advisor/register flag traps capture
+("gasté 5000 en café" must always work) and the user forgets which mode they're
+in. Per-utterance intent (the LLM's job) + advise-first-by-default for the
+high-stakes debt write is safer. Users can still force it explicitly ("solo
+analizá" → query, "registrá el préstamo" → write) — those are just more routing
+examples.
+
+Verified by `tests/test_phase7_financing.py` (cuota math, fits/doesn't-fit,
+down-payment, no-income honesty, advise-first handoff leads-with-cost vs plain
+when no rate) + no regression in `tests/test_phase_6f_chat_create_debt.py`.
+
+---
+
 ## 7. Verification
 
 - `tests/test_affordability.py` — pure engine (feasible / infeasible+shortfall /
@@ -184,6 +232,10 @@ endpoint + act-clears-it) and mobile `tsc --noEmit`.
 - `tests/test_nudges_feed.py` — deterministic render (incl. USD + unknown-type
   fallback), `build_feed` pending/silenced/non-pending, `GET /nudges/feed`
   endpoint + act-clears-it. Mobile `tsc --noEmit` clean for the Alertas screen.
+- `tests/test_phase7_financing.py` — `assess_financing` cuota/interest math,
+  fits/doesn't-fit verdict, down-payment, no-income honesty; advise-first debt
+  handoff leads-with-cost vs plain-when-no-rate. No regression in the existing
+  `test_phase_6f_chat_create_debt.py`.
 - `tests/test_system_prompt_builder.py` — capabilities-list discoverability lock.
 - Full P7 + touched-path slice green (engine, goal gate, over-commitment nudge,
   in-app feed, all four nudge suites, goal chat creation, both system-prompt

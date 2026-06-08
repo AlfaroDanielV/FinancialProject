@@ -9,7 +9,10 @@ from datetime import date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+import uuid
+from typing import Optional
+
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.envelope import Envelope
@@ -73,6 +76,77 @@ async def _monthly_income(db: AsyncSession, *, user: User) -> Decimal | None:
     return total.quantize(Decimal("0.01")) if found else None
 
 
+# ── nesting helpers (Phase 7a) ────────────────────────────────────────────────
+
+
+async def fetch_envelopes(
+    db: AsyncSession, *, user_id: uuid.UUID, include_archived: bool = False
+) -> list[Envelope]:
+    stmt = select(Envelope).where(Envelope.user_id == user_id)
+    if not include_archived:
+        stmt = stmt.where(Envelope.archived.is_(False))
+    stmt = stmt.order_by(Envelope.envelope_class.asc(), Envelope.name.asc())
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def active_children(
+    db: AsyncSession, *, user_id: uuid.UUID, parent_id: uuid.UUID
+) -> list[Envelope]:
+    """Direct, non-archived children of one envelope."""
+    rows = await db.execute(
+        select(Envelope).where(
+            Envelope.user_id == user_id,
+            Envelope.parent_id == parent_id,
+            Envelope.archived.is_(False),
+        )
+    )
+    return list(rows.scalars().all())
+
+
+def descendant_ids(
+    envelopes: list[Envelope], root_id: uuid.UUID
+) -> list[uuid.UUID]:
+    """All descendant ids of root_id (root excluded) over the adjacency list.
+
+    The depth cap (5) + create-only parent_id guarantee a forest (no cycles),
+    so a plain stack walk terminates."""
+    cmap: dict[Optional[uuid.UUID], list[Envelope]] = {}
+    for e in envelopes:
+        cmap.setdefault(e.parent_id, []).append(e)
+    out: list[uuid.UUID] = []
+    stack = list(cmap.get(root_id, []))
+    while stack:
+        node = stack.pop()
+        out.append(node.id)
+        stack.extend(cmap.get(node.id, []))
+    return out
+
+
+async def archive_subtree(db: AsyncSession, *, user: User, root: Envelope) -> None:
+    """Soft-archive a root + its whole subtree. Idempotent; the caller commits."""
+    envs = await fetch_envelopes(db, user_id=user.id, include_archived=True)
+    ids = [root.id, *descendant_ids(envs, root.id)]
+    await db.execute(
+        update(Envelope)
+        .where(Envelope.id.in_(ids))
+        .values(archived=True, is_active=False)
+    )
+
+
+async def set_class_subtree(
+    db: AsyncSession, *, user: User, root: Envelope, new_class: str
+) -> None:
+    """Set envelope_class on a root + its whole subtree (one tree = one class).
+    The caller commits."""
+    envs = await fetch_envelopes(db, user_id=user.id, include_archived=True)
+    ids = [root.id, *descendant_ids(envs, root.id)]
+    await db.execute(
+        update(Envelope)
+        .where(Envelope.id.in_(ids))
+        .values(envelope_class=new_class)
+    )
+
+
 async def compute_envelope_summary(
     db: AsyncSession, *, user: User
 ) -> EnvelopeSummaryResponse:
@@ -82,20 +156,12 @@ async def compute_envelope_summary(
     period = f"{today.year:04d}-{today.month:02d}"
     currency = user.currency or "CRC"
 
-    envelopes = list(
-        (
-            await db.execute(
-                select(Envelope)
-                .where(Envelope.user_id == user.id, Envelope.archived.is_(False))
-                .order_by(Envelope.envelope_class.asc(), Envelope.name.asc())
-            )
-        ).scalars().all()
-    )
+    envelopes = await fetch_envelopes(db, user_id=user.id, include_archived=False)
 
-    # Live spend per envelope: confirmed, non-archived, non-transfer EXPENSES
-    # (amount < 0) dated in the current month. Grouped by currency too, because a
-    # USD expense tagged to a CRC envelope must be converted before it counts
-    # (see api/services/fx.py) — otherwise $30 would read as ₡30, not ₡15 000.
+    # Live OWN (direct) spend per envelope: confirmed, non-archived, non-transfer
+    # EXPENSES (amount < 0) dated in the current month. Grouped by currency too,
+    # because a USD expense tagged to a CRC envelope must be converted before it
+    # counts (see api/services/fx.py) — otherwise $30 would read as ₡30.
     spend_rows = await db.execute(
         select(
             Transaction.envelope_id,
@@ -119,35 +185,76 @@ async def compute_envelope_summary(
     for env_id, tx_currency, total in spend_rows.all():
         spent_raw.setdefault(env_id, []).append((tx_currency, Decimal(total)))
 
+    # Direct spend per node, in the NODE's own currency.
+    direct: dict[uuid.UUID, Decimal] = {}
+    for env in envelopes:
+        d = Decimal("0")
+        for tx_currency, bucket in spent_raw.get(env.id, []):
+            d += convert(bucket, tx_currency, env.currency)
+        direct[env.id] = d
+
+    # Adjacency over the non-archived set.
+    children_map: dict[Optional[uuid.UUID], list[Envelope]] = {}
+    for env in envelopes:
+        children_map.setdefault(env.parent_id, []).append(env)
+
+    # Rolled-up spend = own + Σ descendants (memoized DFS). Children inherit the
+    # root currency, so within-tree summation needs no FX conversion.
+    rolled: dict[uuid.UUID, Decimal] = {}
+
+    def _rollup(env_id: uuid.UUID) -> Decimal:
+        cached = rolled.get(env_id)
+        if cached is not None:
+            return cached
+        total = direct.get(env_id, Decimal("0"))
+        for child in children_map.get(env_id, []):
+            total += _rollup(child.id)
+        rolled[env_id] = total
+        return total
+
+    for env in envelopes:
+        _rollup(env.id)
+
     items: list[EnvelopeSummaryItem] = []
     # Per-class subtotals + the total are reported in the summary (user)
-    # currency, so each envelope's figures are converted from its own currency.
+    # currency, so each node's figures are converted from its own currency.
     class_acc: dict[str, dict[str, float]] = {}
     for env in envelopes:
-        # Per-envelope spend is in the ENVELOPE's currency: convert each
-        # transaction-currency bucket into env.currency, then sum.
-        spent_dec = Decimal("0")
-        for tx_currency, bucket in spent_raw.get(env.id, []):
-            spent_dec += convert(bucket, tx_currency, env.currency)
-        spent = float(spent_dec)
-        limit = float(env.limit_amount)
-        pct = (spent / limit) if limit > 0 else 0.0
+        limit_dec = Decimal(env.limit_amount)
+        rolled_dec = rolled[env.id]
+        direct_dec = direct.get(env.id, Decimal("0"))
+        allocated_dec = sum(
+            (Decimal(c.limit_amount) for c in children_map.get(env.id, [])),
+            Decimal("0"),
+        )
+        limit_f = float(limit_dec)
+        rolled_f = float(rolled_dec)
         items.append(
             EnvelopeSummaryItem(
                 id=env.id,
+                parent_id=env.parent_id,
+                depth=env.depth,
                 name=env.name,
                 envelope_class=env.envelope_class,
                 currency=env.currency,
-                limit_amount=round(limit, 2),
-                spent=round(spent, 2),
-                remaining=round(limit - spent, 2),
-                pct=round(pct, 4),
-                over_limit=spent > limit,
+                limit_amount=round(limit_f, 2),
+                spent=round(rolled_f, 2),
+                direct_spent=round(float(direct_dec), 2),
+                remaining=round(limit_f - rolled_f, 2),
+                pct=round((rolled_f / limit_f) if limit_f > 0 else 0.0, 4),
+                over_limit=rolled_dec > limit_dec,
+                allocated=round(float(allocated_dec), 2),
+                unallocated=round(float(limit_dec - allocated_dec), 2),
+                over_allocated=allocated_dec > limit_dec,
             )
         )
+        # Class spent = every node's OWN spend (each transaction once). Class
+        # limit = ROOTS only — a parent's limit already contains its
+        # descendants' sub-allocations, so counting child limits double-counts.
         acc = class_acc.setdefault(env.envelope_class, {"limit": 0.0, "spent": 0.0})
-        acc["limit"] += float(convert(Decimal(str(limit)), env.currency, currency))
-        acc["spent"] += float(convert(spent_dec, env.currency, currency))
+        acc["spent"] += float(convert(direct_dec, env.currency, currency))
+        if env.parent_id is None:
+            acc["limit"] += float(convert(limit_dec, env.currency, currency))
 
     by_class = [
         EnvelopeClassSubtotal(
@@ -164,7 +271,8 @@ async def compute_envelope_summary(
 
     income = await _monthly_income(db, user=user)
     # In the summary currency (class subtotals are already converted) so it's
-    # comparable to monthly_income; summing item.limit_amount would mix CRC+USD.
+    # comparable to monthly_income; summing item.limit_amount would mix CRC+USD
+    # AND double-count children.
     total_limit = sum(sub.limit_total for sub in by_class)
     return EnvelopeSummaryResponse(
         period=period,

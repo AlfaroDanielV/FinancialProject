@@ -26,6 +26,7 @@ import {
   ENVELOPE_CLASS_ORDER,
   envelopeProgress,
   fetchEnvelopeSummary,
+  flattenEnvelopeTree,
   type EnvelopeClass,
   type EnvelopeSummaryItem,
 } from "../api/envelopes";
@@ -105,7 +106,7 @@ export function SobresSection() {
                     })()}
                 </View>
 
-                {grouped[cls].map((env) => (
+                {flattenEnvelopeTree(grouped[cls]).map((env) => (
                   <EnvelopeRow
                     key={env.id}
                     item={env}
@@ -156,13 +157,20 @@ function EnvelopeRow({
 }) {
   // Money-left bar: starts full, drains with each expense, red in the last 5%.
   const { remaining, fraction, low } = envelopeProgress(item);
+  // Sub-sobres indent under their parent; a parent (allocated > 0) shows how
+  // much of its budget is still unsplit.
+  const indent = (item.depth - 1) * 14;
+  const isParent = item.allocated > 0;
   return (
     <Pressable
       onPress={onPress}
-      style={({ pressed }) => [styles.row, pressed && { opacity: 0.7 }]}
+      style={({ pressed }) => [styles.row, { marginLeft: indent }, pressed && { opacity: 0.7 }]}
     >
       <View style={styles.rowMeta}>
         <View style={styles.rowNameWrap}>
+          {item.depth > 1 && (
+            <Feather name="corner-down-right" size={12} color={Colors.textMuted} />
+          )}
           <Text style={styles.rowName} numberOfLines={1}>
             {item.name}
           </Text>
@@ -187,6 +195,16 @@ function EnvelopeRow({
           Te pasaste por {formatMoney(item.spent - item.limit_amount, currency)}
         </Text>
       )}
+      {isParent &&
+        (item.over_allocated ? (
+          <Text style={styles.overText}>
+            Sobreasignado {formatMoney(-item.unallocated, currency)} entre sus sub-sobres
+          </Text>
+        ) : item.unallocated > 0 ? (
+          <Text style={styles.allocNote}>
+            Sin asignar {formatMoney(item.unallocated, currency)}
+          </Text>
+        ) : null)}
     </Pressable>
   );
 }
@@ -287,6 +305,10 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xs,
     color: Colors.expense,
     fontWeight: "500",
+  },
+  allocNote: {
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
   },
   incomeNote: {
     fontSize: FontSize.xs,

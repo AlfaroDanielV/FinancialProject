@@ -4,8 +4,8 @@ Decides whether an `ExtractedEmailTransaction` is:
     - already represented by an existing manual/shortcut/telegram row
       (matched_existing → updates that row's source_ref),
     - already ingested by a previous Gmail scan (duplicate_gmail),
-    - new and to be inserted as `confirmed` or `shadow` depending on the
-      user's activation window,
+    - new and always inserted as `shadow` for manual review — the user
+      approves or discards each one in "revisar correos",
     - or too low-confidence to act on (skipped_low_confidence).
 
 The matching window is 7 days; tolerance is ±1 (in either currency unit
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from decimal import Decimal
 from enum import Enum
 from typing import Optional
@@ -29,7 +29,6 @@ from typing import Optional
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...models.gmail_credential import GmailCredential
 from ...models.transaction import Transaction
 from ..extraction.email_extractor import (
     EXPENSE_TYPES,
@@ -58,9 +57,12 @@ LOOKBACK_DAYS = 7
 # transactions.
 AMOUNT_TOLERANCE = Decimal("1")
 
-# Shadow window: 7 days from gmail_credentials.activated_at. New rows
-# created during this window land as `status='shadow'` so the user can
-# audit before they affect balances.
+# Retired as a write gate (operator decision 2026-06-08): Gmail-parsed
+# transactions now ALWAYS land as `status='shadow'` for manual review,
+# regardless of parser age (see the insert in `reconcile` /
+# docs/gmail-shadow-review.md). The constant is retained only because the
+# Telegram notifier still uses it to decide the cadence of its daily
+# shadow-review summary message — it no longer gates the write decision.
 SHADOW_WINDOW_DAYS = 7
 
 
@@ -82,22 +84,6 @@ def _signed_amount(candidate: ExtractedEmailTransaction) -> Optional[Decimal]:
     if candidate.transaction_type in INCOME_TYPES:
         return candidate.amount
     return None  # unknown — never insert
-
-
-async def _is_in_shadow_window(
-    *, db: AsyncSession, user_id: uuid.UUID
-) -> bool:
-    cred = (
-        await db.execute(
-            select(GmailCredential).where(GmailCredential.user_id == user_id)
-        )
-    ).scalar_one_or_none()
-    if cred is None or cred.activated_at is None:
-        # No activation timestamp → we don't know when the user activated;
-        # safest is shadow (don't pollute the balance).
-        return True
-    elapsed = datetime.now(timezone.utc) - cred.activated_at
-    return elapsed.days < SHADOW_WINDOW_DAYS
 
 
 async def _find_existing_match(
@@ -248,9 +234,12 @@ async def reconcile(
         await db.flush()
         return (ReconcileOutcome.MATCHED_EXISTING, match)
 
-    # 4. New row. Shadow vs. confirmed depends on activation age.
-    in_shadow = await _is_in_shadow_window(db=db, user_id=user_id)
-    status = "shadow" if in_shadow else "confirmed"
+    # 4. New row. Gmail-parsed transactions ALWAYS land as shadow so the
+    #    user reviews each one in "revisar correos" before it affects the
+    #    ledger. The old 7-day auto-trust window was removed by operator
+    #    decision 2026-06-08 (permanent review gate); see
+    #    docs/gmail-shadow-review.md.
+    status = "shadow"
 
     txn = Transaction(
         user_id=user_id,
@@ -274,10 +263,7 @@ async def reconcile(
         status,
         signed,
     )
-    return (
-        ReconcileOutcome.CREATED_SHADOW if in_shadow else ReconcileOutcome.CREATED_NEW,
-        txn,
-    )
+    return (ReconcileOutcome.CREATED_SHADOW, txn)
 
 
 def _compose_description(

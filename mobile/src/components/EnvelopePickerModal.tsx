@@ -26,6 +26,7 @@ import {
   type EnvelopeClass,
   type EnvelopeResponse,
   fetchEnvelopes,
+  flattenEnvelopeTree,
 } from "../api/envelopes";
 import { formatMoney } from "../lib/format";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
@@ -92,18 +93,30 @@ export function EnvelopePickerModal({
                   <Text style={[styles.classHeader, { color: ENVELOPE_CLASS_COLORS[cls] }]}>
                     {ENVELOPE_CLASS_LABELS[cls]}
                   </Text>
-                  {grouped[cls].map((env) => (
+                  {flattenEnvelopeTree(grouped[cls]).map((env) => (
                     <Pressable
                       key={env.id}
                       onPress={() => onSelect(env.id)}
-                      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+                      style={({ pressed }) => [
+                        styles.row,
+                        { marginLeft: (env.depth - 1) * 16 },
+                        pressed && styles.rowPressed,
+                      ]}
                     >
-                      <View
-                        style={[
-                          styles.dot,
-                          { backgroundColor: ENVELOPE_CLASS_COLORS[cls] },
-                        ]}
-                      />
+                      {env.depth > 1 ? (
+                        <Feather
+                          name="corner-down-right"
+                          size={14}
+                          color={Colors.textMuted}
+                        />
+                      ) : (
+                        <View
+                          style={[
+                            styles.dot,
+                            { backgroundColor: ENVELOPE_CLASS_COLORS[cls] },
+                          ]}
+                        />
+                      )}
                       <View style={styles.rowTextWrap}>
                         <Text style={styles.rowName}>{env.name}</Text>
                         <Text style={styles.rowSub}>

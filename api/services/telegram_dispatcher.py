@@ -24,7 +24,15 @@ from ..models.user import User
 from ..schemas.recurring_bills import VALID_RECURRING_BILL_CATEGORIES
 from .dispatch.lazy_detection import classify_hint_type, match_account_hint
 from .accounts import resolve_account, list_active
-from .finance.affordability import AffordabilityResult, assess_for_user
+from .amortization import compute_french_payment
+from .finance.affordability import (
+    SAFETY_MARGIN,
+    AffordabilityResult,
+    FinancialContext,
+    assess_for_user,
+    gather_affordability_inputs,
+    gather_financial_context,
+)
 from .llm_extractor import ExtractionResult, Intent
 from .transactions import window_bounds
 
@@ -243,7 +251,9 @@ async def dispatch(
         )
 
     if intent is Intent.CREATE_DEBT:
-        return _dispatch_create_debt(extraction=extraction, user=user)
+        return await _dispatch_create_debt(
+            extraction=extraction, user=user, db=db
+        )
 
     # Defensive fallback — should be unreachable given the enum.
     return ShowHelp()
@@ -537,6 +547,26 @@ def _goal_feasibility_line(
     )
 
 
+def _goal_context_note(context: Optional[FinancialContext]) -> str:
+    """Phase 7a: one short voseo heads-up from the financial context — the first
+    over-limit envelope, else the soonest upcoming obligation with a known
+    amount. Context only; it never changes the verdict and never vetoes."""
+    if context is None:
+        return ""
+    pressure = context.envelope_pressure
+    if pressure is not None and pressure.over_limit:
+        first = pressure.over_limit[0]
+        return f" Ojo: ya te pasaste del sobre {first.name}."
+    for o in context.upcoming_obligations:
+        if o.amount is not None:
+            d = date.fromisoformat(o.due_date)
+            return (
+                f" Ojo: se viene {o.title} "
+                f"({_format_amount(o.amount, o.currency)}) el {d.day}/{d.month}."
+            )
+    return ""
+
+
 def _build_goal_summary(
     *,
     name: str,
@@ -546,6 +576,7 @@ def _build_goal_summary(
     target_date: Optional[date],
     today: date,
     assessment: Optional[AffordabilityResult] = None,
+    context_note: str = "",
 ) -> str:
     amt = _format_amount(target, currency)
     parts = [f"Nueva meta: {name} — ahorrar {amt}"]
@@ -558,6 +589,7 @@ def _build_goal_summary(
         lead += _goal_feasibility_line(
             monthly=monthly, currency=currency, assessment=assessment
         )
+        lead += context_note
     if currency_defaulted:
         lead += f" (Usé {currency} por defecto.)"
     return lead + " ¿Confirmo?"
@@ -596,11 +628,18 @@ async def _dispatch_create_goal(
     # the FX placeholder). The engine decides feasibility; the summary only words
     # it. Non-blocking — the proposal still goes out for the user to confirm.
     assessment: Optional[AffordabilityResult] = None
+    context_note = ""
     if target_date is not None and currency == (user.currency or "CRC"):
         months = _months_between(today, target_date)
         assessment = await assess_for_user(
             db, user=user, desired_amount=target, timeline_months=months
         )
+        # Phase 7a: a non-blocking heads-up from the financial context (an
+        # over-limit envelope, or an upcoming bill/event within the horizon).
+        context = await gather_financial_context(
+            db, user=user, today=today, horizon_days=min(max(60, months * 30), 365)
+        )
+        context_note = _goal_context_note(context)
 
     payload = {
         "action_type": "create_goal",
@@ -617,6 +656,7 @@ async def _dispatch_create_goal(
         target_date=target_date,
         today=today,
         assessment=assessment,
+        context_note=context_note,
     )
     return ProposeAction(
         action_type="create_goal", payload=payload, summary_es=summary
@@ -890,10 +930,60 @@ DEBT_FORM_HANDOFF = (
 )
 
 
-def _dispatch_create_debt(
+async def _debt_financing_advice(
     *,
     extraction: ExtractionResult,
     user: User,
+    db: AsyncSession,
+    currency: str,
+) -> Optional[str]:
+    """Phase 7 advise-first: when the register-debt extraction already carries
+    principal + rate + term, surface the deterministic cost BEFORE the form so
+    the user sees the cuota / total interest / disposable fit, not just a blank
+    form. Pure French amortization + the affordability engine; the copy only
+    words it. Returns None when there isn't enough to simulate."""
+    principal = extraction.debt_principal
+    rate_pct = extraction.debt_interest_rate
+    term = extraction.debt_term_months
+    if principal is None or rate_pct is None or term is None or int(term) < 1:
+        return None
+
+    months = int(term)
+    p = float(principal)
+    monthly_rate = float(rate_pct) / 100.0 / 12.0
+    cuota = compute_french_payment(p, monthly_rate, months)
+    total_interest = max(0.0, cuota * months - p)
+    cuota_d = Decimal(str(round(cuota, 2)))
+    interest_d = Decimal(str(round(total_interest, 2)))
+
+    line = (
+        f"Ojo: a esa tasa la cuota rondaría {_whole(cuota_d, currency)}/mes y "
+        f"pagarías ~{_whole(interest_d, currency)} solo en intereses."
+    )
+
+    inputs = await gather_affordability_inputs(db, user=user)
+    if inputs.monthly_income is not None:
+        disposable = (
+            inputs.monthly_income
+            - inputs.monthly_fixed_expenses
+            - inputs.monthly_debt_payments
+        )
+        safe = disposable * SAFETY_MARGIN
+        if cuota_d > safe:
+            line += (
+                f" Supera tu disponible seguro (~{_whole(safe, currency)}/mes), "
+                "así que apretaría."
+            )
+        else:
+            line += " Te cabe dentro de tu disponible seguro."
+    return line
+
+
+async def _dispatch_create_debt(
+    *,
+    extraction: ExtractionResult,
+    user: User,
+    db: AsyncSession,
 ) -> DispatcherResult:
     """Light extraction → hand off to the native debt form.
 
@@ -917,6 +1007,7 @@ def _dispatch_create_debt(
         if extraction.debt_interest_rate is not None
         else None
     )
+    currency = extraction.currency or user.currency
     prefill = {
         "name": extraction.debt_name,
         "original_amount": principal,
@@ -924,10 +1015,19 @@ def _dispatch_create_debt(
         "interest_rate_pct": rate_pct,
         "term_months": extraction.debt_term_months,
         "lender": extraction.debt_lender,
-        "currency": extraction.currency or user.currency,
+        "currency": currency,
     }
+
+    # Advise-first: if we can already price the loan, lead with the
+    # deterministic cost so the form opens informed, not blind.
+    advice = await _debt_financing_advice(
+        extraction=extraction, user=user, db=db, currency=currency
+    )
+    message = (
+        DEBT_FORM_HANDOFF if advice is None else f"{advice}\n\n{DEBT_FORM_HANDOFF}"
+    )
     return OpenScreenAction(
         screen="debt_create",
         prefill=prefill,
-        message_es=DEBT_FORM_HANDOFF,
+        message_es=message,
     )

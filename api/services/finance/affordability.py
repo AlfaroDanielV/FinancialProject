@@ -20,6 +20,7 @@ lands; bills/debt/income are overwhelmingly CRC, so this is immaterial today).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 
@@ -29,8 +30,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...models.debt import Debt
 from ...models.recurring_bill import RecurringBill
 from ...models.user import User
-from ..envelopes import _monthly_income
+from ..envelopes import _monthly_income, compute_envelope_summary
 from ..fx import convert
+from ..recurrence import get_upcoming_feed
 
 # 80% of disposable income is the safe ceiling — the margin the CLAUDE.md
 # affordability spec mandates. A plan is "feasible" only if its monthly
@@ -257,4 +259,137 @@ async def assess_for_user(
         currency=inputs.currency,
         excluded_variable_bills=inputs.excluded_variable_bills,
         excluded_custom_bills=inputs.excluded_custom_bills,
+    )
+
+
+# ── Phase 7a: context signals (envelope execution + upcoming obligations) ──────
+#
+# These DO NOT change the affordability verdict. The headline `feasible` stays
+# `monthly_needed <= 0.80 * (income - fixed - debt)` — auditable and stable. The
+# signals below are extra deterministic context the LLM weaves into its honest
+# explanation ("estructuralmente te alcanza, pero ya gastaste 90% de Gustos y
+# viene el seguro el 15/jul"). They are NEVER folded into the disposable math:
+# the monthly-fixed figure already amortizes recurring bills, so subtracting the
+# upcoming lumps too would double-count.
+
+
+@dataclass(frozen=True)
+class OverLimitEnvelope:
+    name: str
+    overage: Decimal  # spent − limit, in the envelope's currency
+    currency: str
+
+
+@dataclass(frozen=True)
+class EnvelopePressure:
+    currency: str  # the user's summary currency
+    total_limit: Decimal
+    total_spent: Decimal
+    total_remaining: Decimal
+    pct_consumed: Optional[int]  # spent/limit %, None when no caps set
+    over_limit: tuple[OverLimitEnvelope, ...]
+
+
+@dataclass(frozen=True)
+class UpcomingObligation:
+    title: str
+    due_date: str  # ISO date
+    amount: Optional[Decimal]  # converted to the user currency; None if variable
+    currency: str  # the user currency the amount is expressed in
+    is_overdue: bool
+    kind: str  # "bill" | "event"
+
+
+@dataclass(frozen=True)
+class FinancialContext:
+    currency: str
+    envelope_pressure: Optional[EnvelopePressure]
+    upcoming_obligations: tuple[UpcomingObligation, ...]
+    upcoming_total: Decimal  # Σ of the known amounts, user currency
+
+
+# Cap the obligations list so the tool payload (and the LLM's attention) stays
+# focused on the soonest, most material items.
+_MAX_UPCOMING = 8
+
+
+async def gather_financial_context(
+    db: AsyncSession,
+    *,
+    user: User,
+    today: Optional[date] = None,
+    horizon_days: int = 60,
+) -> FinancialContext:
+    """Deterministic context for the pushback surfaces: how the envelopes are
+    executing this month + which recurring bills / events are coming up. Reuses
+    the live envelope summary (so it can't drift from the home-tab bars) and the
+    Phase 4 upcoming feed."""
+    currency = user.currency or "CRC"
+    anchor = today or date.today()
+
+    # ── envelope execution (reuses compute_envelope_summary — no drift) ──────
+    summary = await compute_envelope_summary(db, user=user)
+    pressure: Optional[EnvelopePressure] = None
+    if summary.envelopes:
+        total_limit = Decimal(str(summary.total_limit))
+        total_spent = sum(
+            (Decimal(str(c.spent_total)) for c in summary.by_class), Decimal("0")
+        )
+        over = tuple(
+            OverLimitEnvelope(
+                name=item.name,
+                overage=_q(Decimal(str(item.spent)) - Decimal(str(item.limit_amount))),
+                currency=item.currency,
+            )
+            for item in summary.envelopes
+            if item.over_limit
+        )
+        pct = (
+            int((total_spent / total_limit * Decimal("100")).to_integral_value())
+            if total_limit > _ZERO
+            else None
+        )
+        pressure = EnvelopePressure(
+            currency=currency,
+            total_limit=_q(total_limit),
+            total_spent=_q(total_spent),
+            total_remaining=_q(total_limit - total_spent),
+            pct_consumed=pct,
+            over_limit=over,
+        )
+
+    # ── upcoming bills + events (Phase 4 feed) ───────────────────────────────
+    entries = await get_upcoming_feed(
+        db,
+        user.id,
+        from_date=anchor,
+        to_date=anchor + timedelta(days=horizon_days),
+        include_overdue=True,
+    )
+    entries.sort(key=lambda e: e.date)
+    obligations: list[UpcomingObligation] = []
+    upcoming_total = _ZERO
+    for entry in entries[:_MAX_UPCOMING]:
+        amount: Optional[Decimal] = None
+        if entry.amount is not None:
+            amount = _q(
+                convert(Decimal(str(entry.amount)), entry.currency or currency, currency)
+            )
+            upcoming_total += amount
+        obligations.append(
+            UpcomingObligation(
+                title=entry.title,
+                due_date=entry.date.isoformat(),
+                amount=amount,
+                currency=currency,
+                is_overdue=entry.is_overdue,
+                kind=entry.item_type,
+            )
+        )
+
+    return FinancialContext(
+        currency=currency,
+        envelope_pressure=pressure,
+        upcoming_obligations=tuple(obligations),
+        upcoming_total=_q(upcoming_total),
     )

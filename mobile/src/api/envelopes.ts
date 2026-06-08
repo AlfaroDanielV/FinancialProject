@@ -8,6 +8,8 @@ export type EnvelopeClass = "needs" | "wants" | "savings" | "investing";
 export interface EnvelopeResponse {
   id: string;
   user_id: string;
+  parent_id: string | null;
+  depth: number;
   name: string;
   envelope_class: EnvelopeClass;
   limit_amount: number;
@@ -24,6 +26,9 @@ export interface EnvelopeCreate {
   envelope_class: EnvelopeClass;
   limit_amount: number;
   currency?: "CRC" | "USD";
+  // Phase 7a: when set, nests this envelope under parent_id. The child inherits
+  // the parent's class + currency server-side (the values above are ignored).
+  parent_id?: string | null;
 }
 
 /**
@@ -48,14 +53,21 @@ export interface EnvelopeUpdate {
 
 export interface EnvelopeSummaryItem {
   id: string;
+  parent_id: string | null;
+  depth: number;
   name: string;
   envelope_class: EnvelopeClass;
   currency: string;
   limit_amount: number;
-  spent: number;
+  spent: number; // rolled-up (this node + descendants) — the bar value
+  direct_spent: number; // only what's tagged directly to this node
   remaining: number;
-  pct: number; // spent / limit; clamp in UI; > 1 = over
+  pct: number; // rolled-up spent / limit; clamp in UI; > 1 = over
   over_limit: boolean;
+  // Soft allocation: how this node's budget is split across direct children.
+  allocated: number;
+  unallocated: number; // limit − allocated; may be negative (over-allocated)
+  over_allocated: boolean;
 }
 
 export interface EnvelopeClassSubtotal {
@@ -116,6 +128,37 @@ export function envelopeProgress(
   const low =
     limit > 0 ? remaining <= ENVELOPE_LOW_THRESHOLD * limit : remaining <= 0;
   return { remaining, fraction, low };
+}
+
+// ── nesting (Phase 7a) ───────────────────────────────────────────────────────
+// The summary + list endpoints return a FLAT list linked by parent_id. Build
+// the tree client-side, then flatten in pre-order so a parent renders right
+// above its sub-sobres (indent by `depth`).
+
+interface Nestable {
+  id: string;
+  parent_id: string | null;
+}
+
+export function flattenEnvelopeTree<T extends Nestable>(items: T[]): T[] {
+  const childrenOf = new Map<string | null, T[]>();
+  const ids = new Set(items.map((it) => it.id));
+  for (const it of items) {
+    // Treat a node whose parent isn't in this set (e.g. archived) as a root.
+    const key = it.parent_id && ids.has(it.parent_id) ? it.parent_id : null;
+    const list = childrenOf.get(key) ?? [];
+    list.push(it);
+    childrenOf.set(key, list);
+  }
+  const out: T[] = [];
+  const walk = (parentId: string | null) => {
+    for (const it of childrenOf.get(parentId) ?? []) {
+      out.push(it);
+      walk(it.id);
+    }
+  };
+  walk(null);
+  return out;
 }
 
 // ── API ─────────────────────────────────────────────────────────────────────

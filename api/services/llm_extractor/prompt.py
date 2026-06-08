@@ -33,8 +33,8 @@ Reglas duras:
    - "create_goal": el usuario quiere CREAR una meta de ahorro ("quiero ahorrar X para Y", "creá una meta", "meta de ahorro", "quiero juntar X"). NO es un ingreso ni un gasto — es una intención a futuro.
    - "create_income": el usuario quiere CONFIGURAR un ingreso RECURRENTE ("me pagan X cada quincena", "mi salario es X mensual", "configurá mi salario", "registrá mi ingreso recurrente"). La señal clave es la repetición ("cada", "mensual", "quincenal", "todos los meses"). Un pago único es log_income, NO create_income.
    - "create_bill": el usuario quiere CONFIGURAR un gasto fijo / recibo RECURRENTE ("el recibo de luz de 18 mil cada mes", "pago de internet 25 mil mensual", "configurá el alquiler de 300 mil", "agregá la factura del agua"). La señal clave es la repetición de un cobro. Una compra única es log_expense, NO create_bill.
-   - "create_debt": el usuario quiere REGISTRAR un préstamo / deuda / crédito existente ("tengo un préstamo de 5 millones a 5 años con el BAC", "saqué un crédito de carro", "debo 3 millones al Banco Nacional", "registrá mi hipoteca"). La señal clave es un saldo prestado con plazo/entidad. Un pago único de una deuda es log_expense, NO create_debt.
-   - "query": cualquier pregunta o solicitud de informacion de solo lectura.
+   - "create_debt": el usuario quiere REGISTRAR un préstamo / deuda / crédito que YA decidió o ya tiene ("tengo un préstamo de 5 millones a 5 años con el BAC", "saqué un crédito de carro", "debo 3 millones al Banco Nacional", "registrá mi hipoteca"). La señal clave es REGISTRAR un saldo prestado ("registrá", "saqué", "tengo", "debo"). Un pago único de una deuda es log_expense, NO create_debt. OJO: si el usuario está EXPLORANDO o preguntando si le conviene financiar ("¿me conviene financiar?", "¿cuánto sería la cuota si lo financio?", "si pido un préstamo a 20 años al 45%", "si doy una prima y financio el resto") eso NO es create_debt — es una consulta de análisis (intent="query"). create_debt es solo cuando ya decidió y pide registrarlo.
+   - "query": cualquier pregunta o solicitud de informacion de solo lectura. Incluye análisis de accesibilidad y simulación de financiamiento sin registrar nada ("¿me alcanza para X?", "¿cuánto sería la cuota de un préstamo de X a N años al T%?", "¿me conviene financiar este carro?").
    - "confirm_yes": confirma un paso previo ("sí", "dale", "ok", "correcto", "confirmá").
    - "confirm_no": cancela un paso previo ("no", "cancelar", "mejor no").
    - "undo": pide deshacer la última acción ("deshacé", "quitá la última", "me equivoqué").
@@ -155,6 +155,10 @@ Ejemplos:
   Tool input: {"intent":"create_debt","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"debt_name":null,"debt_principal":5000000,"debt_interest_rate":null,"debt_term_months":60,"debt_lender":"BAC","confidence":0.9,"raw_notes":null}
 - Usuario: "saqué un crédito de carro de 8 millones al 12% a 7 años"
   Tool input: {"intent":"create_debt","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"debt_name":"crédito de carro","debt_principal":8000000,"debt_interest_rate":12,"debt_term_months":84,"debt_lender":null,"confidence":0.92,"raw_notes":null}
+- Usuario: "si pido un préstamo para la prima y lo financio a 20 años con una tasa del 45%" (está explorando, NO registrando)
+  Tool input: {"intent":"query","dispatcher":"query","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.88,"raw_notes":"explora financiar: 20 años al 45%"}
+- Usuario: "cuánto sería la cuota de un préstamo de 50 millones a 20 años al 45%"
+  Tool input: {"intent":"query","dispatcher":"query","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.92,"raw_notes":"simular préstamo 50M, 240 meses, 45%"}
 """
 
 

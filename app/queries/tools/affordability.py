@@ -17,7 +17,11 @@ from typing import Annotated, Any, Optional
 from pydantic import Field
 
 from api.models.user import User
-from api.services.finance.affordability import assess_for_user
+from api.services.finance.affordability import (
+    FinancialContext,
+    assess_for_user,
+    gather_financial_context,
+)
 
 from app.queries.session import AsyncSessionLocal
 
@@ -36,8 +40,14 @@ ASSESS_PURCHASE_DESCRIPTION = (
     "vienen calculadas (min_timeline_months_feasible = en cuántos meses sí "
     "alcanzaría; max_amount_feasible_in_timeline = cuánto sí podría en ese "
     "plazo). Si feasible es null no hay ingresos registrados: pedile al usuario "
-    "que los registre. No inventés números: usá solo los que devuelve esta "
-    "herramienta."
+    "que los registre. El campo «context» trae señales adicionales: "
+    "envelope_pressure (cómo va con sus sobres/presupuestos este mes, incluidos "
+    "los que ya se pasaron del tope) y upcoming_obligations (pagos recurrentes o "
+    "eventos próximos). Mencioná esas señales como contexto en tu respuesta "
+    "(p.ej. «te alcanza, pero ojo que ya te pasaste del sobre X y viene Y el "
+    "DD/MM»), PERO no recalculés el veredicto con ellas ni inventés montos: el "
+    "veredicto sale del cálculo income−gastos fijos−deudas; usá solo los números "
+    "que devuelve esta herramienta."
 )
 
 PurchaseAmount = Annotated[float, Field(gt=0)]
@@ -45,6 +55,42 @@ PurchaseAmount = Annotated[float, Field(gt=0)]
 
 def _money(value: Optional[Decimal]) -> Optional[str]:
     return f"{value:.2f}" if value is not None else None
+
+
+def _serialize_context(ctx: FinancialContext) -> dict[str, Any]:
+    pressure = None
+    if ctx.envelope_pressure is not None:
+        p = ctx.envelope_pressure
+        pressure = {
+            "currency": p.currency,
+            "total_limit": _money(p.total_limit),
+            "total_spent": _money(p.total_spent),
+            "total_remaining": _money(p.total_remaining),
+            "pct_consumed": p.pct_consumed,
+            "over_limit": [
+                {
+                    "name": o.name,
+                    "overage": _money(o.overage),
+                    "currency": o.currency,
+                }
+                for o in p.over_limit
+            ],
+        }
+    return {
+        "envelope_pressure": pressure,
+        "upcoming_obligations": [
+            {
+                "title": o.title,
+                "due_date": o.due_date,
+                "amount": _money(o.amount),
+                "currency": o.currency,
+                "is_overdue": o.is_overdue,
+                "kind": o.kind,
+            }
+            for o in ctx.upcoming_obligations
+        ],
+        "upcoming_total": _money(ctx.upcoming_total),
+    }
 
 
 async def assess_purchase(
@@ -63,6 +109,11 @@ async def assess_purchase(
             user=user,
             desired_amount=Decimal(str(amount)),
             timeline_months=months,
+        )
+        # Context signals (envelope execution + upcoming bills/events). They do
+        # NOT change the verdict above; the LLM weaves them into its explanation.
+        context = await gather_financial_context(
+            db, user=user, horizon_days=min(max(60, months * 30), 365)
         )
 
     return {
@@ -83,6 +134,7 @@ async def assess_purchase(
             result.max_amount_feasible_in_timeline
         ),
         "notes": list(result.notes),
+        "context": _serialize_context(context),
     }
 
 

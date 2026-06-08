@@ -28,8 +28,11 @@ GET_ENVELOPE_SPENDING_DESCRIPTION = (
     "sobre específico (coincide por nombre, sin distinguir mayúsculas), o "
     "dejalo vacío para todos. El gasto se calcula en vivo desde las "
     "transacciones del mes en curso; lo gastado en otra moneda se convierte a "
-    "la moneda del sobre. Si no hay coincidencia, mirá available_envelope_names "
-    "para sugerir los sobres que sí existen."
+    "la moneda del sobre. Los sobres pueden tener sub-sobres: «spent» es el "
+    "gasto ACUMULADO (este sobre más sus sub-sobres) y «children» trae el "
+    "desglose por sub-sobre; «direct_spent» es solo lo cargado directamente al "
+    "sobre. Si no hay coincidencia, mirá available_envelope_names para sugerir "
+    "los sobres que sí existen."
 )
 
 
@@ -54,26 +57,39 @@ async def get_envelope_spending(
         summary = await compute_envelope_summary(db, user=user)
 
     items = list(summary.envelopes)
-    matched = _match(items, envelope_name) if (envelope_name and envelope_name.strip()) else items
+    by_parent: dict[Any, list] = {}
+    for it in items:
+        by_parent.setdefault(it.parent_id, []).append(it)
+
+    def _serialize(it) -> dict[str, Any]:
+        node = {
+            "name": it.name,
+            "class": it.envelope_class,
+            "currency": it.currency,
+            "limit": f"{it.limit_amount:.2f}",
+            "spent": f"{it.spent:.2f}",  # rolled-up (this sobre + sub-sobres)
+            "direct_spent": f"{it.direct_spent:.2f}",
+            "remaining": f"{it.remaining:.2f}",
+            "over_limit": it.over_limit,
+        }
+        kids = by_parent.get(it.id, [])
+        if kids:
+            node["children"] = [_serialize(k) for k in kids]
+        return node
+
+    if envelope_name and envelope_name.strip():
+        matched = _match(items, envelope_name)
+    else:
+        # No name → list the roots; sub-sobres nest under them via "children".
+        matched = [it for it in items if it.parent_id is None]
 
     return {
         "period": summary.period,
         "currency": summary.currency,
         "query_name": envelope_name,
-        "envelopes": [
-            {
-                "name": it.name,
-                "class": it.envelope_class,
-                "currency": it.currency,
-                "limit": f"{it.limit_amount:.2f}",
-                "spent": f"{it.spent:.2f}",
-                "remaining": f"{it.remaining:.2f}",
-                "over_limit": it.over_limit,
-            }
-            for it in matched
-        ],
+        "envelopes": [_serialize(it) for it in matched],
         "matched_count": len(matched),
-        # So the LLM can say "no tenés un sobre llamado X; tenés: …".
+        # So the LLM can say "no tenés un sobre llamado X; tenés: …" (incl. sub-sobres).
         "available_envelope_names": [it.name for it in items],
     }
 

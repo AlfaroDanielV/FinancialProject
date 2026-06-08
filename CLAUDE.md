@@ -127,7 +127,7 @@ finance-agent/
 ├── workers/                    # gmail_daily.py, insights_nightly.py, insights_lifecycle.py
 │                               # (web/ Phase 6d/6e SPA — DELETED at 6f B16, 2026-06-01)
 ├── mobile/                     # Phase 6f native iOS app (Expo, React Native) — created at 6f B1
-├── migrations/versions/        # Hand-written Alembic (0001 → 0022)
+├── migrations/versions/        # Hand-written Alembic (0001 → 0024)
 ├── tests/                      # pytest suite
 ├── scripts/                    # Phase smoke scripts (phase5a/5b/6b/6c/etc.)
 ├── docs/phase-*/               # Per-phase operational docs (privacy, deployment, etc.)
@@ -1071,6 +1071,64 @@ code-complete, **operator on-device sign-off pending**. Decision note:
   membership work) — vault `Decision - Shared Household Envelopes (Deferred
   P8)`. An at-capture *account* picker is likewise deferred (account is
   immutable post-create; it's a pre-commit proposal change).
+
+---
+
+## Phase 7a (active) — Nested Envelopes + Context-Aware Pushback
+
+Two operator-requested extensions on top of envelopes + the Phase 7
+affordability engine. Backend + mobile **code-complete; operator on-device
+sign-off pending** (do not flip to ✅ until then). Canonical:
+`docs/phase-7a-decisions.md`; vault `Decision - Nested Envelopes (Sub-Sobres)`
++ `Decision - Context-Aware Pushback`.
+
+**A — Sub-sobres (nested envelopes).** Envelopes nest **up to 5 levels**.
+- **Schema (migration 0024):** `envelopes.parent_id` UUID nullable FK →
+  `envelopes.id` `ON DELETE CASCADE`; `envelopes.depth` SMALLINT NOT NULL
+  default 1 + `CHECK depth BETWEEN 1 AND 5`; partial index `ix_envelopes_parent
+  WHERE parent_id IS NOT NULL`. **No `transactions` change** — a transaction
+  still tags exactly one node (a leaf, or a parent directly). `alembic current →
+  0024 (head)`.
+- **Rules:** a child **inherits the root's `envelope_class` + `currency`**
+  (one tree = one class + one currency); editing a root's class **cascades** to
+  the subtree, a child's class is read-only (422). `parent_id` is **create-only**
+  (re-parenting out of scope v1). Create is rejected at depth 6 (422).
+- **Allocation = hard cap** (revised from "soft" after operator dogfood
+  2026-06-08): a sub-sobre's limit can't exceed the parent's **remaining**
+  budget (`parent.limit − Σ siblings`), and a parent can't shrink below its
+  allocated total — `Σ(children) ≤ parent` always holds (router returns 422
+  otherwise via `_parent_available`; the create sheet shows the available
+  amount). The summary still carries `allocated`/`unallocated`/`over_allocated`
+  (the last only for legacy rows).
+- **Live roll-up:** `compute_envelope_summary` is a post-order DFS — each node
+  keeps `direct_spent` (own), the bar shows `spent = own + Σ descendants`. **No
+  stored balance.** Class subtotals: `spent_total` counts every node's own spend
+  once; `limit_total` counts **roots only** (a parent's limit already contains
+  its descendants' sub-allocations). Soft-archive/hard-delete a parent cascades
+  the subtree (hard delete unlinks tagged transactions via the FK `SET NULL`).
+- **Query tool:** `get_envelope_spending` matches a parent or child by name and
+  returns rolled-up `spent` + `direct_spent` + a nested `children` breakdown.
+- **Mobile:** `api/envelopes.ts` (`parent_id`/`depth` + allocation fields +
+  `flattenEnvelopeTree`), tree-indented `SobresSection` + `EnvelopePickerModal`,
+  "+ Sub-sobre" in `EnvelopeDetailModal`, inheritance-aware `EnvelopeEditModal`.
+
+**B — Context-aware pushback (stable verdict).**
+`api/services/finance/affordability.py::gather_financial_context(db, *, user,
+today=None, horizon_days=60)` returns deterministic **context signals**:
+envelope execution (reuses `compute_envelope_summary` → can't drift from the
+bars: totals, `pct_consumed`, over-limit envelopes) + upcoming bills/events
+(reuses `recurrence.get_upcoming_feed`, ≤8 soonest, amounts FX-converted). Wired
+into the `assess_purchase` chat tool (`context` block) + a one-line non-blocking
+note at conversational goal creation (`_goal_context_note`). **The headline
+`feasible = monthly_needed ≤ 0.80 × (income − fixed − debt)` is UNCHANGED**
+(`tests/test_phase_7a_context.py` locks it byte-identical); signals are **never
+folded into disposable** — the monthly-fixed already amortizes recurring bills,
+so subtracting upcoming lumps would double-count. LLM explains; rules decide.
+
+**Verification:** `tests/test_phase_7a_subenvelopes.py` (10) +
+`tests/test_phase_7a_context.py` (6) + the envelope/affordability/nudge/
+goal-create/tool-registry/system-prompt regression green (74 + 46 in the
+slice); mobile `npx tsc --noEmit` clean. `alembic current → 0024 (head)`.
 
 ---
 

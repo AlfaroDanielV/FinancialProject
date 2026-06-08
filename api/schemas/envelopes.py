@@ -22,12 +22,18 @@ class EnvelopeCreate(BaseModel):
     envelope_class: EnvelopeClass
     limit_amount: float = Field(..., gt=0)
     currency: CurrencyLit = "CRC"
+    # Phase 7a: when set, this envelope nests under `parent_id`. The child
+    # inherits the parent's class + currency (the values above are ignored for
+    # children, validated server-side), and depth = parent.depth + 1 (cap 5).
+    parent_id: Optional[uuid.UUID] = None
 
 
 class EnvelopeUpdate(BaseModel):
     """Narrowed whitelist. `currency` and `period` are immutable post-create
     (changing currency would make a stored limit ambiguous against historical
-    spend)."""
+    spend). `parent_id` is NOT here — re-parenting is out of scope (it would
+    force a subtree depth recompute). Editing `envelope_class` is allowed only
+    on a root and cascades to the subtree (enforced in the router)."""
 
     model_config = {"extra": "forbid"}
 
@@ -41,6 +47,8 @@ class EnvelopeUpdate(BaseModel):
 class EnvelopeResponse(BaseModel):
     id: uuid.UUID
     user_id: uuid.UUID
+    parent_id: Optional[uuid.UUID] = None
+    depth: int
     name: str
     envelope_class: str
     limit_amount: float
@@ -59,14 +67,24 @@ class EnvelopeResponse(BaseModel):
 
 class EnvelopeSummaryItem(BaseModel):
     id: uuid.UUID
+    parent_id: Optional[uuid.UUID] = None
+    depth: int = 1
     name: str
     envelope_class: str
     currency: str
     limit_amount: float
+    # `spent` is the ROLLED-UP figure (this node + all descendants) — what the
+    # bar shows. `direct_spent` is only what's tagged directly to this node.
     spent: float
-    remaining: float
-    pct: float  # spent / limit, 0..>1 (clamp in UI; >1 = over)
+    direct_spent: float
+    remaining: float  # limit − rolled-up spent
+    pct: float  # rolled-up spent / limit, 0..>1 (clamp in UI; >1 = over)
     over_limit: bool
+    # Soft allocation (Phase 7a): how the node's budget is split across its
+    # direct children. `unallocated` may be negative (over-allocated).
+    allocated: float = 0.0
+    unallocated: float = 0.0
+    over_allocated: bool = False
 
 
 class EnvelopeClassSubtotal(BaseModel):

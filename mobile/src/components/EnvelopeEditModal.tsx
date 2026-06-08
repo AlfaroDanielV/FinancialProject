@@ -33,17 +33,36 @@ import {
   type EnvelopeEditable,
   updateEnvelope,
 } from "../api/envelopes";
+import { formatMoney } from "../lib/format";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
+
+interface ParentContext {
+  id: string;
+  name: string;
+  envelope_class: EnvelopeClass;
+  currency: string;
+  available?: number; // parent budget still unallocated (cap for a new child)
+}
 
 interface Props {
   visible: boolean;
   envelope: EnvelopeEditable | null; // null = create mode
+  // Phase 7a: when set in create mode, the new envelope nests under this parent
+  // and inherits its class + currency (class/currency pickers are hidden).
+  parentEnvelope?: ParentContext | null;
   onClose: () => void;
   onSaved: () => void;
 }
 
-export function EnvelopeEditModal({ visible, envelope, onClose, onSaved }: Props) {
+export function EnvelopeEditModal({
+  visible,
+  envelope,
+  parentEnvelope = null,
+  onClose,
+  onSaved,
+}: Props) {
   const isEdit = envelope != null;
+  const creatingChild = !isEdit && parentEnvelope != null;
   const qc = useQueryClient();
 
   const [name, setName] = useState("");
@@ -54,11 +73,17 @@ export function EnvelopeEditModal({ visible, envelope, onClose, onSaved }: Props
 
   useEffect(() => {
     setName(envelope?.name ?? "");
-    setCls(envelope?.envelope_class ?? "needs");
+    setCls(
+      envelope?.envelope_class ?? parentEnvelope?.envelope_class ?? "needs",
+    );
     setLimit(envelope ? String(envelope.limit_amount) : "");
-    setCurrency((envelope?.currency as "CRC" | "USD") ?? "CRC");
+    setCurrency(
+      (envelope?.currency as "CRC" | "USD") ??
+        (parentEnvelope?.currency as "CRC" | "USD") ??
+        "CRC",
+    );
     setError(null);
-  }, [envelope, visible]);
+  }, [envelope, parentEnvelope, visible]);
 
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: ["envelopes"] });
@@ -80,6 +105,7 @@ export function EnvelopeEditModal({ visible, envelope, onClose, onSaved }: Props
         envelope_class: cls,
         limit_amount: parsed,
         currency,
+        parent_id: parentEnvelope?.id ?? null,
       });
     },
     onSuccess: () => {
@@ -114,6 +140,19 @@ export function EnvelopeEditModal({ visible, envelope, onClose, onSaved }: Props
     const parsed = Number(limit.replace(",", "."));
     if (!Number.isFinite(parsed) || parsed <= 0) {
       setError("El límite debe ser mayor que cero.");
+      return;
+    }
+    if (
+      creatingChild &&
+      parentEnvelope?.available != null &&
+      parsed > parentEnvelope.available
+    ) {
+      setError(
+        `El límite no puede superar lo disponible del sobre padre (${formatMoney(
+          parentEnvelope.available,
+          currency,
+        )}).`,
+      );
       return;
     }
     setError(null);
@@ -169,9 +208,25 @@ export function EnvelopeEditModal({ visible, envelope, onClose, onSaved }: Props
         <Pressable style={styles.backdrop} onPress={onClose} />
         <View style={styles.sheet}>
           <View style={styles.handle} />
-          <Text style={styles.title}>{isEdit ? "Editar sobre" : "Nuevo sobre"}</Text>
+          <Text style={styles.title}>
+            {isEdit ? "Editar sobre" : creatingChild ? "Nuevo sub-sobre" : "Nuevo sobre"}
+          </Text>
 
           <ScrollView style={styles.body} keyboardShouldPersistTaps="handled">
+            {creatingChild && parentEnvelope && (
+              <Text style={styles.parentNote}>
+                Sub-sobre de <Text style={styles.parentNoteName}>{parentEnvelope.name}</Text>.
+                Hereda la categoría ({ENVELOPE_CLASS_LABELS[parentEnvelope.envelope_class]}) y
+                la moneda ({parentEnvelope.currency}); su límite es una parte del presupuesto
+                del sobre padre.
+                {parentEnvelope.available != null && (
+                  <Text style={styles.parentNoteName}>
+                    {" "}Disponible: {formatMoney(parentEnvelope.available, parentEnvelope.currency)}.
+                  </Text>
+                )}
+              </Text>
+            )}
+
             <Text style={styles.label}>Nombre</Text>
             <TextInput
               value={name}
@@ -181,37 +236,41 @@ export function EnvelopeEditModal({ visible, envelope, onClose, onSaved }: Props
               placeholderTextColor={Colors.textMuted}
             />
 
-            <Text style={styles.label}>Categoría</Text>
-            <View style={styles.classGrid}>
-              {ENVELOPE_CLASS_ORDER.map((c) => {
-                const active = c === cls;
-                return (
-                  <Pressable
-                    key={c}
-                    onPress={() => setCls(c)}
-                    style={[
-                      styles.classChip,
-                      active && {
-                        borderColor: ENVELOPE_CLASS_COLORS[c],
-                        backgroundColor: Colors.accentBg,
-                      },
-                    ]}
-                  >
-                    <View
-                      style={[styles.classDot, { backgroundColor: ENVELOPE_CLASS_COLORS[c] }]}
-                    />
-                    <Text
-                      style={[
-                        styles.classChipText,
-                        active && { color: Colors.textPrimary, fontWeight: "600" },
-                      ]}
-                    >
-                      {ENVELOPE_CLASS_LABELS[c]}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
+            {!creatingChild && (
+              <>
+                <Text style={styles.label}>Categoría</Text>
+                <View style={styles.classGrid}>
+                  {ENVELOPE_CLASS_ORDER.map((c) => {
+                    const active = c === cls;
+                    return (
+                      <Pressable
+                        key={c}
+                        onPress={() => setCls(c)}
+                        style={[
+                          styles.classChip,
+                          active && {
+                            borderColor: ENVELOPE_CLASS_COLORS[c],
+                            backgroundColor: Colors.accentBg,
+                          },
+                        ]}
+                      >
+                        <View
+                          style={[styles.classDot, { backgroundColor: ENVELOPE_CLASS_COLORS[c] }]}
+                        />
+                        <Text
+                          style={[
+                            styles.classChipText,
+                            active && { color: Colors.textPrimary, fontWeight: "600" },
+                          ]}
+                        >
+                          {ENVELOPE_CLASS_LABELS[c]}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </>
+            )}
 
             <Text style={styles.label}>Límite mensual ({currency})</Text>
             <TextInput
@@ -229,7 +288,7 @@ export function EnvelopeEditModal({ visible, envelope, onClose, onSaved }: Props
               queda poco, la barra se pone roja.
             </Text>
 
-            {!isEdit && (
+            {!isEdit && !creatingChild && (
               <>
                 <Text style={styles.label}>Moneda</Text>
                 <View style={styles.currencyRow}>
@@ -350,6 +409,16 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     marginTop: 6,
   },
+  parentNote: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    lineHeight: 17,
+    backgroundColor: Colors.accentBg,
+    borderRadius: Radius.sm,
+    padding: Spacing.sm,
+    marginBottom: Spacing.xs,
+  },
+  parentNoteName: { fontWeight: "700", color: Colors.textPrimary },
   input: {
     backgroundColor: Colors.bgCard,
     borderWidth: 1,
