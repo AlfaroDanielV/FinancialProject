@@ -19,12 +19,46 @@ from ..models.user import User
 from ..models.user_nudge import UserNudge
 from ..schemas.nudges import (
     NudgeActionResponse,
+    NudgeFeedButton,
+    NudgeFeedItem,
+    NudgeFeedResponse,
     NudgeListResponse,
     UserNudgeResponse,
 )
 from ..services.nudges.actions import mark_acted_on, mark_dismissed
+from ..services.nudges.feed import build_feed
 
 router = APIRouter(prefix="/api/v1/nudges", tags=["nudges"])
+
+
+@router.get("/feed", response_model=NudgeFeedResponse)
+async def nudge_feed(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> NudgeFeedResponse:
+    """Native in-app alerts feed: pending nudges rendered to display text.
+
+    Read-only — does NOT mark anything sent. Silenced types are filtered;
+    push-pacing (rate limit / quiet hours) is intentionally not applied to a
+    surface the user opened. Act/dismiss flow through the existing
+    /nudges/{id}/act and /nudges/{id}/dismiss endpoints.
+    """
+    entries = await build_feed(db, user_id=user.id)
+    return NudgeFeedResponse(
+        items=[
+            NudgeFeedItem(
+                id=e.id,
+                nudge_type=e.nudge_type,
+                priority=e.priority,
+                text=e.text,
+                created_at=e.created_at,
+                buttons=[
+                    NudgeFeedButton(label=b.label, verb=b.verb) for b in e.buttons
+                ],
+            )
+            for e in entries
+        ]
+    )
 
 
 @router.get("", response_model=NudgeListResponse)

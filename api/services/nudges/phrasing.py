@@ -145,6 +145,8 @@ def build_user_prompt(nudge_type: str, payload: dict[str, Any]) -> str:
         return _prompt_stale_pending(payload)
     if nudge_type == "upcoming_bill":
         return _prompt_upcoming_bill(payload)
+    if nudge_type == "over_commitment":
+        return _prompt_over_commitment(payload)
     return (
         "Escribí un recordatorio breve al usuario. "
         f"Contexto raw: {payload!r}"
@@ -199,4 +201,30 @@ def _prompt_upcoming_bill(payload: dict[str, Any]) -> str:
         "\n"
         "Escribí un recordatorio breve y amable. Preguntale si ya lo pagó o "
         "si querés que le recordés mañana."
+    )
+
+
+def _prompt_over_commitment(payload: dict[str, Any]) -> str:
+    currency = payload.get("currency") or "CRC"
+    ratio = payload.get("committed_ratio_pct", 0)
+
+    def _fmt(key: str) -> str:
+        raw = payload.get(key)
+        try:
+            return f"{currency} {float(raw):,.0f}"
+        except (TypeError, ValueError):
+            return "monto desconocido"
+
+    return (
+        "Contexto: los gastos fijos y pagos de deuda del usuario ya consumen "
+        f"cerca del {ratio}% de su ingreso mensual, dejándole poco margen.\n"
+        f"- Ingreso mensual: {_fmt('monthly_income')}\n"
+        f"- Gastos fijos: {_fmt('monthly_fixed_expenses')}\n"
+        f"- Pagos de deuda: {_fmt('monthly_debt_payments')}\n"
+        f"- Disponible que le queda: {_fmt('monthly_disposable')}\n"
+        "\n"
+        "Escribí un aviso breve y directo, sin alarmar: (1) decile que sus "
+        "compromisos fijos están consumiendo gran parte del ingreso y le queda "
+        "poco margen, (2) preguntale si quiere revisar dónde aflojar. No des "
+        "consejo numérico ni inventés montos; usá solo las cifras del contexto."
     )

@@ -24,6 +24,7 @@ from ..models.user import User
 from ..schemas.recurring_bills import VALID_RECURRING_BILL_CATEGORIES
 from .dispatch.lazy_detection import classify_hint_type, match_account_hint
 from .accounts import resolve_account, list_active
+from .finance.affordability import AffordabilityResult, assess_for_user
 from .llm_extractor import ExtractionResult, Intent
 from .transactions import window_bounds
 
@@ -227,8 +228,8 @@ async def dispatch(
         )
 
     if intent is Intent.CREATE_GOAL:
-        return _dispatch_create_goal(
-            extraction=extraction, user=user, today=today
+        return await _dispatch_create_goal(
+            extraction=extraction, user=user, today=today, db=db
         )
 
     if intent is Intent.CREATE_INCOME:
@@ -496,6 +497,46 @@ def _resolve_goal_target_date(hint: Optional[str], today: date) -> Optional[date
     return None
 
 
+def _whole(amount: Decimal, currency: str) -> str:
+    return _format_amount(amount.quantize(Decimal("1")), currency)
+
+
+def _goal_feasibility_line(
+    *, monthly: Decimal, currency: str, assessment: Optional[AffordabilityResult]
+) -> str:
+    """Phase 7: word the deterministic feasibility verdict. The engine decides;
+    this only phrases it. Non-blocking — the user still confirms either way."""
+    monthly_str = _whole(monthly, currency)
+
+    # No assessment (cross-currency goal skips the gate) or income unknown →
+    # report the monthly figure without a feasibility claim we can't back.
+    if assessment is None:
+        return f" Necesitás ~{monthly_str}/mes para llegar."
+    if assessment.feasible is None:
+        return (
+            f" Necesitás ~{monthly_str}/mes para llegar. (No tengo tus ingresos "
+            "registrados, así que no puedo confirmar si te alcanza.)"
+        )
+    if assessment.feasible:
+        return f" Necesitás ~{monthly_str}/mes y te alcanza con tu disponible."
+
+    # Infeasible — be direct and constructive, never harsh, never a veto.
+    if assessment.min_timeline_months_feasible is not None:
+        safe = _whole(assessment.safe_monthly_disposable or Decimal("0"), currency)
+        short = _whole(assessment.shortfall or Decimal("0"), currency)
+        return (
+            f" Necesitás ~{monthly_str}/mes, pero tu disponible seguro ronda "
+            f"{safe}/mes — te faltarían ~{short}/mes. Podrías extender a "
+            f"~{assessment.min_timeline_months_feasible} meses o bajar la meta."
+        )
+    # No positive disposable at all (fixed bills + debt already eat the income).
+    return (
+        f" Necesitás ~{monthly_str}/mes, pero ahora tus gastos fijos y deudas ya "
+        "consumen tu ingreso disponible. Habría que bajar la meta o liberar "
+        "gastos antes."
+    )
+
+
 def _build_goal_summary(
     *,
     name: str,
@@ -504,6 +545,7 @@ def _build_goal_summary(
     currency_defaulted: bool,
     target_date: Optional[date],
     today: date,
+    assessment: Optional[AffordabilityResult] = None,
 ) -> str:
     amt = _format_amount(target, currency)
     parts = [f"Nueva meta: {name} — ahorrar {amt}"]
@@ -513,17 +555,20 @@ def _build_goal_summary(
     if target_date is not None:
         months = _months_between(today, target_date)
         monthly = (target / months).quantize(Decimal("1"))
-        lead += f" Necesitás ~{_format_amount(monthly, currency)}/mes para llegar."
+        lead += _goal_feasibility_line(
+            monthly=monthly, currency=currency, assessment=assessment
+        )
     if currency_defaulted:
         lead += f" (Usé {currency} por defecto.)"
     return lead + " ¿Confirmo?"
 
 
-def _dispatch_create_goal(
+async def _dispatch_create_goal(
     *,
     extraction: ExtractionResult,
     user: User,
     today: date,
+    db: AsyncSession,
 ) -> DispatcherResult:
     # Target amount is non-negotiable — it's what "the goal" means.
     if extraction.goal_target_amount is None:
@@ -545,6 +590,18 @@ def _dispatch_create_goal(
     target: Decimal = extraction.goal_target_amount
     target_date = _resolve_goal_target_date(extraction.goal_target_date, today)
 
+    # Phase 7 feasibility gate: deterministic affordability check, run only when
+    # there's a horizon to spread the target over AND the goal is in the user's
+    # currency (cross-currency pushback would mix display currencies and lean on
+    # the FX placeholder). The engine decides feasibility; the summary only words
+    # it. Non-blocking — the proposal still goes out for the user to confirm.
+    assessment: Optional[AffordabilityResult] = None
+    if target_date is not None and currency == (user.currency or "CRC"):
+        months = _months_between(today, target_date)
+        assessment = await assess_for_user(
+            db, user=user, desired_amount=target, timeline_months=months
+        )
+
     payload = {
         "action_type": "create_goal",
         "name": extraction.goal_name,
@@ -559,6 +616,7 @@ def _dispatch_create_goal(
         currency_defaulted=currency_defaulted,
         target_date=target_date,
         today=today,
+        assessment=assessment,
     )
     return ProposeAction(
         action_type="create_goal", payload=payload, summary_es=summary

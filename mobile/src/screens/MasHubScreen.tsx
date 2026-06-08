@@ -33,6 +33,13 @@ interface ModuleTile {
 
 const MODULES: ModuleTile[] = [
   {
+    key: "alertas",
+    title: "Alertas",
+    subtitle: "Avisos del asistente: sobrecompromiso, ingresos, pagos",
+    icon: "bell",
+    screen: "Alertas",
+  },
+  {
     key: "bills",
     title: "Gastos fijos",
     subtitle: "Pagos recurrentes y próximos vencimientos",

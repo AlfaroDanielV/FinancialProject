@@ -9,6 +9,7 @@ The flag flips to True only after Daniel approves at the gate.
 from api.config import settings
 
 from .accounts import register_account_tools
+from .affordability import register_affordability_tools
 from .compare_periods import register_compare_periods_tool
 from .debts import register_debt_tools
 from .envelopes import register_envelope_tools
@@ -25,6 +26,7 @@ def register_builtin_tools() -> None:
     register_debt_tools()
     register_pending_tools()
     register_envelope_tools()
+    register_affordability_tools()
     if settings.insights_dispatcher_enabled:
         register_user_context_tool()
     # compare_periods stays last so it remains the cache breakpoint anchor

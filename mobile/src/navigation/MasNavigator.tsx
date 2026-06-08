@@ -19,6 +19,7 @@
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 
 import { MasHubScreen } from "../screens/MasHubScreen";
+import { AlertsScreen } from "../screens/AlertsScreen";
 import { BillsScreen } from "../screens/BillsScreen";
 import { BillDetailScreen } from "../screens/BillDetailScreen";
 import { DebtsScreen } from "../screens/DebtsScreen";
@@ -36,6 +37,7 @@ import type { RecurringBillResponse, BillOccurrenceResponse } from "../api/bills
 
 export type MasStackParamList = {
   MasHub: undefined;
+  Alertas: undefined;
   BillsList: undefined;
   BillDetail: {
     bill: RecurringBillResponse;
@@ -73,6 +75,11 @@ export function MasNavigator() {
       <Stack.Screen
         name="MasHub"
         component={MasHubScreen}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="Alertas"
+        component={AlertsScreen}
         options={{ headerShown: false }}
       />
       <Stack.Screen

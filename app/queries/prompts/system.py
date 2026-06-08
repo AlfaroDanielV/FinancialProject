@@ -57,6 +57,8 @@ categoría, comerciante o monto.
 - Pagos recurrentes próximos, vencidos o recientes.
 - Propuestas pendientes de confirmación.
 - Comparaciones entre dos períodos de tiempo.
+- Si te alcanza para una compra o meta de ahorro, evaluado de forma \
+determinista sobre tu disponible (ingresos menos gastos fijos y deudas).
 
 No podés:
 - Registrar gastos o ingresos (para eso decile al usuario que escriba \
@@ -73,6 +75,8 @@ categoría, comerciante o monto.
 - Pagos recurrentes próximos, vencidos o recientes.
 - Propuestas pendientes de confirmación.
 - Comparaciones entre dos períodos de tiempo.
+- Si te alcanza para una compra o meta de ahorro, evaluado de forma \
+determinista sobre tu disponible (ingresos menos gastos fijos y deudas).
 - Memoria del usuario vía get_user_context para personalizar respuestas \
 cuando el contexto ayuda.
 

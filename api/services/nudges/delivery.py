@@ -93,6 +93,11 @@ _BUTTONS: dict[str, list[NudgeButton]] = {
         NudgeButton("Recordame mañana", "later"),
         NudgeButton("Descartar", "dismiss"),
     ],
+    "over_commitment": [
+        NudgeButton("Revisar", "act"),
+        NudgeButton("Más tarde", "later"),
+        NudgeButton("No mostrar más", "dismiss"),
+    ],
 }
 
 
