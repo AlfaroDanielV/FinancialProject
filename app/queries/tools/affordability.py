@@ -33,24 +33,26 @@ from .base import is_tool_registered, query_tool
 
 ASSESS_PURCHASE_DESCRIPTION = (
     "Evalúa de forma determinista si al usuario le alcanza para una compra o "
-    "meta de ahorro, usando sus ingresos recurrentes, gastos fijos y pagos de "
-    "deudas reales. Usá esto cuando pregunte «¿me alcanza para…?», «¿puedo con "
-    "una compra de ₡X?», «¿puedo ahorrar ₡Y en N meses?». Pasá amount (monto "
-    "deseado) y, si lo menciona, timeline_months (en cuántos meses); si no da "
-    "plazo, se evalúa como una compra de este mes. El motor aplica un margen de "
-    "seguridad del 80% del disponible. Reportá el resultado con honestidad: si "
-    "NO alcanza (feasible=false), decilo claro y ofrecé las alternativas que ya "
-    "vienen calculadas (min_timeline_months_feasible = en cuántos meses sí "
-    "alcanzaría; max_amount_feasible_in_timeline = cuánto sí podría en ese "
-    "plazo). Si feasible es null no hay ingresos registrados: pedile al usuario "
-    "que los registre. El campo «context» trae señales adicionales: "
-    "envelope_pressure (cómo va con sus sobres/presupuestos este mes, incluidos "
-    "los que ya se pasaron del tope) y upcoming_obligations (pagos recurrentes o "
-    "eventos próximos). Mencioná esas señales como contexto en tu respuesta "
-    "(p.ej. «te alcanza, pero ojo que ya te pasaste del sobre X y viene Y el "
-    "DD/MM»), PERO no recalculés el veredicto con ellas ni inventés montos: el "
-    "veredicto sale del cálculo income−gastos fijos−deudas; usá solo los números "
-    "que devuelve esta herramienta."
+    "meta de ahorro. El veredicto se calcula contra su SOBRANTE mensual real "
+    "(surplus = ingreso − lo que ya tiene asignado en sobres/presupuesto, "
+    "committed_outflows), con un margen de seguridad del 80%. Usá esto cuando "
+    "pregunte «¿me alcanza para…?», «¿puedo con una compra de ₡X?», «¿puedo "
+    "ahorrar ₡Y en N meses?». Pasá amount y, si lo menciona, timeline_months; sin "
+    "plazo se evalúa como compra de este mes. IMPORTANTE — gate_reason: si viene "
+    "'no_income' o 'no_budget', feasible es null y NO debés "
+    "afirmar un sobrante ni un veredicto; en su lugar pedile la acción que "
+    "corresponde, y son DISTINTAS: no_income → que registre su ingreso; no_budget "
+    "→ que arme sus sobres (presupuesto). Si gate_reason es null, reportá "
+    "con honestidad: si feasible=false ofrecé las alternativas ya calculadas "
+    "(min_timeline_months_feasible = en cuántos meses sí alcanzaría; "
+    "max_amount_feasible_in_timeline = cuánto sí podría en ese plazo) Y, si "
+    "savings_allocations > 0, agregá que PODRÍA reasignar parte de sus sobres de "
+    "ahorro/inversión (₡savings_allocations al mes) si quiere priorizar esto — es "
+    "decisión del usuario, no lo des por hecho. El campo «context» trae señales "
+    "(envelope_pressure, upcoming_obligations): mencionalas como contexto (p.ej. "
+    "«ojo que ya te pasaste del sobre X y viene Y el DD/MM»), PERO no recalculés "
+    "el veredicto con ellas ni inventés montos: usá solo los números de esta "
+    "herramienta."
 )
 
 PurchaseAmount = Annotated[float, Field(gt=0)]
@@ -126,11 +128,15 @@ async def assess_purchase(
         "monthly_income": _money(result.monthly_income),
         "monthly_fixed_expenses": _money(result.monthly_fixed_expenses),
         "monthly_debt_payments": _money(result.monthly_debt_payments),
-        "monthly_disposable": _money(result.monthly_disposable),
-        "safe_monthly_disposable": _money(result.safe_monthly_disposable),
+        "envelope_allocations": _money(result.envelope_allocations),
+        "committed_outflows": _money(result.committed_outflows),
+        "savings_allocations": _money(result.savings_allocations),
+        "surplus": _money(result.surplus),
+        "safe_surplus": _money(result.safe_surplus),
         "safety_margin_pct": 80,
         "monthly_needed": _money(result.monthly_needed),
         "feasible": result.feasible,
+        "gate_reason": result.gate_reason,
         "shortfall": _money(result.shortfall),
         "min_timeline_months_feasible": result.min_timeline_months_feasible,
         "max_amount_feasible_in_timeline": _money(
@@ -142,17 +148,17 @@ async def assess_purchase(
 
 
 GET_SAVINGS_CAPACITY_DESCRIPTION = (
-    "Devuelve, de forma determinista, cuánto puede ahorrar el usuario al mes: su "
-    "disponible = ingresos recurrentes − gastos fijos − pagos de deuda, y el "
-    "disponible seguro (margen del 80%). Usá esto SIEMPRE que pida planear "
-    "ahorros sin una meta o monto concreto («¿cuánto puedo ahorrar al mes?», "
-    "«ayudame a planear mis ahorros», «¿cómo reparto mi plata?», «¿cuánto me "
-    "queda libre?»). El campo «debts» trae el desglose de cada deuda activa con "
-    "su pago mensual (cuota), para que estructures el plan TENIENDO EN CUENTA las "
-    "deudas y sus pagos — mencionalos. monthly_debt_payments es el total mensual "
-    "de deudas que ya se restó del disponible. Si monthly_disposable es null no "
-    "hay ingresos registrados: pedile que los registre. NO inventés el monto que "
-    "puede ahorrar: usá monthly_disposable / safe_monthly_disposable tal cual."
+    "Devuelve, de forma determinista, cuánto le SOBRA al usuario al mes para "
+    "ahorrar: surplus = ingreso − lo ya asignado en sobres (committed_outflows), y "
+    "el sobrante seguro (margen del 80%, safe_surplus). Usá esto SIEMPRE que pida "
+    "planear ahorros sin meta concreta («¿cuánto puedo ahorrar al mes?», «¿cuánto "
+    "me queda libre?», «¿cómo reparto mi plata?»). IMPORTANTE — gate_reason: si "
+    "viene 'no_income'/'no_budget', NO muestres un número de "
+    "sobrante; pedí la acción que corresponde, y son DISTINTAS: no_income → "
+    "registrar el ingreso; no_budget → armar los sobres. Si gate_reason es null, reportá "
+    "surplus / safe_surplus tal cual. El campo «debts» trae cada deuda con su cuota "
+    "(mencionalas); «savings_allocations» es lo que ya va a sobres de "
+    "ahorro/inversión. NO inventés montos."
 )
 
 _CENTS = Decimal("0.01")
@@ -199,9 +205,13 @@ async def get_savings_capacity(*, user_id: uuid.UUID) -> dict[str, Any]:
         "monthly_income": _money(result.monthly_income),
         "monthly_fixed_expenses": _money(result.monthly_fixed_expenses),
         "monthly_debt_payments": _money(result.monthly_debt_payments),
-        "monthly_disposable": _money(result.monthly_disposable),
-        "safe_monthly_disposable": _money(result.safe_monthly_disposable),
+        "envelope_allocations": _money(result.envelope_allocations),
+        "committed_outflows": _money(result.committed_outflows),
+        "savings_allocations": _money(result.savings_allocations),
+        "surplus": _money(result.surplus),
+        "safe_surplus": _money(result.safe_surplus),
         "safety_margin_pct": 80,
+        "gate_reason": result.gate_reason,
         "debts": debts,
         "notes": list(result.notes),
     }

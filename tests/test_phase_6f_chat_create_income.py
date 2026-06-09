@@ -115,7 +115,10 @@ async def test_create_income_full_flow_commits_income(db_with_user):
         ).scalars().all()
         assert len(rows) == 1
         assert rows[0].income_type == "salary"
-        assert rows[0].amount == Decimal("800000")
+        # 800,000 CRC gross → net 713,360 (CCSS 86,640, ISR 0). The actual
+        # take-home is stored as the amount; the gross is kept for re-edit.
+        assert rows[0].amount == Decimal("713360.00")
+        assert rows[0].gross_monthly == Decimal("800000.00")
         assert rows[0].frequency == "biweekly"
     finally:
         _clear_db_override()
@@ -209,6 +212,79 @@ async def test_create_income_defaults_type_and_name(db_with_user):
     assert decision.payload["income_type"] == "salary"
     assert decision.payload["name"] == "Salario"
     assert decision.payload["next_payment_date"] == "2026-06-15"
+
+
+# ── 6b. Salary captured as gross → net stored, gross kept ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_crc_salary_dispatch_computes_net_keeps_gross(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)  # currency defaults to CRC
+    decision = await dispatch(
+        extraction=_income_extraction(
+            amount=Decimal("1500000"), income_type="salary"
+        ),
+        user=user,
+        today=date(2026, 6, 9),
+        db=session,
+    )
+    assert isinstance(decision, ProposeAction)
+    # 1,500,000 gross → 1,271,700 net; gross persisted for re-edit.
+    assert decision.payload["amount"] == "1271700"
+    assert decision.payload["gross_monthly"] == "1500000"
+    summary = decision.summary_es.lower()
+    assert "bruto" in summary and "neto" in summary
+
+
+@pytest.mark.asyncio
+async def test_usd_salary_keeps_amount_no_gross(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    decision = await dispatch(
+        extraction=_income_extraction(
+            amount=Decimal("3000"), income_type="salary", currency="USD"
+        ),
+        user=user,
+        today=date(2026, 6, 9),
+        db=session,
+    )
+    assert isinstance(decision, ProposeAction)
+    # The CR calculator is colón-only — a USD salary is stored untouched.
+    assert decision.payload["amount"] == "3000"
+    assert "gross_monthly" not in decision.payload
+
+
+@pytest.mark.asyncio
+async def test_non_salary_income_skips_calculator(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    decision = await dispatch(
+        extraction=_income_extraction(
+            amount=Decimal("400000"), income_type="freelance"
+        ),
+        user=user,
+        today=date(2026, 6, 9),
+        db=session,
+    )
+    assert isinstance(decision, ProposeAction)
+    assert decision.payload["amount"] == "400000"
+    assert "gross_monthly" not in decision.payload
+
+
+@pytest.mark.asyncio
+async def test_salary_amount_prompt_asks_for_gross(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    decision = await dispatch(
+        extraction=_income_extraction(amount=None, income_type="salary"),
+        user=user,
+        today=date(2026, 6, 9),
+        db=session,
+    )
+    assert isinstance(decision, AskClarification)
+    assert decision.awaiting_field == "amount"
+    assert "bruto" in decision.question_es.lower()
 
 
 # ── 7. Date resolver ──────────────────────────────────────────────────────────

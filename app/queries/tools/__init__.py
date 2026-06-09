@@ -16,6 +16,7 @@ from .envelopes import register_envelope_tools
 from .financing import register_financing_tools
 from .goals import register_goal_tools
 from .pending import register_pending_tools
+from .salary import register_salary_tools
 from .recurring_bills import register_recurring_bill_tools
 from .transactions import register_transaction_tools
 from .user_context import register_user_context_tool
@@ -31,6 +32,7 @@ def register_builtin_tools() -> None:
     register_affordability_tools()
     register_financing_tools()
     register_goal_tools()
+    register_salary_tools()
     if settings.insights_dispatcher_enabled:
         register_user_context_tool()
     # compare_periods stays last so it remains the cache breakpoint anchor

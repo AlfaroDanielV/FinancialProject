@@ -22,10 +22,8 @@ from pydantic import Field
 
 from api.models.user import User
 from api.services.amortization import compute_french_payment
-from api.services.finance.affordability import (
-    SAFETY_MARGIN,
-    gather_affordability_inputs,
-)
+from api.services.finance.affordability import SAFETY_MARGIN, gate_guidance
+from api.services.finance.cashflow import compute_monthly_cashflow
 
 from app.queries.session import AsyncSessionLocal
 
@@ -41,13 +39,16 @@ ASSESS_FINANCING_DESCRIPTION = (
     "porcentaje, p.ej. 45), term_months (plazo en MESES: «20 años» → 240) y, si "
     "lo menciona, down_payment (la prima). Calcula la cuota mensual (amortización "
     "francesa), el interés total, cuántas veces el precio terminaría pagando, y "
-    "compara la cuota contra su disponible seguro (margen del 80%). Reportá con "
-    "honestidad: si la cuota NO cabe en el disponible (cuota_fits_disposable="
-    "false) decilo claro y mostrá el faltante (cuota_shortfall); el interés total "
-    "deja ver si la tasa es abusiva. Si cuota_fits_disposable es null no hay "
-    "ingresos registrados: pedile que los registre. No inventés números: usá solo "
-    "los que devuelve esta herramienta. Esta herramienta NO registra la deuda — "
-    "si el usuario decide hacerlo, que diga «registrá el préstamo»."
+    "compara la cuota contra su SOBRANTE seguro (surplus = ingreso − lo asignado "
+    "en sobres, con margen del 80%). Reportá con honestidad: si la cuota NO cabe "
+    "(cuota_fits_surplus=false) decilo claro y mostrá el faltante (cuota_shortfall); "
+    "el interés total deja ver si la tasa es abusiva. IMPORTANTE — gate_reason: si "
+    "viene 'no_income'/'no_budget', cuota_fits_surplus es null y NO "
+    "afirmés si cabe; pedí la acción que corresponde (registrar ingreso / armar "
+    "sobres), que son distintas. No "
+    "inventés números: usá solo los que devuelve esta herramienta. Esta herramienta "
+    "NO registra la deuda — si el usuario decide hacerlo, que diga «registrá el "
+    "préstamo»."
 )
 
 Price = Annotated[float, Field(gt=0)]
@@ -81,30 +82,23 @@ async def assess_financing(
         user = await db.get(User, user_id)
         if user is None:
             return {"error": "user_not_found"}
-        inputs = await gather_affordability_inputs(db, user=user)
+        cashflow = await compute_monthly_cashflow(db, user=user)
 
-    income = inputs.monthly_income
     notes: list[str] = []
-    if income is None:
-        # Honesty: no income on file → don't fabricate a disposable. We can
-        # still show the cuota + interest, just not whether it "fits".
+    if not cashflow.reliable:
+        # Gated → no trustworthy surplus → don't claim whether the cuota fits.
+        # Same posture + same distinct copy as every other surface.
         safe: Optional[Decimal] = None
         fits: Optional[bool] = None
         shortfall: Optional[Decimal] = None
-        notes.append(
-            "No hay ingresos recurrentes registrados; no puedo confirmar si la "
-            "cuota te cabe en el disponible."
-        )
+        notes.append(gate_guidance(cashflow.gate_reason))
     else:
-        disposable = (
-            income - inputs.monthly_fixed_expenses - inputs.monthly_debt_payments
-        )
-        safe = (disposable * SAFETY_MARGIN).quantize(_CENTS)
+        safe = (cashflow.surplus * SAFETY_MARGIN).quantize(_CENTS)
         fits = cuota_d <= safe
         shortfall = max(Decimal("0"), (cuota_d - safe)).quantize(_CENTS)
 
     return {
-        "currency": inputs.currency,
+        "currency": cashflow.currency,
         "price": f"{float(price):.2f}",
         "down_payment": f"{down:.2f}",
         "financed_principal": f"{financed:.2f}",
@@ -116,12 +110,15 @@ async def assess_financing(
         "interest_multiple_of_price": (
             round(interest_multiple, 2) if interest_multiple is not None else None
         ),
-        "monthly_income": _money(income),
-        "safe_monthly_disposable": _money(safe),
-        "cuota_fits_disposable": fits,
+        "monthly_income": _money(cashflow.monthly_income) if cashflow.income_known else None,
+        "committed_outflows": _money(cashflow.committed_outflows),
+        "surplus": _money(cashflow.surplus) if cashflow.income_known else None,
+        "safe_surplus": _money(safe),
+        "cuota_fits_surplus": fits,
         "cuota_shortfall": _money(shortfall),
         "safety_margin_pct": 80,
-        "notes": notes,
+        "gate_reason": cashflow.gate_reason,
+        "notes": [n for n in notes if n],
     }
 
 

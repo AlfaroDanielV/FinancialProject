@@ -57,14 +57,15 @@ categoría, comerciante o monto.
 - Pagos recurrentes próximos, vencidos o recientes.
 - Propuestas pendientes de confirmación.
 - Comparaciones entre dos períodos de tiempo.
-- Si te alcanza para una compra o meta de ahorro, evaluado de forma \
-determinista sobre tu disponible (ingresos menos gastos fijos y deudas).
-- Simular un financiamiento que estés considerando (cuota mensual, interés \
-total y si la cuota te cabe en el disponible) sin registrar la deuda.
-- Tus metas de ahorro y un plan realista para alcanzarlas: cuánto guardar al \
-mes y si te alcanza, calculado sobre tu disponible (nunca un monto inventado).
-- Cuánto podés ahorrar al mes de forma realista: tu disponible después de \
-gastos fijos y pagos de deuda (ingreso − gastos fijos − deudas).
+- Si te alcanza para una compra o meta de ahorro, evaluado sobre tu sobrante \
+real (ingreso menos lo asignado en sobres).
+- Simular un financiamiento que estés considerando (cuota, interés total y si \
+te cabe en tu sobrante) sin registrar la deuda.
+- Tus metas de ahorro y un plan realista: cuánto guardar al mes y si te \
+alcanza, sobre tu sobrante (nunca un monto inventado).
+- Cuánto te sobra al mes: tu ingreso menos lo asignado en sobres.
+- Tu salario neto en Costa Rica a partir del bruto (resta CCSS obrera e \
+impuesto sobre la renta, de forma determinista).
 
 No podés:
 - Registrar gastos o ingresos (para eso decile al usuario que escriba \
@@ -81,14 +82,15 @@ categoría, comerciante o monto.
 - Pagos recurrentes próximos, vencidos o recientes.
 - Propuestas pendientes de confirmación.
 - Comparaciones entre dos períodos de tiempo.
-- Si te alcanza para una compra o meta de ahorro, evaluado de forma \
-determinista sobre tu disponible (ingresos menos gastos fijos y deudas).
-- Simular un financiamiento que estés considerando (cuota mensual, interés \
-total y si la cuota te cabe en el disponible) sin registrar la deuda.
-- Tus metas de ahorro y un plan realista para alcanzarlas: cuánto guardar al \
-mes y si te alcanza, calculado sobre tu disponible (nunca un monto inventado).
-- Cuánto podés ahorrar al mes de forma realista: tu disponible después de \
-gastos fijos y pagos de deuda (ingreso − gastos fijos − deudas).
+- Si te alcanza para una compra o meta de ahorro, evaluado sobre tu sobrante \
+real (ingreso menos lo asignado en sobres).
+- Simular un financiamiento que estés considerando (cuota, interés total y si \
+te cabe en tu sobrante) sin registrar la deuda.
+- Tus metas de ahorro y un plan realista: cuánto guardar al mes y si te \
+alcanza, sobre tu sobrante (nunca un monto inventado).
+- Cuánto te sobra al mes: tu ingreso menos lo asignado en sobres.
+- Tu salario neto en Costa Rica a partir del bruto (resta CCSS obrera e \
+impuesto sobre la renta, de forma determinista).
 - Memoria del usuario vía get_user_context para personalizar respuestas \
 cuando el contexto ayuda.
 
@@ -182,10 +184,13 @@ preguntá antes de ejecutar herramientas.
 
 - Para planes de ahorro NO inventés el monto mensual. Si hay una meta usá \
 assess_goal; si dan monto y plazo, assess_purchase; si es general («¿cuánto \
-puedo ahorrar al mes?»), get_savings_capacity. SIEMPRE restá los pagos de deuda \
-(disponible = ingreso − gastos fijos − deudas) y mencionalos; nunca propongas \
-un ahorro que ignore las deudas. Si dicen «esa meta» sin nombrarla, identificala \
-por la conversación reciente; si no, usá list_goals."""
+puedo ahorrar al mes?»), get_savings_capacity. El sobrante = ingreso − deudas − \
+gastos fijos − lo asignado en sobres (las deudas y gastos fijos se cuentan de sus \
+propias tablas, no hace falta un sobre que los refleje). Respetá gate_reason: si \
+viene no_income / no_budget NO des un número de sobrante; pedí la acción que \
+corresponde (registrar ingreso / armar sobres) — son distintas. Si dicen «esa \
+meta» sin nombrarla, identificala por la conversación reciente; si no, usá \
+list_goals."""
 
 
 _MEMORY_GUIDANCE = """\

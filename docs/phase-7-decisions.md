@@ -5,6 +5,12 @@
 **Created:** 2026-06-08
 **Vault decision note:** `05_Decisions/Decision - Affordability Engine.md`
 
+> **Updated 2026-06-09 — Unified Monthly Cashflow.** The verdict denominator
+> changed from `income − fixed − debt` to the envelope-aware **surplus**, and is
+> now **gated**. See **§9** (the canonical description of the current engine);
+> §3 below is kept for history with the change flagged inline. Vault:
+> `05_Decisions/Decision - Unified Monthly Cashflow.md`.
+
 ---
 
 ## 1. Goal / done-when
@@ -30,6 +36,12 @@ structurally unable to do the arithmetic.
 ---
 
 ## 3. The engine — `api/services/finance/affordability.py`
+
+> **Superseded 2026-06-09 (see §9).** `assess_affordability` now takes a
+> `MonthlyCashflow` and judges against the **surplus** (`income − committed
+> envelopes`), gated. The `income − fixed − commitments` denominator below is
+> historical; `gather_affordability_inputs` (income/bills/debt gathering) is
+> unchanged and still feeds the cashflow.
 
 - `assess_affordability(...)` is **pure** (no DB, no LLM):
   `disposable = income − fixed − commitments`; a plan is `feasible` iff
@@ -237,9 +249,16 @@ when no rate) + no regression in `tests/test_phase_6f_chat_create_debt.py`.
   handoff leads-with-cost vs plain-when-no-rate. No regression in the existing
   `test_phase_6f_chat_create_debt.py`.
 - `tests/test_system_prompt_builder.py` — capabilities-list discoverability lock.
+- `tests/test_phase7_monthly_cashflow.py` — the cashflow source of truth
+  (positive/deficit/gates/double-count guard/`months_to_goal`/savings
+  passthrough + DB end-to-end excluding CR lump cycles). **(§9)**
+- `tests/test_phase7_unified_cashflow_regression.py` — the ₡1M phone:
+  verdict + surplus + savings-plan consistent across tools, and the three gates
+  firing distinct reason+copy. **(§9)**
 - Full P7 + touched-path slice green (engine, goal gate, over-commitment nudge,
   in-app feed, all four nudge suites, goal chat creation, both system-prompt
-  suites). Migration `0023` applied; `alembic current` → `0023 (head)`.
+  suites). Migration `0023` applied; `alembic current` → `0023 (head)`. The §9
+  unified-cashflow rework added no migration (envelopes already exist).
 
 ---
 
@@ -250,3 +269,86 @@ when no rate) + no regression in `tests/test_phase_6f_chat_create_debt.py`.
   overwhelmingly CRC). Cross-currency *goals* skip the gate entirely.
 - **Operator on-device sign-off** — the chat affordability answer and the
   goal-creation pushback wording want a real-device pass before P7 closes.
+- **80% margin revisit (§9, sub-decision A)** — the margin's rationale weakened
+  under a complete budget; revisiting it is a **separate dogfood ticket**, not
+  this work (changing the verdict base AND the margin together would make a
+  dogfood behavior change unattributable). No date/owner assigned.
+- **Redirectable savings** — a schema-level model that distinguishes an
+  earmarked emergency fund from free accumulation (so savings could be netted
+  out of committed) is a later decision. Today all envelope classes count as
+  committed; redirection is offered as the user's option in copy only (§9 B).
+
+---
+
+## 9. Unified Monthly Cashflow (2026-06-09) — envelope-aware verdict
+
+**The problem.** "¿Puedo comprar un teléfono de ₡1M?" correctly answered *no*,
+while "¿cuánto me sobra al mes?" reported ~₡900k. Both flowed through the **same**
+engine (`assess_for_user → assess_affordability`); the single defect was that the
+`income − fixed − debt` disposable is **blind to envelopes** — the *gastos fijos
+aún no realizados* the user has already budgeted. Hiding the surplus from the
+display (and leaving the verdict on the blind denominator) was rejected: a sibling
+contradiction survives ("te sobran ₡100k" + "sí, comprá el de ₡600k"). The
+denominator, not the display, is the disease — so the **verdict** goes
+envelope-aware too. Vault: `Decision - Unified Monthly Cashflow`.
+
+**One source of truth.** `api/services/finance/cashflow.py::compute_monthly_cashflow`.
+Every "cuánto sobra / puedo comprar / cuánto ahorro" answer flows through it. The
+LLM never computes these — it calls a tool and narrates.
+
+**Model A (envelopes = the complete budget).** `committed_outflows =
+envelope_allocations` (active **root** allocations, FX-converted; reuses the live
+envelope summary's `total_limit` so it can't drift from the home bars and nested
+children aren't double-counted). Debt payments + recurring bills are computed for
+**transparency** but NOT re-added — in a zero-based budget they already live inside
+an envelope, and there's no FK linking an envelope to a bill/debt, so adding them
+would double-count with no way to dedup. `surplus = income − committed_outflows`;
+negative = **deficit**, surfaced honestly.
+
+**Envelope-aware verdict.** `assess_affordability(cashflow, *, desired_amount,
+timeline_months)` judges `monthly_needed ≤ 0.80 × surplus`. This **supersedes the
+Phase 7a lock** (`feasible = 0.80 × (income − fixed − debt)`), done consciously —
+`tests/test_phase_7a_context.py`'s headline assertions were rewritten; its
+context-SIGNAL assertions (over-limit flag + upcoming event don't move the verdict)
+are unchanged.
+
+**Three gates** withhold the confident verdict/surplus and emit DISTINCT copy
+(each a different user action — `gate_guidance()` is the single copy source):
+- `no_income` → *registrá tu ingreso* (no recurring income on file).
+- `no_budget` → *armá tus sobres* (no active envelopes; committed would be 0 and
+  surplus collapses to the old inflated income figure).
+- `under_coverage` → *que tus sobres cubran tus deudas + gastos fijos*
+  (`allocations < debt + bills`; committed understates reality → surplus inflated).
+  A hard gate — a `max(envelopes, debts+bills)` floor was rejected (over-states in
+  the disjoint case).
+
+**Sub-decisions (operator, 2026-06-09).**
+- **A — KEEP the 80% margin**, now on `surplus`. Changing the verdict base AND the
+  margin in one PR would make dogfood unattributable; revisit is a separate ticket.
+- **B — count ALL classes** as committed (`committed = total_limit`). The engine
+  must not unilaterally decide savings is grabbable. A transparency-only
+  `savings_allocations` (Σ savings+investing roots; subtracts nothing) powers a
+  deterministic nuance: when the verdict is *no* and `savings_allocations > 0`, the
+  copy offers reallocation as the **user's** option ("podés reasignar parte de tus
+  sobres de ahorro/inversión").
+
+**CR lump cycles excluded.** `_monthly_income` now excludes `aguinaldo` +
+`salario_escolar` (annual lumps paid Dec/Jan; amortizing them was phantom monthly
+cash). One-line filter at the single income source → flows to the envelope summary,
+the engine, and the cashflow.
+
+**Consumers reconnected (the verdict engine is shared, so they flip together).**
+`assess_purchase`, `get_savings_capacity`, `assess_financing`
+(`cuota_fits_surplus`), the goal-creation gate (`_goal_feasibility_line`, with the
+savings-reallocation nuance), and the debt-handoff advisory line — all report
+`surplus` + `gate_reason`. **Exception by design:** the `over_commitment` nudge
+keeps `committed = fixed + debt` — it answers *structural fixed-obligation pressure
+vs income*, a different question; rerouting it to envelopes would false-trigger an
+aggressive saver. (It still benefits from the lump-excluded income.)
+
+**Contract — `MonthlyCashflow`:** `monthly_income`, `debt_payments`,
+`recurring_bills`, `envelope_allocations`, `committed_outflows`, `surplus`,
+`has_budget`, `covers_obligations`, `income_known`, `savings_allocations`,
+`currency`; properties `reliable` / `gate_reason` / `is_deficit`; helper
+`months_to_goal(amount)` (`ceil(amount / surplus)` when surplus > 0, else None).
+All `Decimal`, CRC default. No migration (envelopes already exist).

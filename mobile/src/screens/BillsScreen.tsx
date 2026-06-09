@@ -22,16 +22,18 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 
 import {
   fetchBillOccurrences,
   fetchRecurringBills,
   ACTIONABLE_STATUSES,
+  FREQUENCY_LABELS,
   type BillOccurrenceResponse,
   type RecurringBillResponse,
 } from "../api/bills";
+import { BillFormModal } from "../components/BillFormModal";
 import { CardShadow, Colors, FontSize, Radius, Spacing } from "../theme";
 import type { MasStackParamList } from "../navigation/MasNavigator";
 
@@ -102,10 +104,20 @@ interface OccurrenceRow {
 
 export function BillsScreen({ navigation }: Props) {
   const [refreshing, setRefreshing] = useState(false);
+  const [viewMode, setViewMode] = useState<"upcoming" | "all">("upcoming");
+  const [showInactive, setShowInactive] = useState(false);
+  const [formVisible, setFormVisible] = useState(false);
+  const queryClient = useQueryClient();
 
   const billsQuery = useQuery({
     queryKey: ["recurring-bills", "active"],
     queryFn: () => fetchRecurringBills(false),
+  });
+
+  // The "Todos" management list: active by default, paused when toggled.
+  const manageBillsQuery = useQuery({
+    queryKey: ["recurring-bills", "manage", showInactive],
+    queryFn: () => fetchRecurringBills(showInactive),
   });
 
   const occurrencesQuery = useQuery({
@@ -145,7 +157,11 @@ export function BillsScreen({ navigation }: Props) {
 
   async function onRefresh() {
     setRefreshing(true);
-    await Promise.all([billsQuery.refetch(), occurrencesQuery.refetch()]);
+    await Promise.all([
+      billsQuery.refetch(),
+      occurrencesQuery.refetch(),
+      manageBillsQuery.refetch(),
+    ]);
     setRefreshing(false);
   }
 
@@ -156,97 +172,201 @@ export function BillsScreen({ navigation }: Props) {
     });
   }
 
+  function handlePressBill(bill: RecurringBillResponse) {
+    // No specific occurrence from the management list — the detail handles null.
+    navigation.navigate("BillDetail", { bill, occurrence: null });
+  }
+
+  function onFormSaved() {
+    setFormVisible(false);
+    queryClient.invalidateQueries({ queryKey: ["recurring-bills"] });
+    queryClient.invalidateQueries({ queryKey: ["bill-occurrences"] });
+    queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+  }
+
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       {/* ── header ── */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Gastos fijos</Text>
-        <Text style={styles.headerSub}>Próximos 60 días</Text>
+        <View style={styles.headerTop}>
+          <Text style={styles.headerTitle}>Gastos fijos</Text>
+          <Pressable
+            style={({ pressed }) => [styles.newBtn, pressed && { opacity: 0.85 }]}
+            onPress={() => setFormVisible(true)}
+          >
+            <Feather name="plus" size={15} color={Colors.textOnDark} />
+            <Text style={styles.newBtnText}>Nuevo</Text>
+          </Pressable>
+        </View>
+        <View style={styles.tabs}>
+          {([
+            ["upcoming", "Próximos pagos"],
+            ["all", "Todos"],
+          ] as const).map(([mode, label]) => (
+            <Pressable
+              key={mode}
+              style={[styles.tab, viewMode === mode && styles.tabActive]}
+              onPress={() => setViewMode(mode)}
+            >
+              <Text style={[styles.tabText, viewMode === mode && styles.tabTextActive]}>
+                {label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
       </View>
 
-      {isLoading && !refreshing ? (
-        <View style={styles.center}>
-          <ActivityIndicator color={Colors.accent} />
-        </View>
-      ) : (
-        <FlatList
-          data={rows}
-          keyExtractor={(r) => r.occurrence.id}
-          contentContainerStyle={rows.length === 0 ? styles.emptyContainer : styles.listContent}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              tintColor={Colors.accent}
-            />
-          }
-          ListEmptyComponent={
-            <View style={styles.emptyCard}>
-              <Feather name="check-circle" size={32} color={Colors.accentSoft} />
-              <Text style={styles.emptyTitle}>Sin pagos pendientes</Text>
-              <Text style={styles.emptySub}>
-                No hay gastos fijos vencidos ni próximos en los siguientes 60 días.
-              </Text>
-            </View>
-          }
-          renderItem={({ item: row }) => {
-            const colors = URGENCY_COLORS[row.urgency];
-            const days = daysUntil(row.occurrence.due_date);
-            return (
-              <Pressable
-                style={({ pressed }) => [
-                  styles.row,
-                  { backgroundColor: colors.bg, borderColor: colors.border },
-                  pressed && styles.rowPressed,
-                ]}
-                onPress={() => handlePressRow(row)}
-              >
-                <View style={styles.rowLeft}>
-                  <Text style={styles.rowName} numberOfLines={1}>
-                    {row.bill.name}
-                  </Text>
-                  <Text style={styles.rowSub} numberOfLines={1}>
-                    {row.bill.provider || row.bill.category || row.bill.frequency}
-                  </Text>
-                  {colors.label ? (
-                    <Text style={styles.overdueLabel}>{colors.label}</Text>
-                  ) : null}
-                </View>
-                <View style={styles.rowRight}>
-                  <Text style={styles.rowDate}>{fmtDueDate(row.occurrence.due_date)}</Text>
-                  <Text
-                    style={[
-                      styles.rowAmount,
-                      row.urgency === "overdue" && styles.amountOverdue,
-                    ]}
-                  >
-                    {fmtAmount(
-                      row.occurrence.amount_expected ?? row.bill.amount_expected,
-                      row.bill.currency,
-                    )}
-                  </Text>
-                  {days >= 0 && days <= 7 ? (
+      {viewMode === "upcoming" ? (
+        isLoading && !refreshing ? (
+          <View style={styles.center}>
+            <ActivityIndicator color={Colors.accent} />
+          </View>
+        ) : (
+          <FlatList
+            data={rows}
+            keyExtractor={(r) => r.occurrence.id}
+            contentContainerStyle={rows.length === 0 ? styles.emptyContainer : styles.listContent}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor={Colors.accent}
+              />
+            }
+            ListEmptyComponent={
+              <View style={styles.emptyCard}>
+                <Feather name="check-circle" size={32} color={Colors.accentSoft} />
+                <Text style={styles.emptyTitle}>Sin pagos pendientes</Text>
+                <Text style={styles.emptySub}>
+                  No hay gastos fijos vencidos ni próximos en los siguientes 60 días.
+                </Text>
+              </View>
+            }
+            renderItem={({ item: row }) => {
+              const colors = URGENCY_COLORS[row.urgency];
+              const days = daysUntil(row.occurrence.due_date);
+              return (
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.row,
+                    { backgroundColor: colors.bg, borderColor: colors.border },
+                    pressed && styles.rowPressed,
+                  ]}
+                  onPress={() => handlePressRow(row)}
+                >
+                  <View style={styles.rowLeft}>
+                    <Text style={styles.rowName} numberOfLines={1}>
+                      {row.bill.name}
+                    </Text>
+                    <Text style={styles.rowSub} numberOfLines={1}>
+                      {row.bill.provider || row.bill.category || row.bill.frequency}
+                    </Text>
+                    {colors.label ? (
+                      <Text style={styles.overdueLabel}>{colors.label}</Text>
+                    ) : null}
+                  </View>
+                  <View style={styles.rowRight}>
+                    <Text style={styles.rowDate}>{fmtDueDate(row.occurrence.due_date)}</Text>
                     <Text
                       style={[
-                        styles.rowDaysLeft,
+                        styles.rowAmount,
                         row.urgency === "overdue" && styles.amountOverdue,
                       ]}
                     >
-                      {days === 0 ? "Hoy" : `en ${days}d`}
+                      {fmtAmount(
+                        row.occurrence.amount_expected ?? row.bill.amount_expected,
+                        row.bill.currency,
+                      )}
                     </Text>
-                  ) : null}
-                  <Feather
-                    name="chevron-right"
-                    size={16}
-                    color={Colors.textMuted}
-                    style={styles.rowChevron}
-                  />
-                </View>
-              </Pressable>
-            );
-          }}
+                    {days >= 0 && days <= 7 ? (
+                      <Text
+                        style={[
+                          styles.rowDaysLeft,
+                          row.urgency === "overdue" && styles.amountOverdue,
+                        ]}
+                      >
+                        {days === 0 ? "Hoy" : `en ${days}d`}
+                      </Text>
+                    ) : null}
+                    <Feather
+                      name="chevron-right"
+                      size={16}
+                      color={Colors.textMuted}
+                      style={styles.rowChevron}
+                    />
+                  </View>
+                </Pressable>
+              );
+            }}
+          />
+        )
+      ) : (
+        <FlatList
+          data={manageBillsQuery.data ?? []}
+          keyExtractor={(b) => b.id}
+          contentContainerStyle={
+            (manageBillsQuery.data ?? []).length === 0
+              ? styles.emptyContainer
+              : styles.listContent
+          }
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} />
+          }
+          ListHeaderComponent={
+            <Pressable
+              style={styles.inactiveToggle}
+              onPress={() => setShowInactive((v) => !v)}
+            >
+              <Feather
+                name={showInactive ? "check-square" : "square"}
+                size={15}
+                color={showInactive ? Colors.accent : Colors.textMuted}
+              />
+              <Text style={styles.inactiveToggleText}>Ver pausados</Text>
+            </Pressable>
+          }
+          ListEmptyComponent={
+            <View style={styles.emptyCard}>
+              <Feather name="repeat" size={32} color={Colors.accentSoft} />
+              <Text style={styles.emptyTitle}>
+                {showInactive ? "Sin gastos fijos pausados" : "Sin gastos fijos"}
+              </Text>
+              <Text style={styles.emptySub}>
+                Registralo por el chat o tocá "+ Nuevo" para crear uno.
+              </Text>
+            </View>
+          }
+          renderItem={({ item: bill }) => (
+            <Pressable
+              style={({ pressed }) => [styles.manageRow, pressed && styles.rowPressed]}
+              onPress={() => handlePressBill(bill)}
+            >
+              <View style={styles.rowLeft}>
+                <Text style={styles.rowName} numberOfLines={1}>
+                  {bill.name}
+                </Text>
+                <Text style={styles.rowSub} numberOfLines={1}>
+                  {(bill.category ?? "—")} · {FREQUENCY_LABELS[bill.frequency] ?? bill.frequency}
+                  {!bill.is_active ? "  ·  Pausado" : ""}
+                </Text>
+              </View>
+              <View style={styles.rowRight}>
+                <Text style={styles.rowAmount}>
+                  {fmtAmount(bill.amount_expected, bill.currency)}
+                </Text>
+                <Feather name="chevron-right" size={16} color={Colors.textMuted} />
+              </View>
+            </Pressable>
+          )}
         />
       )}
+
+      <BillFormModal
+        visible={formVisible}
+        mode="create"
+        onClose={() => setFormVisible(false)}
+        onSaved={onFormSaved}
+      />
     </SafeAreaView>
   );
 }
@@ -275,6 +395,62 @@ const styles = StyleSheet.create({
     fontSize: FontSize.sm,
     color: Colors.textMuted,
     marginTop: 2,
+  },
+  headerTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  newBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: Colors.accent,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 6,
+  },
+  newBtnText: { fontSize: FontSize.sm, color: Colors.textOnDark, fontWeight: "700" },
+  tabs: {
+    flexDirection: "row",
+    gap: Spacing.xs,
+    marginTop: Spacing.sm,
+  },
+  tab: {
+    paddingHorizontal: Spacing.sm + 2,
+    paddingVertical: Spacing.xs + 1,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.bg,
+  },
+  tabActive: { borderColor: Colors.accent, backgroundColor: Colors.accentBg },
+  tabText: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: "600" },
+  tabTextActive: { color: Colors.accent },
+  inactiveToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: Spacing.xs,
+    marginBottom: Spacing.xs,
+  },
+  inactiveToggleText: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    fontWeight: "500",
+  },
+  manageRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: Colors.bgCard,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm + 2,
+    marginBottom: Spacing.sm,
+    ...CardShadow,
   },
   center: {
     flex: 1,

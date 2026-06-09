@@ -53,6 +53,12 @@ class RecurringIncome(Base):
     amount: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(14, 2), nullable=True
     )
+    # For salary incomes captured as gross via the CR calculator: the
+    # pre-deduction monthly figure. `amount` stays the NET take-home; this keeps
+    # the gross so the Ingresos edit can re-show it and recompute the net.
+    gross_monthly: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
     currency: Mapped[str] = mapped_column(
         String(3), nullable=False, default="CRC"
     )

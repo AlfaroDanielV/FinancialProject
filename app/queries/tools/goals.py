@@ -61,14 +61,19 @@ ASSESS_GOAL_DESCRIPTION = (
     "Opcionalmente pasá timeline_months_override si el usuario propone un plazo "
     "distinto al de la meta. La herramienta calcula lo que falta (objetivo − "
     "ahorrado) y el plazo (de la fecha límite o del override), y corre el motor "
-    "de accesibilidad sobre los ingresos, gastos fijos y deudas reales: "
-    "monthly_needed es lo que habría que guardar al mes y feasible dice si cabe "
-    "en el disponible seguro (margen 80%). NUNCA inventés ese monto mensual: "
-    "reportá monthly_needed tal cual. Si feasible=false, ofrecé las alternativas "
-    "ya calculadas (min_timeline_months_feasible = en cuántos meses sí "
-    "alcanzaría; max_amount_feasible_in_timeline = cuánto sí podría en ese "
-    "plazo). Si feasible=null no hay ingresos registrados: pedile que los "
-    "registre. Si la meta no tiene fecha límite (has_deadline=false), el plan se "
+    "de accesibilidad sobre el SOBRANTE real (surplus = ingreso − lo asignado en "
+    "sobres): monthly_needed es lo que habría que guardar al mes y feasible dice "
+    "si cabe en el sobrante seguro (margen 80%). NUNCA inventés ese monto "
+    "mensual: reportá monthly_needed tal cual. IMPORTANTE — gate_reason: si viene "
+    "'no_income'/'no_budget', feasible es null y NO afirmés un "
+    "veredicto; pedí la acción que corresponde (registrar ingreso / armar sobres), "
+    "que son distintas. Si "
+    "feasible=false, ofrecé las alternativas ya calculadas "
+    "(min_timeline_months_feasible = en cuántos meses sí alcanzaría; "
+    "max_amount_feasible_in_timeline = cuánto sí podría en ese plazo) y, si "
+    "savings_allocations > 0, que podría reasignar parte de sus sobres de "
+    "ahorro/inversión si quiere priorizar la meta (decisión del usuario). Si la "
+    "meta no tiene fecha límite (has_deadline=false), el plan se "
     "evalúa como compra inmediata; usá min_timeline_months_feasible para decir "
     "en cuántos meses llegaría a su ritmo seguro. El campo «context» trae el "
     "estado de los sobres y los pagos próximos: mencionalos como contexto (p.ej. "
@@ -250,11 +255,15 @@ async def assess_goal(
             "monthly_income": _money(assessment.monthly_income),
             "monthly_fixed_expenses": _money(assessment.monthly_fixed_expenses),
             "monthly_debt_payments": _money(assessment.monthly_debt_payments),
-            "monthly_disposable": _money(assessment.monthly_disposable),
-            "safe_monthly_disposable": _money(assessment.safe_monthly_disposable),
+            "envelope_allocations": _money(assessment.envelope_allocations),
+            "committed_outflows": _money(assessment.committed_outflows),
+            "savings_allocations": _money(assessment.savings_allocations),
+            "surplus": _money(assessment.surplus),
+            "safe_surplus": _money(assessment.safe_surplus),
             "safety_margin_pct": 80,
             "monthly_needed": _money(assessment.monthly_needed),
             "feasible": assessment.feasible,
+            "gate_reason": assessment.gate_reason,
             "shortfall": _money(assessment.shortfall),
             "min_timeline_months_feasible": assessment.min_timeline_months_feasible,
             "max_amount_feasible_in_timeline": _money(

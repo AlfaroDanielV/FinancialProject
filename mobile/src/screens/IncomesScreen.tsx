@@ -15,8 +15,12 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
   Pressable,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -32,10 +36,13 @@ import {
   FREQUENCY_LABELS,
   INCOME_TYPE_LABELS,
   pauseRecurringIncome,
+  restoreRecurringIncome,
   resumeRecurringIncome,
   fetchRecurringIncomes,
   type RecurringIncomeResponse,
 } from "../api/incomes";
+import { IncomeFormModal } from "../components/IncomeFormModal";
+import { SalaryCalculator } from "../components/SalaryCalculator";
 import { CardShadow, Colors, FontSize, Radius, Spacing } from "../theme";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -123,6 +130,8 @@ interface IncomeRowProps {
   onPause: (id: string) => void;
   onResume: (id: string) => void;
   onArchive: (id: string) => void;
+  onRestore: (id: string) => void;
+  onEdit: (income: RecurringIncomeResponse) => void;
   pendingId: string | null;
 }
 
@@ -131,6 +140,8 @@ function IncomeRow({
   onPause,
   onResume,
   onArchive,
+  onRestore,
+  onEdit,
   pendingId,
 }: IncomeRowProps) {
   const isLoading = pendingId === income.id;
@@ -177,6 +188,13 @@ function IncomeRow({
           color={Colors.accent}
           style={styles.rowLoader}
         />
+      ) : income.archived ? (
+        <View style={styles.actions}>
+          <Pressable style={styles.actionBtn} onPress={() => onRestore(income.id)}>
+            <Feather name="rotate-ccw" size={13} color={Colors.income} />
+            <Text style={[styles.actionText, { color: Colors.income }]}>Restaurar</Text>
+          </Pressable>
+        </View>
       ) : (
         <View style={styles.actions}>
           {isPaused ? (
@@ -201,6 +219,15 @@ function IncomeRow({
             </Pressable>
           )}
 
+          {/* Derived CR cycles (aguinaldo / salario escolar) are read-only —
+              their amount comes from the base salary, so no manual edit. */}
+          {!isDerived && (
+            <Pressable style={styles.actionBtn} onPress={() => onEdit(income)}>
+              <Feather name="edit-2" size={13} color={Colors.accent} />
+              <Text style={[styles.actionText, { color: Colors.accent }]}>Editar</Text>
+            </Pressable>
+          )}
+
           <Pressable
             style={styles.actionBtn}
             onPress={() => onArchive(income.id)}
@@ -222,6 +249,10 @@ export function IncomesScreen() {
   const [showArchived, setShowArchived] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
+  const [formVisible, setFormVisible] = useState(false);
+  const [formMode, setFormMode] = useState<"create" | "edit">("create");
+  const [formIncome, setFormIncome] = useState<RecurringIncomeResponse | null>(null);
+  const [calcVisible, setCalcVisible] = useState(false);
   const queryClient = useQueryClient();
 
   const incomesQuery = useQuery({
@@ -296,6 +327,37 @@ export function IncomesScreen() {
     );
   }
 
+  async function handleRestore(id: string) {
+    setPendingId(id);
+    try {
+      await restoreRecurringIncome(id);
+      queryClient.invalidateQueries({ queryKey: ["recurring-incomes"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    } catch {
+      Alert.alert("Error", "No se pudo restaurar el ingreso.");
+    } finally {
+      setPendingId(null);
+    }
+  }
+
+  function openCreate() {
+    setFormMode("create");
+    setFormIncome(null);
+    setFormVisible(true);
+  }
+
+  function openEdit(income: RecurringIncomeResponse) {
+    setFormMode("edit");
+    setFormIncome(income);
+    setFormVisible(true);
+  }
+
+  function onFormSaved() {
+    setFormVisible(false);
+    queryClient.invalidateQueries({ queryKey: ["recurring-incomes"] });
+    queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+  }
+
   async function onRefresh() {
     setRefreshing(true);
     await incomesQuery.refetch();
@@ -311,28 +373,37 @@ export function IncomesScreen() {
           <Text style={styles.headerTitle}>Ingresos recurrentes</Text>
           <Text style={styles.headerSub}>Salarios y ciclos CR</Text>
         </View>
-        <Pressable
-          style={({ pressed }) => [
-            styles.archivedToggle,
-            showArchived && styles.archivedToggleActive,
-            pressed && { opacity: 0.7 },
-          ]}
-          onPress={() => setShowArchived((v) => !v)}
-        >
-          <Feather
-            name="archive"
-            size={14}
-            color={showArchived ? Colors.accent : Colors.textMuted}
-          />
-          <Text
-            style={[
-              styles.archivedToggleText,
-              showArchived && { color: Colors.accent },
+        <View style={styles.headerActions}>
+          <Pressable
+            style={({ pressed }) => [
+              styles.archivedToggle,
+              showArchived && styles.archivedToggleActive,
+              pressed && { opacity: 0.7 },
             ]}
+            onPress={() => setShowArchived((v) => !v)}
           >
-            Archivados
-          </Text>
-        </Pressable>
+            <Feather
+              name="archive"
+              size={14}
+              color={showArchived ? Colors.accent : Colors.textMuted}
+            />
+            <Text
+              style={[
+                styles.archivedToggleText,
+                showArchived && { color: Colors.accent },
+              ]}
+            >
+              Archivados
+            </Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.newBtn, pressed && { opacity: 0.85 }]}
+            onPress={openCreate}
+          >
+            <Feather name="plus" size={15} color={Colors.textOnDark} />
+            <Text style={styles.newBtnText}>Nuevo</Text>
+          </Pressable>
+        </View>
       </View>
 
       {isLoading ? (
@@ -354,22 +425,40 @@ export function IncomesScreen() {
             />
           }
           ListHeaderComponent={
-            nudgeSalary && !showArchived ? (
-              <NudgeBanner
-                salaryId={nudgeSalary.id}
-                salaryName={nudgeSalary.name}
-                onDerive={(id) => deriveMutation.mutate(id)}
-                isPending={deriveMutation.isPending}
-              />
-            ) : null
+            <>
+              <Pressable
+                style={({ pressed }) => [styles.calcBar, pressed && { opacity: 0.85 }]}
+                onPress={() => setCalcVisible(true)}
+              >
+                <Feather name="percent" size={16} color={Colors.accent} />
+                <Text style={styles.calcBarText}>Calculadora de salario neto</Text>
+                <Feather name="chevron-right" size={16} color={Colors.textMuted} />
+              </Pressable>
+              {nudgeSalary && !showArchived ? (
+                <NudgeBanner
+                  salaryId={nudgeSalary.id}
+                  salaryName={nudgeSalary.name}
+                  onDerive={(id) => deriveMutation.mutate(id)}
+                  isPending={deriveMutation.isPending}
+                />
+              ) : null}
+            </>
           }
           ListEmptyComponent={
             <View style={styles.emptyCard}>
               <Feather name="trending-up" size={32} color={Colors.accentSoft} />
               <Text style={styles.emptyTitle}>Sin ingresos registrados</Text>
               <Text style={styles.emptySub}>
-                Registra tus ingresos desde el chat o la sección de incorporación.
+                Registrá tu salario por el chat o tocá "+ Nuevo". Si es salario,
+                calculo el neto desde el bruto.
               </Text>
+              <Pressable
+                style={({ pressed }) => [styles.emptyCta, pressed && { opacity: 0.85 }]}
+                onPress={openCreate}
+              >
+                <Feather name="plus" size={16} color={Colors.textOnDark} />
+                <Text style={styles.emptyCtaText}>Nuevo ingreso</Text>
+              </Pressable>
             </View>
           }
           renderItem={({ item }) => (
@@ -378,11 +467,51 @@ export function IncomesScreen() {
               onPause={handlePause}
               onResume={handleResume}
               onArchive={handleArchive}
+              onRestore={handleRestore}
+              onEdit={openEdit}
               pendingId={pendingId}
             />
           )}
         />
       )}
+
+      <IncomeFormModal
+        visible={formVisible}
+        mode={formMode}
+        income={formIncome ?? undefined}
+        onClose={() => setFormVisible(false)}
+        onSaved={onFormSaved}
+      />
+
+      <Modal
+        visible={calcVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setCalcVisible(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          style={styles.calcOverlay}
+        >
+          <Pressable style={styles.calcBackdrop} onPress={() => setCalcVisible(false)} />
+          <View style={styles.calcSheet}>
+            <View style={styles.calcHandle} />
+            <View style={styles.calcSheetHeader}>
+              <Text style={styles.calcSheetTitle}>Salario neto</Text>
+              <Pressable onPress={() => setCalcVisible(false)} hitSlop={8}>
+                <Feather name="x" size={20} color={Colors.textMuted} />
+              </Pressable>
+            </View>
+            <ScrollView
+              style={styles.calcSheetBody}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <SalaryCalculator currency="CRC" />
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -590,4 +719,92 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xs,
     fontWeight: "600",
   },
+  // header actions + create
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+  },
+  newBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: Colors.accent,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 6,
+  },
+  newBtnText: {
+    fontSize: FontSize.sm,
+    color: Colors.textOnDark,
+    fontWeight: "700",
+  },
+  // salary calculator entry bar
+  calcBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+    backgroundColor: Colors.bgCard,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.accentSoft,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm + 2,
+    marginBottom: Spacing.sm,
+    ...CardShadow,
+  },
+  calcBarText: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    fontWeight: "600",
+    color: Colors.textPrimary,
+  },
+  // empty CTA
+  emptyCta: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: Colors.accent,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
+  emptyCtaText: {
+    fontSize: FontSize.md,
+    color: Colors.textOnDark,
+    fontWeight: "700",
+  },
+  // standalone calculator modal
+  calcOverlay: { flex: 1, justifyContent: "flex-end" },
+  calcBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.35)" },
+  calcSheet: {
+    backgroundColor: Colors.bg,
+    borderTopLeftRadius: Radius.lg,
+    borderTopRightRadius: Radius.lg,
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.sm,
+    paddingBottom: Spacing.xl,
+    maxHeight: "90%",
+  },
+  calcHandle: {
+    alignSelf: "center",
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: Colors.border,
+    marginBottom: Spacing.sm,
+  },
+  calcSheetHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: Spacing.md,
+  },
+  calcSheetTitle: {
+    fontSize: FontSize.lg,
+    fontWeight: "700",
+    color: Colors.textPrimary,
+  },
+  calcSheetBody: { paddingBottom: Spacing.md },
 });

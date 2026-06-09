@@ -30,11 +30,13 @@ from .finance.affordability import (
     AffordabilityResult,
     FinancialContext,
     assess_for_user,
-    gather_affordability_inputs,
     gather_financial_context,
 )
+from .finance.cashflow import compute_monthly_cashflow
 from .llm_extractor import ExtractionResult, Intent
 from .transactions import window_bounds
+
+from app.domain.payroll import UnconfiguredYearError, compute_net_salary
 
 
 # ── result variants ───────────────────────────────────────────────────────────
@@ -524,36 +526,58 @@ def _whole(amount: Decimal, currency: str) -> str:
 def _goal_feasibility_line(
     *, monthly: Decimal, currency: str, assessment: Optional[AffordabilityResult]
 ) -> str:
-    """Phase 7: word the deterministic feasibility verdict. The engine decides;
-    this only phrases it. Non-blocking — the user still confirms either way."""
+    """Phase 7: word the deterministic feasibility verdict, now judged against the
+    envelope-aware surplus ([[Decision - Unified Monthly Cashflow]]). The engine
+    decides; this only phrases it. Non-blocking — the user still confirms either
+    way."""
     monthly_str = _whole(monthly, currency)
 
-    # No assessment (cross-currency goal skips the gate) or income unknown →
-    # report the monthly figure without a feasibility claim we can't back.
+    # No assessment (cross-currency goal skips the gate).
     if assessment is None:
         return f" Necesitás ~{monthly_str}/mes para llegar."
-    if assessment.feasible is None:
-        return (
-            f" Necesitás ~{monthly_str}/mes para llegar. (No tengo tus ingresos "
-            "registrados, así que no puedo confirmar si te alcanza.)"
-        )
-    if assessment.feasible:
-        return f" Necesitás ~{monthly_str}/mes y te alcanza con tu disponible."
 
-    # Infeasible — be direct and constructive, never harsh, never a veto.
+    # Gated → no trustworthy surplus → no feasibility claim, and the ask is
+    # DISTINCT per gate (register income / build budget).
+    if assessment.feasible is None:
+        if assessment.gate_reason == "no_budget":
+            extra = (
+                "Todavía no tenés sobres (presupuesto) armados, así que no puedo "
+                "confirmar si te alcanza. Armá tus sobres y te digo."
+            )
+        else:  # no_income (or unknown)
+            extra = (
+                "No tengo tus ingresos registrados, así que no puedo confirmar si "
+                "te alcanza. Registralos y te digo."
+            )
+        return f" Necesitás ~{monthly_str}/mes para llegar. ({extra})"
+
+    if assessment.feasible:
+        return f" Necesitás ~{monthly_str}/mes y te alcanza con tu sobrante."
+
+    # Infeasible — direct + constructive, never a veto. When the user has
+    # savings/investing envelopes, offer reallocation as THEIR option (the engine
+    # never grabs that money for them — sub-decision B).
+    savings = assessment.savings_allocations or Decimal("0")
+    realloc = ""
+    if savings > 0:
+        realloc = (
+            f" Eso sí: tenés ~{_whole(savings, currency)}/mes en sobres de "
+            "ahorro/inversión — si querés priorizar esta meta, podés reasignar parte."
+        )
+
     if assessment.min_timeline_months_feasible is not None:
-        safe = _whole(assessment.safe_monthly_disposable or Decimal("0"), currency)
+        safe = _whole(assessment.safe_surplus or Decimal("0"), currency)
         short = _whole(assessment.shortfall or Decimal("0"), currency)
         return (
-            f" Necesitás ~{monthly_str}/mes, pero tu disponible seguro ronda "
+            f" Necesitás ~{monthly_str}/mes, pero tu sobrante seguro ronda "
             f"{safe}/mes — te faltarían ~{short}/mes. Podrías extender a "
             f"~{assessment.min_timeline_months_feasible} meses o bajar la meta."
+            f"{realloc}"
         )
-    # No positive disposable at all (fixed bills + debt already eat the income).
+    # No positive surplus at all (envelopes already consume the income).
     return (
-        f" Necesitás ~{monthly_str}/mes, pero ahora tus gastos fijos y deudas ya "
-        "consumen tu ingreso disponible. Habría que bajar la meta o liberar "
-        "gastos antes."
+        f" Necesitás ~{monthly_str}/mes, pero ahora tus sobres ya consumen tu "
+        f"ingreso. Habría que bajar la meta o liberar algún sobre antes.{realloc}"
     )
 
 
@@ -745,13 +769,24 @@ def _build_income_summary(
     frequency: str,
     next_date: date,
     income_type: str,
+    gross_amount: Optional[Decimal] = None,
 ) -> str:
     amt = _format_amount(amount, currency)
     freq = _FREQUENCY_LABELS_ES.get(frequency, frequency)
-    lead = (
-        f"Ingreso recurrente: {name} — {amt} ({freq}), "
-        f"próximo pago {next_date.isoformat()}."
-    )
+    if gross_amount is not None:
+        # Salary captured as gross: show bruto → neto so the user sees the
+        # deductions the deterministic calculator applied.
+        gamt = _format_amount(gross_amount, currency)
+        lead = (
+            f"Ingreso recurrente: {name} — salario bruto {gamt} → neto {amt} "
+            f"(después de CCSS e impuesto de renta) ({freq}), "
+            f"próximo pago {next_date.isoformat()}."
+        )
+    else:
+        lead = (
+            f"Ingreso recurrente: {name} — {amt} ({freq}), "
+            f"próximo pago {next_date.isoformat()}."
+        )
     if currency_defaulted:
         lead += f" (Usé {currency} por defecto.)"
     if income_type == "salary" and currency == "CRC":
@@ -762,17 +797,45 @@ def _build_income_summary(
     return lead + " ¿Confirmo?"
 
 
+def _net_from_gross_salary(gross: Decimal) -> Optional[Decimal]:
+    """Net take-home for a CRC gross salary via the deterministic calculator.
+
+    Returns None when the calc can't run (unconfigured year / invalid input),
+    so the caller falls back to storing the entered amount as-is. The LLM never
+    computes this — it's the pure rules-layer ``compute_net_salary``.
+    """
+    try:
+        breakdown = compute_net_salary(gross_monthly=int(gross))
+    except (ValueError, UnconfiguredYearError):
+        return None
+    return Decimal(breakdown.net_monthly)
+
+
 def _dispatch_create_income(
     *,
     extraction: ExtractionResult,
     user: User,
     today: date,
 ) -> DispatcherResult:
+    # Resolve type/currency first so the amount prompt can ask for GROSS salary.
+    income_type = extraction.income_type or "salary"
+    currency = extraction.currency or user.currency
+    currency_defaulted = extraction.currency is None
+    # CR salary calculator only applies to colón salaries (USD salaries and
+    # non-salary income keep the entered amount untouched).
+    is_cr_salary = income_type == "salary" and currency == "CRC"
+
     # Amount, frequency, and next payment date are all NOT NULL on the row,
     # so each is gathered before proposing. Amount reuses the shared field.
     if extraction.amount is None:
+        question = (
+            "¿De cuánto es tu salario bruto mensual, antes de deducciones? "
+            "(ej: '800 mil') — calculo el neto por vos."
+            if is_cr_salary
+            else "¿De cuánto es cada pago? Decime el monto (ej: '800 mil')."
+        )
         return AskClarification(
-            question_es="¿De cuánto es cada pago? Decime el monto (ej: '800 mil').",
+            question_es=question,
             awaiting_field="amount",
             partial=extraction.model_dump(mode="json"),
         )
@@ -790,11 +853,17 @@ def _dispatch_create_income(
             partial=extraction.model_dump(mode="json"),
         )
 
-    income_type = extraction.income_type or "salary"
-    currency = extraction.currency or user.currency
-    currency_defaulted = extraction.currency is None
-    amount: Decimal = extraction.amount
     name = _DEFAULT_INCOME_NAME.get(income_type, "Ingreso")
+
+    # For a CR salary, treat the entered amount as GROSS and store the NET as
+    # the income amount (the actual take-home), keeping the gross for re-edit.
+    gross_amount: Optional[Decimal] = None
+    amount: Decimal = extraction.amount
+    if is_cr_salary:
+        net = _net_from_gross_salary(extraction.amount)
+        if net is not None:
+            gross_amount = extraction.amount
+            amount = net
 
     payload = {
         "action_type": "create_income",
@@ -805,6 +874,9 @@ def _dispatch_create_income(
         "frequency": extraction.income_frequency,
         "next_payment_date": next_date.isoformat(),
     }
+    if gross_amount is not None:
+        payload["gross_monthly"] = str(gross_amount)
+
     summary = _build_income_summary(
         name=name,
         amount=amount,
@@ -813,6 +885,7 @@ def _dispatch_create_income(
         frequency=extraction.income_frequency,
         next_date=next_date,
         income_type=income_type,
+        gross_amount=gross_amount,
     )
     return ProposeAction(
         action_type="create_income", payload=payload, summary_es=summary
@@ -971,21 +1044,22 @@ async def _debt_financing_advice(
         f"pagarías ~{_whole(interest_d, currency)} solo en intereses."
     )
 
-    inputs = await gather_affordability_inputs(db, user=user)
-    if inputs.monthly_income is not None:
-        disposable = (
-            inputs.monthly_income
-            - inputs.monthly_fixed_expenses
-            - inputs.monthly_debt_payments
-        )
-        safe = disposable * SAFETY_MARGIN
+    # Does the cuota fit the envelope-aware surplus? Same single source as every
+    # other surface ([[Decision - Unified Monthly Cashflow]]); gated → distinct ask.
+    cashflow = await compute_monthly_cashflow(db, user=user)
+    if cashflow.reliable:
+        safe = cashflow.surplus * SAFETY_MARGIN
         if cuota_d > safe:
             line += (
-                f" Supera tu disponible seguro (~{_whole(safe, currency)}/mes), "
+                f" Supera tu sobrante seguro (~{_whole(safe, currency)}/mes), "
                 "así que apretaría."
             )
         else:
-            line += " Te cabe dentro de tu disponible seguro."
+            line += " Te cabe dentro de tu sobrante seguro."
+    elif cashflow.gate_reason == "no_budget":
+        line += " (Armá tus sobres para confirmar si la cuota te cabe en tu presupuesto.)"
+    else:  # no_income
+        line += " (Registrá tus ingresos para confirmar si la cuota te cabe.)"
     return line
 
 

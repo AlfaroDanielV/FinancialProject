@@ -35,6 +35,7 @@ import {
   type BillOccurrenceResponse,
 } from "../api/bills";
 import { fetchAccounts, type AccountResponse } from "../api/accounts";
+import { BillFormModal } from "../components/BillFormModal";
 import { CardShadow, Colors, FontSize, Radius, Spacing } from "../theme";
 import type { MasStackParamList } from "../navigation/MasNavigator";
 
@@ -328,6 +329,7 @@ type Props = {
 export function BillDetailScreen({ navigation, route }: Props) {
   const { bill: initialBill, occurrence } = route.params;
   const queryClient = useQueryClient();
+  const [editVisible, setEditVisible] = useState(false);
 
   const billsQuery = useQuery({
     queryKey: ["recurring-bills", "active"],
@@ -455,6 +457,12 @@ export function BillDetailScreen({ navigation, route }: Props) {
         {/* ── actions ── */}
         <View style={styles.actionsCard}>
           <Text style={styles.sectionTitle}>Acciones</Text>
+          <ActionBtn
+            label="Editar gasto fijo"
+            icon="edit-2"
+            onPress={() => setEditVisible(true)}
+            disabled={isBusy}
+          />
           {bill.is_active ? (
             <ActionBtn
               label="Pausar gasto fijo"
@@ -485,6 +493,19 @@ export function BillDetailScreen({ navigation, route }: Props) {
           )}
         </View>
       </ScrollView>
+
+      <BillFormModal
+        visible={editVisible}
+        mode="edit"
+        bill={bill}
+        onClose={() => setEditVisible(false)}
+        onSaved={() => {
+          queryClient.invalidateQueries({ queryKey: ["recurring-bills"] });
+          queryClient.invalidateQueries({ queryKey: ["bill-occurrences"] });
+          queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+          setEditVisible(false);
+        }}
+      />
     </SafeAreaView>
   );
 }

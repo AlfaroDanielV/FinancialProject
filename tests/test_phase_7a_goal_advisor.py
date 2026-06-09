@@ -24,6 +24,7 @@ from sqlalchemy import select
 from api.database import get_db
 from api.main import app
 from api.models.debt import Debt
+from api.models.envelope import Envelope
 from api.models.goal import Goal
 from api.models.recurring_bill import RecurringBill
 from api.models.recurring_income import RecurringIncome
@@ -87,8 +88,9 @@ async def _seed_goal(
 
 
 async def _seed_finances(session, user_id):
-    """income 800,000 − fixed 150,000 − debt 100,000 = 550,000 disposable;
-    safe = 440,000. Mirrors tests/test_affordability.py exactly."""
+    """income 800,000; bills 150,000 + debt 100,000 = 250,000 obligations; a
+    250,000 'needs' envelope covers them exactly → committed 250,000, surplus
+    550,000, safe = 440,000. Mirrors tests/test_affordability.py exactly."""
     session.add_all(
         [
             RecurringIncome(
@@ -118,6 +120,13 @@ async def _seed_finances(session, user_id):
                 interest_rate=Decimal("0.18"),
                 minimum_payment=Decimal("100000"),
                 payment_due_day=1,
+            ),
+            Envelope(
+                user_id=user_id,
+                name="Gastos",
+                envelope_class="needs",
+                limit_amount=Decimal("250000"),
+                currency="CRC",
             ),
         ]
     )
@@ -166,9 +175,11 @@ async def test_assess_goal_grounds_plan_in_engine(db_with_user, monkeypatch):
     assert result["monthly_income"] == "800000.00"
     assert result["monthly_fixed_expenses"] == "150000.00"
     assert result["monthly_debt_payments"] == "100000.00"
-    # disposable already nets out fixed + debt — this is the whole point.
-    assert result["monthly_disposable"] == "550000.00"
-    assert result["safe_monthly_disposable"] == "440000.00"
+    # surplus already nets out the committed budget — this is the whole point.
+    assert result["committed_outflows"] == "250000.00"
+    assert result["surplus"] == "550000.00"
+    assert result["safe_surplus"] == "440000.00"
+    assert result["gate_reason"] is None
     assert result["monthly_needed"] == "220000.00"
     assert result["feasible"] is True
     assert result["shortfall"] == "0.00"
@@ -225,7 +236,8 @@ async def test_assess_goal_no_income_is_unknown(db_with_user, monkeypatch):
     result = await assess_goal(goal_name="iPhone", user_id=user_id)
     assert result["matched"] is True
     assert result["feasible"] is None
-    assert result["monthly_disposable"] is None
+    assert result["gate_reason"] == "no_income"
+    assert result["surplus"] is None
     assert any("ingresos recurrentes" in n for n in result["notes"])
 
 

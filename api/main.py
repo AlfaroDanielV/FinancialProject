@@ -32,6 +32,7 @@ from .routers import (
     notifications,
     nudges,
     onboarding,
+    payroll,
     privacy_insights,
     queries,
     recurring_bills,
@@ -116,6 +117,7 @@ app.include_router(privacy_insights.router)
 app.include_router(admin_insights.router)
 app.include_router(recurring_incomes.router)
 app.include_router(onboarding.router)
+app.include_router(payroll.router)
 app.include_router(auth.router)
 app.include_router(chat.router)
 

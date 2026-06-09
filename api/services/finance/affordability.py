@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +33,9 @@ from ...models.user import User
 from ..envelopes import _monthly_income, compute_envelope_summary
 from ..fx import convert
 from ..recurrence import get_upcoming_feed
+
+if TYPE_CHECKING:  # avoid a circular import — cashflow.py imports from this module
+    from .cashflow import MonthlyCashflow
 
 # 80% of disposable income is the safe ceiling — the margin the CLAUDE.md
 # affordability spec mandates. A plan is "feasible" only if its monthly
@@ -73,84 +76,122 @@ class AffordabilityInputs:
 
 @dataclass(frozen=True)
 class AffordabilityResult:
-    feasible: Optional[bool]  # None when income is unknown
+    feasible: Optional[bool]  # None when GATED (no_income / no_budget)
+    gate_reason: Optional[str]  # which gate suppressed the verdict, else None
     currency: str
     desired_amount: Decimal
     timeline_months: int
-    monthly_income: Optional[Decimal]
+    monthly_needed: Decimal
+    # Cashflow snapshot (the single source of truth) — transparency.
+    monthly_income: Optional[Decimal]  # None when no income on file
     monthly_fixed_expenses: Decimal
     monthly_debt_payments: Decimal
-    monthly_disposable: Optional[Decimal]
-    safe_monthly_disposable: Optional[Decimal]
-    monthly_needed: Decimal
+    envelope_allocations: Decimal
+    committed_outflows: Decimal  # Model A: == envelope_allocations
+    savings_allocations: Decimal  # redirectable accumulation (messaging nuance)
+    surplus: Optional[Decimal]  # income − committed; None when income unknown
+    safe_surplus: Optional[Decimal]  # 0.80 × surplus; None when gated
+    # Verdict extras — None when gated.
     shortfall: Optional[Decimal]  # vs the safe ceiling; 0 when feasible
     min_timeline_months_feasible: Optional[int]
     max_amount_feasible_in_timeline: Optional[Decimal]
     notes: tuple[str, ...] = ()
 
 
+# Canned voseo guidance per gate — each maps to a DISTINCT user action (register
+# income vs build a budget). Debts + recurring bills are counted directly from
+# their own tables, so there is no "cover your obligations with sobres" gate. The
+# full surfacing rules live in the tool descriptions + the write-path messaging;
+# these are the engine-level notes.
+_GATE_NOTES = {
+    "no_income": (
+        "No hay ingresos recurrentes registrados; no puedo estimar cuánto te "
+        "sobra. Registrá tu ingreso y te doy números reales."
+    ),
+    "no_budget": (
+        "Todavía no tenés sobres (presupuesto) configurados, así que no puedo "
+        "estimar con confianza cuánto te queda libre. Armá tus sobres y con eso "
+        "te doy un número real."
+    ),
+}
+
+
+def gate_guidance(gate_reason: Optional[str]) -> str:
+    """Canned voseo guidance for a cashflow gate (empty string when ungated).
+    Shared by every surface so the three gates keep their distinct, deterministic
+    copy ([[Decision - Unified Monthly Cashflow]])."""
+    return _GATE_NOTES.get(gate_reason or "", "")
+
+
 def assess_affordability(
+    cashflow: "MonthlyCashflow",
     *,
-    monthly_income: Optional[Decimal],
-    monthly_fixed_expenses: Decimal,
-    monthly_debt_payments: Decimal,
     desired_amount: Decimal,
     timeline_months: int = 1,
-    currency: str = "CRC",
-    excluded_variable_bills: int = 0,
-    excluded_custom_bills: int = 0,
 ) -> AffordabilityResult:
-    """Pure deterministic affordability math. No DB, no LLM.
+    """Pure deterministic affordability math over the unified cashflow. No DB,
+    no LLM.
 
-    ``timeline_months=1`` models an immediate purchase ("¿puedo con X?"); a
-    larger horizon models saving toward a target ("¿me alcanza para Y en N
-    meses?"). The single ``monthly_needed <= safe_disposable`` test covers both.
+    The verdict is judged against the envelope-aware ``surplus`` (income −
+    committed envelopes) with the 80% safety margin — NOT the old
+    income−fixed−debt disposable ([[Decision - Unified Monthly Cashflow]]). When
+    the cashflow is gated (no income / no budget / budget under-covers
+    obligations) the surplus isn't trustworthy, so ``feasible`` is ``None`` with
+    ``gate_reason`` driving the canned guidance — honest, never fabricated.
+
+    ``timeline_months=1`` models an immediate purchase; a larger horizon models
+    saving toward a target. The single ``monthly_needed ≤ safe_surplus`` test
+    covers both.
     """
     months = max(1, int(timeline_months))
     desired = _q(Decimal(desired_amount))
     monthly_needed = _q(desired / Decimal(months))
 
     notes: list[str] = []
-    if excluded_variable_bills:
+    if cashflow.excluded_variable_bills:
         notes.append(
-            f"{excluded_variable_bills} gasto(s) recurrente(s) de monto variable "
-            "no se incluyeron en los gastos fijos."
+            f"{cashflow.excluded_variable_bills} gasto(s) recurrente(s) de monto "
+            "variable no se incluyeron en los gastos fijos."
         )
-    if excluded_custom_bills:
+    if cashflow.excluded_custom_bills:
         notes.append(
-            f"{excluded_custom_bills} gasto(s) recurrente(s) con regla "
+            f"{cashflow.excluded_custom_bills} gasto(s) recurrente(s) con regla "
             "personalizada no se pudieron convertir a un monto mensual."
         )
 
-    fixed = _q(Decimal(monthly_fixed_expenses))
-    commitments = _q(Decimal(monthly_debt_payments))
+    common = dict(
+        gate_reason=cashflow.gate_reason,
+        currency=cashflow.currency,
+        desired_amount=desired,
+        timeline_months=months,
+        monthly_needed=monthly_needed,
+        monthly_income=(cashflow.monthly_income if cashflow.income_known else None),
+        monthly_fixed_expenses=cashflow.recurring_bills,
+        monthly_debt_payments=cashflow.debt_payments,
+        envelope_allocations=cashflow.envelope_allocations,
+        committed_outflows=cashflow.committed_outflows,
+        savings_allocations=cashflow.savings_allocations,
+        surplus=(cashflow.surplus if cashflow.income_known else None),
+    )
 
-    # No income on file → refuse to fabricate a disposable figure. Honest
-    # 'unknown' so the LLM asks the user to register income instead of guessing.
-    if monthly_income is None:
-        notes.append(
-            "No hay ingresos recurrentes registrados; no puedo calcular el "
-            "disponible."
-        )
+    # Gated → no trustworthy surplus → withhold the verdict. The gate_reason
+    # carries the canned guidance; the prose layer shows the transparency
+    # breakdown but never a confident "te sobra / sí podés" claim.
+    if not cashflow.reliable:
+        notes.append(_GATE_NOTES.get(cashflow.gate_reason or "", ""))
         return AffordabilityResult(
             feasible=None,
-            currency=currency,
-            desired_amount=desired,
-            timeline_months=months,
-            monthly_income=None,
-            monthly_fixed_expenses=fixed,
-            monthly_debt_payments=commitments,
-            monthly_disposable=None,
-            safe_monthly_disposable=None,
-            monthly_needed=monthly_needed,
+            safe_surplus=None,
             shortfall=None,
             min_timeline_months_feasible=None,
             max_amount_feasible_in_timeline=None,
-            notes=tuple(notes),
+            notes=tuple(n for n in notes if n),
+            **common,
         )
 
-    disposable = _q(Decimal(monthly_income) - fixed - commitments)
-    safe = _q(disposable * SAFETY_MARGIN)
+    # Reliable → surplus is a real Decimal. 80% safety margin retained (sub-
+    # decision A: KEEP, now applied to surplus instead of income−fixed−debt).
+    safe = _q(cashflow.surplus * SAFETY_MARGIN)
     feasible = monthly_needed <= safe
     shortfall = _q(max(_ZERO, monthly_needed - safe))
 
@@ -162,26 +203,19 @@ def assess_affordability(
         min_timeline: Optional[int] = max(1, int(whole) + (1 if remainder > _ZERO else 0))
         max_amount: Optional[Decimal] = _q(safe * Decimal(months))
     else:
-        # Already committed at/above income — no positive disposable to save
+        # Everything committed at/above income — no positive surplus to save
         # from, so no finite timeline makes it feasible.
         min_timeline = None
         max_amount = _ZERO
 
     return AffordabilityResult(
         feasible=feasible,
-        currency=currency,
-        desired_amount=desired,
-        timeline_months=months,
-        monthly_income=_q(Decimal(monthly_income)),
-        monthly_fixed_expenses=fixed,
-        monthly_debt_payments=commitments,
-        monthly_disposable=disposable,
-        safe_monthly_disposable=safe,
-        monthly_needed=monthly_needed,
+        safe_surplus=safe,
         shortfall=shortfall,
         min_timeline_months_feasible=min_timeline,
         max_amount_feasible_in_timeline=max_amount,
-        notes=tuple(notes),
+        notes=tuple(n for n in notes if n),
+        **common,
     )
 
 
@@ -248,17 +282,16 @@ async def assess_for_user(
     desired_amount: Decimal,
     timeline_months: int = 1,
 ) -> AffordabilityResult:
-    """Convenience: gather the user's real inputs, then run the pure engine."""
-    inputs = await gather_affordability_inputs(db, user=user)
+    """Convenience: gather the user's unified cashflow, then run the pure engine
+    against the envelope-aware surplus."""
+    # Lazy import: cashflow.py imports gather_affordability_inputs from here.
+    from .cashflow import compute_monthly_cashflow
+
+    cashflow = await compute_monthly_cashflow(db, user=user)
     return assess_affordability(
-        monthly_income=inputs.monthly_income,
-        monthly_fixed_expenses=inputs.monthly_fixed_expenses,
-        monthly_debt_payments=inputs.monthly_debt_payments,
+        cashflow,
         desired_amount=desired_amount,
         timeline_months=timeline_months,
-        currency=inputs.currency,
-        excluded_variable_bills=inputs.excluded_variable_bills,
-        excluded_custom_bills=inputs.excluded_custom_bills,
     )
 
 

@@ -65,6 +65,47 @@ export const FREQUENCY_LABELS: Record<string, string> = {
 
 export const ACTIONABLE_STATUSES = new Set(["pending", "overdue", "partially_paid"]);
 
+// 'custom' (RRULE) is excluded from the form — it needs a recurrence_rule the
+// simple sheet doesn't gather (same exclusion the conversational creator makes).
+export const BILL_FREQUENCIES = [
+  "weekly",
+  "biweekly",
+  "monthly",
+  "bimonthly",
+  "quarterly",
+  "semiannual",
+  "annual",
+] as const;
+export type BillFrequency = (typeof BILL_FREQUENCIES)[number];
+
+export interface RecurringBillCreate {
+  name: string;
+  category: string;
+  amount_expected?: number | null;
+  currency: string;
+  is_variable_amount: boolean;
+  frequency: BillFrequency;
+  day_of_month?: number | null;
+  start_date: string;
+  provider?: string | null;
+  account_id?: string | null;
+  notes?: string | null;
+}
+
+export interface RecurringBillUpdate {
+  name?: string;
+  category?: string;
+  amount_expected?: number | null;
+  is_variable_amount?: boolean;
+  frequency?: BillFrequency;
+  day_of_month?: number | null;
+  start_date?: string;
+  provider?: string | null;
+  account_id?: string | null;
+  is_active?: boolean;
+  notes?: string | null;
+}
+
 export function newIdempotencyKey(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 18)}`;
 }
@@ -99,6 +140,30 @@ export async function markBillPaid(
     payload,
   );
   return data;
+}
+
+export async function createRecurringBill(
+  payload: RecurringBillCreate,
+): Promise<RecurringBillResponse> {
+  const { data } = await api.post<RecurringBillResponse>("/recurring-bills", payload);
+  return data;
+}
+
+export async function updateRecurringBill(
+  billId: string,
+  payload: RecurringBillUpdate,
+): Promise<RecurringBillResponse> {
+  const { data } = await api.patch<RecurringBillResponse>(
+    `/recurring-bills/${billId}`,
+    payload,
+  );
+  return data;
+}
+
+/** CR category suggestions (single source of truth — the backend list). */
+export async function fetchBillCategories(): Promise<string[]> {
+  const { data } = await api.get<{ categories: string[] }>("/onboarding/categories");
+  return data.categories;
 }
 
 export async function pauseBill(billId: string): Promise<RecurringBillResponse> {

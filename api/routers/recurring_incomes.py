@@ -97,6 +97,7 @@ async def create_recurring_income(
         name=payload.name,
         income_type=payload.income_type,
         amount=amount,
+        gross_monthly=payload.gross_monthly,
         currency=payload.currency,
         frequency=payload.frequency,
         next_payment_date=payload.next_payment_date,

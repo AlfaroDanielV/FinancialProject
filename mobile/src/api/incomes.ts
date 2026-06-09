@@ -15,6 +15,9 @@ export interface RecurringIncomeResponse {
   name: string;
   income_type: IncomeType;
   amount: number | null;
+  // Gross (pre-deduction) salary; `amount` carries the net take-home. Set only
+  // for salaries captured via the calculator.
+  gross_monthly: number | null;
   currency: string;
   frequency: IncomeFrequency;
   next_payment_date: string;
@@ -26,9 +29,21 @@ export interface RecurringIncomeResponse {
   updated_at: string;
 }
 
+export interface RecurringIncomeCreate {
+  name: string;
+  income_type: IncomeType;
+  amount: number;
+  gross_monthly?: number;
+  currency: "CRC" | "USD";
+  frequency: IncomeFrequency;
+  next_payment_date: string;
+  notes?: string | null;
+}
+
 export interface RecurringIncomeUpdate {
   name?: string;
   amount?: number;
+  gross_monthly?: number | null;
   frequency?: IncomeFrequency;
   next_payment_date?: string;
   is_active?: boolean;
@@ -82,6 +97,16 @@ export async function fetchRecurringIncome(
   return res.data;
 }
 
+export async function createRecurringIncome(
+  payload: RecurringIncomeCreate
+): Promise<RecurringIncomeResponse> {
+  const res = await api.post<RecurringIncomeResponse>(
+    "/recurring-incomes",
+    payload
+  );
+  return res.data;
+}
+
 export async function updateRecurringIncome(
   id: string,
   payload: RecurringIncomeUpdate
@@ -112,6 +137,12 @@ export async function archiveRecurringIncome(
     `/recurring-incomes/${id}`
   );
   return res.data;
+}
+
+export async function restoreRecurringIncome(
+  id: string
+): Promise<RecurringIncomeResponse> {
+  return updateRecurringIncome(id, { archived: false, is_active: true });
 }
 
 export async function deriveIncomeCycles(

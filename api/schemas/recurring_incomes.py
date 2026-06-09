@@ -24,6 +24,11 @@ class RecurringIncomeCreate(BaseModel):
     amount: Optional[Decimal] = Field(
         None, gt=0, max_digits=14, decimal_places=2
     )
+    # Gross (pre-deduction) figure for a salary captured via the CR calculator.
+    # `amount` carries the NET; this keeps the gross for re-edit / recompute.
+    gross_monthly: Optional[Decimal] = Field(
+        None, gt=0, max_digits=14, decimal_places=2
+    )
     currency: IncomeCurrencyEnum = "CRC"
     frequency: IncomeFrequencyEnum
     next_payment_date: date
@@ -58,6 +63,9 @@ class RecurringIncomeUpdate(BaseModel):
     amount: Optional[Decimal] = Field(
         None, gt=0, max_digits=14, decimal_places=2
     )
+    gross_monthly: Optional[Decimal] = Field(
+        None, gt=0, max_digits=14, decimal_places=2
+    )
     frequency: Optional[IncomeFrequencyEnum] = None
     next_payment_date: Optional[date] = None
     is_active: Optional[bool] = None
@@ -71,6 +79,7 @@ class RecurringIncomeResponse(BaseModel):
     name: str
     income_type: str
     amount: Optional[Decimal]
+    gross_monthly: Optional[Decimal] = None
     currency: str
     frequency: str
     next_payment_date: date

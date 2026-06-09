@@ -127,7 +127,7 @@ finance-agent/
 ├── workers/                    # gmail_daily.py, insights_nightly.py, insights_lifecycle.py
 │                               # (web/ Phase 6d/6e SPA — DELETED at 6f B16, 2026-06-01)
 ├── mobile/                     # Phase 6f native iOS app (Expo, React Native) — created at 6f B1
-├── migrations/versions/        # Hand-written Alembic (0001 → 0024)
+├── migrations/versions/        # Hand-written Alembic (0001 → 0025)
 ├── tests/                      # pytest suite
 ├── scripts/                    # Phase smoke scripts (phase5a/5b/6b/6c/etc.)
 ├── docs/phase-*/               # Per-phase operational docs (privacy, deployment, etc.)
@@ -1140,6 +1140,84 @@ slice); mobile `npx tsc --noEmit` clean. `alembic current → 0024 (head)`.
 
 ---
 
+## CR Salary Calculator + Ingresos CRUD (post-7a, 2026-06-09)
+
+Deterministic Costa Rican net-pay calculator + full Ingresos CRUD. Backend +
+mobile **code-complete; operator on-device sign-off pending**. Decision note:
+`~/Finance_project/30_Projects/Finance-Agent/05_Decisions/Decision - CR Salary
+Calculator.md`.
+
+**Rules layer (pure, no LLM/DB/network):** new `app/domain/payroll/` —
+`cr_salary.py::compute_net_salary(gross_monthly, year=None, hijos=0,
+conyuge=False, isr_base_mode="gross", solidarista_pct=0)` → typed
+`SalaryBreakdown` dataclass (CCSS sem/ivm/banco_popular + ISR base/tax/per-tramo
++ solidarista + net + effective_rate). `rates.py` holds year-keyed tables
+(`dict[int, YearRates]`; 2026 set: CCSS 10.83%, Decreto 45333-H brackets,
+créditos ₡1.710/₡2.590); unconfigured year → `UnconfiguredYearError` (never a
+silent stale year — adding 2027 is a data edit). Marginal (not flat) ISR;
+créditos floored at 0; **solidarista** optional (% of gross, deducted from
+take-home, NOT in the CCSS/ISR base); integer colones, components reconcile to
+net exactly. ISR base defaults to gross (Hacienda); `gross_minus_ccss` mode
+available (elempleo-style) but not default.
+
+**Surfaces (single source of truth):** chat query tool `compute_net_salary`
+(read-only, registered before the `compare_periods` cache anchor; LLM narrates
+the breakdown verbatim, never recomputes) + `POST /api/v1/payroll/net-salary`
+(`api/routers/payroll.py`, `current_user` auth, returns `asdict(breakdown)`).
+The mobile app calls the endpoint — it **never** reimplements the brackets in TS
+(they change yearly; a copy would drift). `api/payroll.ts` + reusable
+`components/SalaryCalculator.tsx`.
+
+**Income capture (gross → net):** for a **CRC salary** captured via chat or the
+manual form, the entered amount is treated as **gross**; the calculator computes
+the **net**, stored as `recurring_incomes.amount` (the take-home that drives
+budgets/affordability); the gross is kept in `recurring_incomes.gross_monthly`
+(**migration 0025**, nullable) for re-edit/recompute. USD salaries + non-salary
+income stored untouched. Chat: `_dispatch_create_income` (salary+CRC) computes
+net via `_net_from_gross_salary`, proposes "salario bruto X → neto Y",
+`_commit_income` writes both. `RecurringIncomeCreate/Update` + the REST create
+carry `gross_monthly`.
+
+**Ingresos CRUD (mobile, structured-form exception):** the native Ingresos
+screen now has full CRUD — `IncomeFormModal` (create + edit; salary leads with
+the embedded `SalaryCalculator`, income_type/currency read-only on edit),
+create entry ("+ Nuevo" + empty CTA), per-row Edit (hidden for derived CR
+cycles), Restore for archived rows, plus a standalone "Calculadora de salario
+neto". This is a **deliberate exception** to [[Decision - Conversational Creation
+Over Forms]], justified by the *same field-complexity rationale as debt* (the
+gross→net calculator). Chat creation stays the default entry. **Modal keyboard
+note (fix 2026-06-09):** every bottom-sheet modal with a text input
+(`SalaryCalculator` host, `IncomeFormModal`, standalone calc modal) wraps in
+`KeyboardAvoidingView` + a `ScrollView` (`keyboardShouldPersistTaps="handled"`)
+— without both, the sheet renders behind the keyboard. Copy the
+`TransactionEditModal` scaffold for any new input modal.
+
+**Gastos fijos CRUD (mobile, structured-form exception, 2026-06-09):** the
+`BillsScreen` gained a "+ Nuevo" entry + a "Todos / Próximos pagos" tab switch
+(the "Todos" tab lists every recurring bill incl. paused via a "Ver pausados"
+toggle, tapping → `BillDetailScreen` with `occurrence=null`); `BillDetailScreen`
+gained an "Editar gasto fijo" action. New `components/BillFormModal.tsx` (create
++ edit) posts to the existing `POST/PATCH /recurring-bills` — category pills come
+from `GET /onboarding/categories` (single source of truth, no hardcoded list),
+`custom`/RRULE cadence excluded, variable-amount toggle, PATCH regenerates
+occurrences. `api/bills.ts` grew `createRecurringBill`/`updateRecurringBill`/
+`fetchBillCategories`. Same field-complexity exception to
+[[Decision - Conversational Creation Over Forms]] as debt/income (chat stays the
+default); no backend change. Mobile `tsc` clean.
+
+**Related change — editable debt cuota (2026-06):** `DebtUpdate` whitelist gained
+`minimum_payment` (the only editable financial field; the router validates it:
+positive, below the balance, covers the monthly interest). See the Phase 6e B7
+note above.
+
+**Verification:** `tests/test_cr_salary.py` (22, incl. golden ₡1.5M = net
+₡1.271.700 on gross base; elempleo's ₡1.295.595 = `gross_minus_ccss`) +
+`tests/test_payroll_tool_and_endpoint.py` + the income chat gross→net suite +
+debt cuota tests. `alembic current → 0025 (head)`. Mobile `npx tsc --noEmit`
+clean.
+
+---
+
 ## Closed phases — hard rules to preserve
 
 These are extracted from the closed-phase notes in `11_Phases/`. **Do not relax without an explicit decision in `05_Decisions/`.**
@@ -1226,6 +1304,16 @@ All under the `/api/v1` prefix. Auth:
 ## The Pushback Engine (Phase 6 — Critical Design)
 
 This is the hardest feature. The engine is **deterministic**, not LLM-generated.
+
+> **Superseded 2026-06-09 (Phase 7 — Unified Monthly Cashflow).** The `disposable
+> = income − fixed − commitments` denominator below is historical. The live
+> verdict is judged against the **envelope-aware surplus** —
+> `surplus = income − committed_outflows` where `committed_outflows = envelope
+> allocations` (Model A) — and is **gated** (`no_income`/`no_budget`/
+> `under_coverage`) when the budget isn't trustworthy. One source of truth:
+> `api/services/finance/cashflow.py::compute_monthly_cashflow`. The 80% margin +
+> "LLM explains, rules decide" are unchanged. See the vault note *Decision -
+> Unified Monthly Cashflow*. The pseudocode below is kept for historical context.
 
 ```python
 def assess_affordability(monthly_income, fixed_expenses, existing_commitments, desired_amount, desired_timeline_months):

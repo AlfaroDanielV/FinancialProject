@@ -1,10 +1,12 @@
 """Phase 7a — context-aware pushback (envelope execution + upcoming obligations).
 
-The affordability engine's HEADLINE verdict is unchanged (income − fixed − debt,
-80% margin). These tests prove the new `gather_financial_context` surfaces the
-envelope-execution + upcoming-bill/event signals, that the chat tool carries
-them WITHOUT changing the verdict, and that the goal-creation gate appends a
-non-blocking heads-up when there's something worth flagging.
+The affordability engine's HEADLINE verdict is now the envelope-aware surplus
+(income − committed envelopes, 80% margin —
+[[Decision - Unified Monthly Cashflow]]). These tests prove that
+`gather_financial_context` surfaces the envelope-execution + upcoming-bill/event
+SIGNALS, that the chat tool carries them WITHOUT those signals changing the
+verdict (an over-limit flag / an upcoming event don't move feasibility), and
+that the goal-creation gate appends a non-blocking heads-up when worth flagging.
 """
 from __future__ import annotations
 
@@ -134,19 +136,22 @@ async def test_assess_purchase_carries_context_without_changing_verdict(
         "app.queries.tools.affordability.AsyncSessionLocal",
         lambda: _SessionContext(session),
     )
-    # income 800k, no bills/debt → disposable 800k, safe 640k.
+    # income 800k, no bills/debt. The Ocio cap (20k) is the only envelope, so
+    # committed = 20k → surplus 780k, safe 624k. The over-LIMIT status + the
+    # upcoming event are signals that must NOT move the verdict.
     await _seed_income(session, user_id, amount="800000")
-    # envelope + upcoming context that must NOT move the verdict.
     await _seed_over_limit_envelope(session, user_id)
     await _seed_upcoming_event(session, user_id)
     await session.commit()
 
     result = await assess_purchase(amount=300000, user_id=user_id)
 
-    # Verdict is the pure income−fixed−debt math, untouched by context.
+    # Verdict is the envelope-aware surplus math; the context signals don't move
+    # it. 300k ≤ safe 624k → feasible.
     assert result["feasible"] is True
-    assert result["monthly_disposable"] == "800000.00"
-    assert result["safe_monthly_disposable"] == "640000.00"
+    assert result["gate_reason"] is None
+    assert result["surplus"] == "780000.00"
+    assert result["safe_surplus"] == "624000.00"
 
     # Context block is populated alongside the verdict.
     ctx = result["context"]

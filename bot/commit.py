@@ -147,6 +147,11 @@ async def _commit_income(
         name=payload["name"],
         income_type=payload["income_type"],
         amount=Decimal(payload["amount"]),
+        gross_monthly=(
+            Decimal(payload["gross_monthly"])
+            if payload.get("gross_monthly")
+            else None
+        ),
         currency=payload["currency"],
         frequency=payload["frequency"],
         next_payment_date=date.fromisoformat(payload["next_payment_date"]),

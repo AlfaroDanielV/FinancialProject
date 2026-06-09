@@ -63,6 +63,13 @@ async def _monthly_income(db: AsyncSession, *, user: User) -> Decimal | None:
             RecurringIncome.archived.is_(False),
             RecurringIncome.currency == currency,
             RecurringIncome.amount.isnot(None),
+            # Aguinaldo + salario escolar are CR lump cycles paid in Dec/Jan.
+            # Amortizing them into monthly income (annual ÷ 12) is phantom cash
+            # that inflates surplus AND affordability — the money isn't in hand
+            # month to month. They're earmarked lump events, not monthly
+            # cashflow. Single source: this exclusion flows to the envelope
+            # summary, the affordability engine, and compute_monthly_cashflow.
+            RecurringIncome.income_type.notin_(("aguinaldo", "salario_escolar")),
         )
     )
     total = Decimal("0")
