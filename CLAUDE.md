@@ -324,8 +324,13 @@ Current block status: B1-B13 implemented (B7 + B10 sign-offs received 2026-05-15
 - **B7** debts + amortization + early-payoff calculator. Backend: migration
   `0019` adds `debts.archived BOOLEAN`; `PATCH /debts/{id}` is narrowed via
   `model_config={"extra": "forbid"}` to `name`, `payment_due_day`,
-  `account_id`, `notes`, `is_active`, `archived` (extras → 422); all
-  financial fields are immutable post-creation. New
+  `account_id`, `notes`, `minimum_payment`, `is_active`, `archived` (extras →
+  422). The remaining financial fields (`original_amount`, `current_balance`,
+  `interest_rate`, `term_months`, rate/insurance fields) stay immutable
+  post-creation; **`minimum_payment` was made editable 2026-06** (the cuota
+  changes via rate adjustments / renegotiation / typo-at-entry and drives the
+  amortization + affordability math — the router validates it: positive, below
+  the balance, covers the monthly interest). New
   `GET /debts/{id}/payoff-scenarios?lump_sum=&extra_monthly=` returns
   per-scenario savings + Ley 7472 penalty info; 422 when neither param.
   DELETE flips both `is_active` and `archived`; `debt_overview` filters
@@ -711,8 +716,11 @@ enrollment until P8.
   `fetchDebtSchedule`, `fetchPayoffScenarios`, `updateDebt`, `archiveDebt`).
   `DebtsScreen` (overview metrics) + `DebtDetailScreen` (amortization table +
   payoff calculator + Ley 7472 scenarios). Reuses Phase 6e B7 `/debts/overview`,
-  `/debts/{id}/schedule`, `/debts/{id}/payoff-scenarios`; PATCH stays on the
-  6-field whitelist (`extra="forbid"`).
+  `/debts/{id}/schedule`, `/debts/{id}/payoff-scenarios`; PATCH whitelist
+  (`extra="forbid"`) — `minimum_payment` added as editable 2026-06 (now 7
+  fields). Mobile debt CRUD (create from the Deudas tab + `DebtEditModal`
+  editing name/día de pago/cuota/notas + pause/resume + archive/restore)
+  landed 2026-06.
 - **B12 ✅ (2026-05-30):** Incomes module. `mobile/src/api/incomes.ts`
   (`RecurringIncomeResponse`, `IncomeType`, `DeriveCyclesResponse`;
   `fetchRecurringIncomes`, `updateRecurringIncome`, pause/resume/archive,

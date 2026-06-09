@@ -116,8 +116,9 @@ export interface PayoffScenariosResponse {
 export interface DebtUpdate {
   name?: string;
   payment_due_day?: number;
-  account_id?: string;
-  notes?: string;
+  account_id?: string | null;
+  notes?: string | null;
+  minimum_payment?: number;
   is_active?: boolean;
   archived?: boolean;
 }

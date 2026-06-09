@@ -13,7 +13,7 @@ import { Colors, FontSize } from "../theme";
 
 export type ChatStackParamList = {
   Chat: undefined;
-  DebtCreate: { prefill: DebtPrefill };
+  DebtCreate: { prefill?: DebtPrefill } | undefined;
 };
 
 const Stack = createNativeStackNavigator<ChatStackParamList>();

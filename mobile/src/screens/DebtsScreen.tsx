@@ -131,14 +131,23 @@ export function DebtsScreen({ navigation }: Props) {
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Deudas</Text>
-        <Pressable
-          style={styles.archivedToggle}
-          onPress={() => setShowArchived((v) => !v)}
-        >
-          <Text style={styles.archivedToggleText}>
-            {showArchived ? "Ocultar archivadas" : "Ver archivadas"}
-          </Text>
-        </Pressable>
+        <View style={styles.headerActions}>
+          <Pressable
+            style={styles.archivedToggle}
+            onPress={() => setShowArchived((v) => !v)}
+          >
+            <Text style={styles.archivedToggleText}>
+              {showArchived ? "Ocultar archivadas" : "Ver archivadas"}
+            </Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.newBtn, pressed && { opacity: 0.85 }]}
+            onPress={() => navigation.navigate("DebtCreate")}
+          >
+            <Feather name="plus" size={15} color={Colors.textOnDark} />
+            <Text style={styles.newBtnText}>Nueva</Text>
+          </Pressable>
+        </View>
       </View>
 
       {isLoading && !refreshing ? (
@@ -165,8 +174,16 @@ export function DebtsScreen({ navigation }: Props) {
               <Feather name="check-circle" size={32} color={Colors.accentSoft} />
               <Text style={styles.emptyTitle}>Sin deudas registradas</Text>
               <Text style={styles.emptySub}>
-                Agregá tus deudas desde el chat o en la web para ver tu amortización y calculadora de cancelación.
+                Registrá tus deudas para ver la amortización, la calculadora de
+                cancelación y que el agente las tome en cuenta en tus planes.
               </Text>
+              <Pressable
+                style={({ pressed }) => [styles.emptyCta, pressed && { opacity: 0.85 }]}
+                onPress={() => navigation.navigate("DebtCreate")}
+              >
+                <Feather name="plus" size={16} color={Colors.textOnDark} />
+                <Text style={styles.emptyCtaText}>Nueva deuda</Text>
+              </Pressable>
             </View>
           }
           renderItem={({ item: debt }) => (
@@ -267,6 +284,11 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: Colors.textPrimary,
   },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+  },
   archivedToggle: {
     paddingVertical: Spacing.xs,
   },
@@ -274,6 +296,35 @@ const styles = StyleSheet.create({
     fontSize: FontSize.sm,
     color: Colors.accent,
     fontWeight: "500",
+  },
+  newBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: Colors.accent,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs + 2,
+  },
+  newBtnText: {
+    fontSize: FontSize.sm,
+    color: Colors.textOnDark,
+    fontWeight: "700",
+  },
+  emptyCta: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: Colors.accent,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
+  emptyCtaText: {
+    fontSize: FontSize.md,
+    color: Colors.textOnDark,
+    fontWeight: "700",
   },
   center: {
     flex: 1,

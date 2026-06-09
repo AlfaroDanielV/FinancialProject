@@ -30,9 +30,11 @@ import {
   fetchDebt,
   fetchDebtSchedule,
   fetchPayoffScenarios,
+  updateDebt,
   type AmortizationRow,
   type PayoffScenariosResponse,
 } from "../api/debts";
+import { DebtEditModal } from "../components/DebtEditModal";
 import { CardShadow, Colors, FontSize, Radius, Spacing } from "../theme";
 import type { MasStackParamList } from "../navigation/MasNavigator";
 
@@ -459,20 +461,46 @@ export function DebtDetailScreen({ navigation, route }: Props) {
   });
 
   const debt = debtQuery.data;
+  const [editVisible, setEditVisible] = useState(false);
+
+  // Prefix invalidation refreshes the list, the overview metrics, and this
+  // detail (["debts"], ["debts","overview"], ["debts", debtId]) in one call.
+  function refreshDebts() {
+    queryClient.invalidateQueries({ queryKey: ["debts"] });
+    queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+  }
 
   const archiveMutation = useMutation({
     mutationFn: () => archiveDebt(debtId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["debts"] });
+      refreshDebts();
       navigation.goBack();
     },
+    onError: () => Alert.alert("Error", "No se pudo archivar la deuda."),
   });
+
+  const pauseMutation = useMutation({
+    mutationFn: () => updateDebt(debtId, { is_active: !debt?.is_active }),
+    onSuccess: refreshDebts,
+    onError: () => Alert.alert("Error", "No se pudo actualizar la deuda."),
+  });
+
+  const restoreMutation = useMutation({
+    mutationFn: () => updateDebt(debtId, { archived: false, is_active: true }),
+    onSuccess: refreshDebts,
+    onError: () => Alert.alert("Error", "No se pudo restaurar la deuda."),
+  });
+
+  const busy =
+    archiveMutation.isPending ||
+    pauseMutation.isPending ||
+    restoreMutation.isPending;
 
   function confirmArchive() {
     if (!debt) return;
     Alert.alert(
       "Archivar deuda",
-      `¿Archivar "${debt.name}"? Esta acción no puede deshacerse desde la app.`,
+      `¿Archivar "${debt.name}"? Podés restaurarla luego desde "Ver archivadas".`,
       [
         { text: "Cancelar", style: "cancel" },
         {
@@ -567,27 +595,92 @@ export function DebtDetailScreen({ navigation, route }: Props) {
           <PayoffCalculator debtId={debtId} currency={debt.currency} />
         </Section>
 
-        {/* ── archive action ── */}
+        {/* ── manage actions (edit + lifecycle) ── */}
         <View style={styles.actionsCard}>
           <Pressable
-            style={({ pressed }) => [
-              styles.archiveBtn,
-              (archiveMutation.isPending || pressed) && styles.archiveBtnDisabled,
-            ]}
-            onPress={confirmArchive}
-            disabled={archiveMutation.isPending}
+            style={({ pressed }) => [styles.actionBtn, pressed && styles.actionBtnPressed]}
+            onPress={() => setEditVisible(true)}
+            disabled={busy}
           >
-            {archiveMutation.isPending ? (
-              <ActivityIndicator color={Colors.overdue} size="small" />
+            <Feather name="edit-2" size={16} color={Colors.accent} />
+            <Text style={styles.actionBtnText}>Editar</Text>
+          </Pressable>
+
+          <Pressable
+            style={({ pressed }) => [
+              styles.actionBtn,
+              (busy || pressed) && styles.actionBtnPressed,
+            ]}
+            onPress={() => pauseMutation.mutate()}
+            disabled={busy}
+          >
+            {pauseMutation.isPending ? (
+              <ActivityIndicator color={Colors.accent} size="small" />
             ) : (
               <>
-                <Feather name="trash-2" size={16} color={Colors.overdue} />
-                <Text style={styles.archiveBtnText}>Archivar deuda</Text>
+                <Feather
+                  name={debt.is_active ? "pause-circle" : "play-circle"}
+                  size={16}
+                  color={Colors.accent}
+                />
+                <Text style={styles.actionBtnText}>
+                  {debt.is_active ? "Pausar" : "Reanudar"}
+                </Text>
               </>
             )}
           </Pressable>
+
+          {debt.archived ? (
+            <Pressable
+              style={({ pressed }) => [
+                styles.actionBtn,
+                (busy || pressed) && styles.actionBtnPressed,
+              ]}
+              onPress={() => restoreMutation.mutate()}
+              disabled={busy}
+            >
+              {restoreMutation.isPending ? (
+                <ActivityIndicator color={Colors.income} size="small" />
+              ) : (
+                <>
+                  <Feather name="rotate-ccw" size={16} color={Colors.income} />
+                  <Text style={[styles.actionBtnText, { color: Colors.income }]}>
+                    Restaurar
+                  </Text>
+                </>
+              )}
+            </Pressable>
+          ) : (
+            <Pressable
+              style={({ pressed }) => [
+                styles.archiveBtn,
+                (busy || pressed) && styles.archiveBtnDisabled,
+              ]}
+              onPress={confirmArchive}
+              disabled={busy}
+            >
+              {archiveMutation.isPending ? (
+                <ActivityIndicator color={Colors.overdue} size="small" />
+              ) : (
+                <>
+                  <Feather name="trash-2" size={16} color={Colors.overdue} />
+                  <Text style={styles.archiveBtnText}>Archivar deuda</Text>
+                </>
+              )}
+            </Pressable>
+          )}
         </View>
       </ScrollView>
+
+      <DebtEditModal
+        visible={editVisible}
+        debt={debt}
+        onClose={() => setEditVisible(false)}
+        onSaved={() => {
+          refreshDebts();
+          setEditVisible(false);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -722,7 +815,29 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
     padding: Spacing.md,
+    gap: Spacing.sm,
     ...CardShadow,
+  },
+  actionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.bg,
+    minHeight: 44,
+    justifyContent: "center",
+  },
+  actionBtnPressed: {
+    opacity: 0.6,
+  },
+  actionBtnText: {
+    fontSize: FontSize.sm,
+    color: Colors.accent,
+    fontWeight: "600",
   },
   archiveBtn: {
     flexDirection: "row",

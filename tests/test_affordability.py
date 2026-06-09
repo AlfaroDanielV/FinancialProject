@@ -18,7 +18,7 @@ from api.services.finance.affordability import (
     SAFETY_MARGIN,
     assess_affordability,
 )
-from app.queries.tools.affordability import assess_purchase
+from app.queries.tools.affordability import assess_purchase, get_savings_capacity
 
 
 # --------------------------------------------------------------------------- #
@@ -223,4 +223,37 @@ async def test_assess_purchase_tool_no_income_is_unknown(db_with_user, monkeypat
     result = await assess_purchase(amount=100000, user_id=user_id)
     assert result["feasible"] is None
     assert result["monthly_disposable"] is None
+    assert any("ingresos recurrentes" in n for n in result["notes"])
+
+
+@pytest.mark.asyncio
+async def test_savings_capacity_subtracts_debt_payments(db_with_user, monkeypatch):
+    """General savings planning must net out debt payments — income 800,000 −
+    fixed 150,000 − debt 100,000 = 550,000 disposable; safe = 440,000. The
+    per-debt breakdown surfaces the obligation so the advisor can mention it."""
+    session, user_id = db_with_user
+    _patch_session(monkeypatch, session)
+    await _seed_finances(session, user_id)
+
+    result = await get_savings_capacity(user_id=user_id)
+    assert result["monthly_income"] == "800000.00"
+    assert result["monthly_fixed_expenses"] == "150000.00"
+    assert result["monthly_debt_payments"] == "100000.00"
+    assert result["monthly_disposable"] == "550000.00"
+    assert result["safe_monthly_disposable"] == "440000.00"
+    # Debt is visible per-loan, not just folded into the total.
+    assert len(result["debts"]) == 1
+    assert result["debts"][0]["name"] == "Préstamo personal"
+    assert result["debts"][0]["monthly_payment"] == "100000.00"
+
+
+@pytest.mark.asyncio
+async def test_savings_capacity_no_income_is_unknown(db_with_user, monkeypatch):
+    session, user_id = db_with_user
+    _patch_session(monkeypatch, session)
+    # No income seeded → disposable is an honest unknown, not a fabricated zero.
+
+    result = await get_savings_capacity(user_id=user_id)
+    assert result["monthly_disposable"] is None
+    assert result["safe_monthly_disposable"] is None
     assert any("ingresos recurrentes" in n for n in result["notes"])

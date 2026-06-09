@@ -331,6 +331,29 @@ async def update_debt(
         raise HTTPException(status_code=404, detail="Deuda no encontrada.")
 
     update_data = payload.model_dump(exclude_unset=True)
+
+    # The cuota is the one editable financial field; validate it the same way
+    # the create form does. A payment ≥ the balance isn't a loan, and a payment
+    # that doesn't cover the monthly interest never amortizes (the balance only
+    # grows). Both are nonsensical for an amortizing debt.
+    new_payment = update_data.get("minimum_payment")
+    if new_payment is not None:
+        balance = float(debt.current_balance)
+        if balance > 0 and new_payment >= balance:
+            raise HTTPException(
+                status_code=400,
+                detail="La cuota mensual no puede ser mayor o igual al saldo de la deuda.",
+            )
+        monthly_interest = balance * float(debt.interest_rate) / 12.0
+        if new_payment <= monthly_interest:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "La cuota mensual no cubre el interés del mes; con ese monto "
+                    "el saldo nunca bajaría."
+                ),
+            )
+
     for field, value in update_data.items():
         setattr(debt, field, value)
 

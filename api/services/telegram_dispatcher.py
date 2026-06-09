@@ -211,9 +211,19 @@ async def dispatch(
     if intent is Intent.UNKNOWN:
         return ShowHelp()
 
-    # Below the confidence floor, clarify for log/query intents rather than
-    # guess. The model was honest about its own uncertainty; respect it.
-    if extraction.confidence < CONFIDENCE_FLOOR:
+    # Below the confidence floor, clarify for LOG intents rather than guess.
+    # The generic "¿gasto, ingreso o consulta?" only fits log_expense/
+    # log_income — it's the WRONG question for an explicit creation request
+    # ("registrá una deuda" / "saqué un préstamo" is none of those), and asking
+    # it traps the user in an intent-clarification loop. The create_* intents
+    # carry an explicit verb, so they fall through to their own dispatchers
+    # regardless of confidence; each does field-specific clarification
+    # (goal/income/bill) or opens the native form (debt). The model was honest
+    # about its uncertainty; respect it only where the question makes sense.
+    if extraction.confidence < CONFIDENCE_FLOOR and intent in (
+        Intent.LOG_EXPENSE,
+        Intent.LOG_INCOME,
+    ):
         return AskClarification(
             question_es=(
                 "No estoy seguro de lo que querés hacer. "

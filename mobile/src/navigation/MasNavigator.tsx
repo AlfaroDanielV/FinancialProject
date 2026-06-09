@@ -24,6 +24,7 @@ import { BillsScreen } from "../screens/BillsScreen";
 import { BillDetailScreen } from "../screens/BillDetailScreen";
 import { DebtsScreen } from "../screens/DebtsScreen";
 import { DebtDetailScreen } from "../screens/DebtDetailScreen";
+import { DebtCreateScreen } from "../screens/DebtCreateScreen";
 import { IncomesScreen } from "../screens/IncomesScreen";
 import { GoalsScreen } from "../screens/GoalsScreen";
 import { GoalDetailScreen } from "../screens/GoalDetailScreen";
@@ -34,6 +35,7 @@ import { GmailSendersScreen } from "../screens/GmailSendersScreen";
 import { GmailReviewScreen } from "../screens/GmailReviewScreen";
 import { Colors, FontSize } from "../theme";
 import type { RecurringBillResponse, BillOccurrenceResponse } from "../api/bills";
+import type { DebtPrefill } from "../api/chat";
 
 export type MasStackParamList = {
   MasHub: undefined;
@@ -45,6 +47,7 @@ export type MasStackParamList = {
   };
   DebtsList: undefined;
   DebtDetail: { debtId: string };
+  DebtCreate: { prefill?: DebtPrefill } | undefined;
   IncomesList: undefined;
   GoalsList: undefined;
   GoalDetail: { goalId: string };
@@ -101,6 +104,11 @@ export function MasNavigator() {
         name="DebtDetail"
         component={DebtDetailScreen}
         options={{ title: "Deuda" }}
+      />
+      <Stack.Screen
+        name="DebtCreate"
+        component={DebtCreateScreen}
+        options={{ title: "Registrar préstamo", presentation: "modal" }}
       />
       <Stack.Screen
         name="IncomesList"

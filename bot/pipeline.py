@@ -23,6 +23,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.queries.dispatcher import handle as query_dispatcher_handle
+from app.queries.history import append_turn as _append_query_history
 from api.models.user import User
 from api.models.lazy_detection_event import LazyDetectionEvent
 from api.services.insights.extractor import (
@@ -340,7 +341,7 @@ async def process_message(
             extraction=merged, user=user, today=today, db=db
         )
         reply = await _apply_decision(
-            user=user, decision=decision, db=db, redis=redis
+            user=user, decision=decision, db=db, redis=redis, source_text=text
         )
         enqueue_insight_extraction(
             user_id=user.id,
@@ -360,7 +361,7 @@ async def process_message(
     plain_confirm = _text_is_confirmation(text)
     if plain_confirm is not None:
         return await _handle_confirm(
-            user=user, yes=plain_confirm, db=db, redis=redis
+            user=user, yes=plain_confirm, db=db, redis=redis, source_text=text
         )
 
     # ── token budget gate ──
@@ -401,12 +402,57 @@ async def process_message(
     )
 
 
+# ── Phase 7a: cross-dispatcher context bridge ───────────────────────────────
+# The read-only query dispatcher (the advisor) reads `query_history` to resolve
+# follow-ups like "¿cómo alcanzo esa meta?". Goal/income/bill creation runs
+# through THIS write path, which historically never touched that store — so the
+# advisor was blind to a goal the user had just created one turn earlier.
+# Bridge the conversational creation turns (proposal + confirmation) into the
+# same store so the advisor sees the recent narrative. Raw expense/income logs
+# are deliberately NOT bridged: they're capture noise that would flood the
+# 10-entry window and crowd out real conversation.
+_BRIDGED_CREATION_ACTIONS = frozenset(
+    {"create_goal", "create_income", "create_bill"}
+)
+
+
+async def _bridge_to_query_history(
+    *,
+    user_id: uuid.UUID,
+    user_text: str,
+    assistant_text: str,
+    redis: Redis,
+) -> None:
+    """Best-effort append of a write-side creation turn to the shared query
+    history. A Redis hiccup here must never break the user-facing reply — log
+    and move on (the rule: no silent failures, but also no fatal ones here)."""
+    assistant_text = (assistant_text or "").strip()
+    if not assistant_text:
+        return
+    # A button-tap confirmation has no source text. The replayed history must
+    # not contain an empty user message (Anthropic rejects empty content), so
+    # substitute a minimal placeholder — the assistant turn carries the signal.
+    user_text = (user_text or "").strip() or "(confirmé la acción)"
+    try:
+        await _append_query_history(
+            user_id,
+            user_msg=user_text,
+            assistant_msg=assistant_text,
+            redis=redis,
+        )
+    except Exception:  # pragma: no cover - defensive against Redis transients
+        log.warning(
+            "query_history_bridge_failed user_id=%s", user_id, exc_info=True
+        )
+
+
 async def _handle_confirm(
     *,
     user: User,
     yes: bool,
     db: AsyncSession,
     redis: Redis,
+    source_text: str = "",
 ) -> BotReply:
     pending = await load_pending(user_id=user.id, redis=redis)
     if pending is None:
@@ -424,11 +470,18 @@ async def _handle_confirm(
     # differently from transactions (no amount sign, no /transactions deep link).
     if pending.action_type == "create_goal":
         await commit_pending(user=user, pending=pending, db=db, redis=redis)
-        return BotReply(
+        reply = BotReply(
             text=messages_es.GOAL_CREATED.format(
                 name=pending.payload.get("name", "tu meta")
             )
         )
+        await _bridge_to_query_history(
+            user_id=user.id,
+            user_text=source_text,
+            assistant_text=reply.text,
+            redis=redis,
+        )
+        return reply
 
     if pending.action_type == "create_income":
         await commit_pending(user=user, pending=pending, db=db, redis=redis)
@@ -438,15 +491,29 @@ async def _handle_confirm(
         )
         if payload.get("income_type") == "salary" and payload.get("currency") == "CRC":
             msg += messages_es.INCOME_DERIVE_TIP
-        return BotReply(text=msg)
+        reply = BotReply(text=msg)
+        await _bridge_to_query_history(
+            user_id=user.id,
+            user_text=source_text,
+            assistant_text=reply.text,
+            redis=redis,
+        )
+        return reply
 
     if pending.action_type == "create_bill":
         await commit_pending(user=user, pending=pending, db=db, redis=redis)
-        return BotReply(
+        reply = BotReply(
             text=messages_es.BILL_CREATED.format(
                 name=pending.payload.get("name", "el gasto fijo")
             )
         )
+        await _bridge_to_query_history(
+            user_id=user.id,
+            user_text=source_text,
+            assistant_text=reply.text,
+            redis=redis,
+        )
+        return reply
 
     txn_id = await commit_pending(user=user, pending=pending, db=db, redis=redis)
     amt_decimal = Decimal(pending.payload["amount"])
@@ -533,7 +600,7 @@ async def _route_extraction(
         extraction=extraction, user=user, today=today, db=db
     )
     return await _apply_decision(
-        user=user, decision=decision, db=db, redis=redis
+        user=user, decision=decision, db=db, redis=redis, source_text=text
     )
 
 
@@ -543,6 +610,7 @@ async def _apply_decision(
     decision,
     db: AsyncSession,
     redis: Redis,
+    source_text: str = "",
 ) -> BotReply:
     telemetry_persisted = _stage_lazy_detection_events(
         user=user, decision=decision, db=db
@@ -576,6 +644,15 @@ async def _apply_decision(
         if existing is not None:
             prefix = messages_es.PENDING_OVERWRITTEN + "\n\n"
         await save_pending(user_id=user.id, pending=pending, redis=redis)
+        # Bridge the creation proposal (not the overwrite prefix) into the
+        # shared query history so a follow-up advice question can resolve it.
+        if decision.action_type in _BRIDGED_CREATION_ACTIONS:
+            await _bridge_to_query_history(
+                user_id=user.id,
+                user_text=source_text,
+                assistant_text=decision.summary_es,
+                redis=redis,
+            )
         return BotReply(
             text=prefix + decision.summary_es,
             buttons=_buttons_for(short_id),
@@ -586,6 +663,15 @@ async def _apply_decision(
         # clarification key was already cleared above (not an AskClarification).
         if telemetry_persisted:
             await db.commit()
+        # Bridge the debt-creation handoff so the advisor knows a debt is being
+        # set up if the user immediately asks about it.
+        if decision.screen == "debt_create":
+            await _bridge_to_query_history(
+                user_id=user.id,
+                user_text=source_text,
+                assistant_text=decision.message_es,
+                redis=redis,
+            )
         return BotReply(
             text=decision.message_es,
             open_screen=OpenScreen(
@@ -617,7 +703,7 @@ async def _apply_decision(
         return BotReply(text=decision.message_es)
     if isinstance(decision, ConfirmResponse):
         return await _handle_confirm(
-            user=user, yes=decision.yes, db=db, redis=redis
+            user=user, yes=decision.yes, db=db, redis=redis, source_text=source_text
         )
     if isinstance(decision, UndoRequest):
         _ok, msg = await run_undo(user=user, db=db, redis=redis)

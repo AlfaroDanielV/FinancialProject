@@ -22,7 +22,11 @@ from api.models.debt import Debt
 from api.models.user import User
 from api.services.auth.magic_link import generate_link
 from api.services.llm_extractor import ExtractionResult, Intent
-from api.services.telegram_dispatcher import OpenScreenAction, dispatch
+from api.services.telegram_dispatcher import (
+    AskClarification,
+    OpenScreenAction,
+    dispatch,
+)
 
 
 def _override_db(session):
@@ -175,3 +179,48 @@ async def test_create_debt_invalid_rate_and_term_dropped(db_with_user):
     assert decision.prefill["term_months"] is None
     assert decision.prefill["original_amount"] is None
     assert decision.prefill["current_balance"] is None
+
+
+# ── 5. Low-confidence bare debt request still opens the form (bug fix) ─────────
+# "Saqué un préstamo" / "Quiero registrar una deuda" carry no amount, so the
+# model emits create_debt with low confidence. The confidence floor must NOT
+# divert it to the generic "¿gasto, ingreso o consulta?" clarification — that
+# question is wrong for an explicit debt request and trapped the user in a loop.
+
+
+@pytest.mark.asyncio
+async def test_create_debt_below_confidence_floor_still_opens_form(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+
+    decision = await dispatch(
+        extraction=_debt_extraction(
+            confidence=0.45,            # below CONFIDENCE_FLOOR (0.6)
+            debt_principal=None,        # bare request — no details given
+            debt_term_months=None,
+            debt_lender=None,
+        ),
+        user=user, today=date(2026, 6, 1), db=session,
+    )
+    assert isinstance(decision, OpenScreenAction)
+    assert decision.screen == "debt_create"
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_log_expense_still_clarifies(db_with_user):
+    """Regression guard: the confidence floor STILL fires for log intents —
+    "¿gasto, ingreso o consulta?" is the right question there."""
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+
+    extraction = ExtractionResult(
+        intent=Intent.LOG_EXPENSE,
+        dispatcher="write",
+        amount=Decimal("5000"),
+        confidence=0.4,
+    )
+    decision = await dispatch(
+        extraction=extraction, user=user, today=date(2026, 6, 1), db=session
+    )
+    assert isinstance(decision, AskClarification)
+    assert decision.awaiting_field == "intent"

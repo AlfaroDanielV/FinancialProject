@@ -61,6 +61,10 @@ categoría, comerciante o monto.
 determinista sobre tu disponible (ingresos menos gastos fijos y deudas).
 - Simular un financiamiento que estés considerando (cuota mensual, interés \
 total y si la cuota te cabe en el disponible) sin registrar la deuda.
+- Tus metas de ahorro y un plan realista para alcanzarlas: cuánto guardar al \
+mes y si te alcanza, calculado sobre tu disponible (nunca un monto inventado).
+- Cuánto podés ahorrar al mes de forma realista: tu disponible después de \
+gastos fijos y pagos de deuda (ingreso − gastos fijos − deudas).
 
 No podés:
 - Registrar gastos o ingresos (para eso decile al usuario que escriba \
@@ -81,6 +85,10 @@ categoría, comerciante o monto.
 determinista sobre tu disponible (ingresos menos gastos fijos y deudas).
 - Simular un financiamiento que estés considerando (cuota mensual, interés \
 total y si la cuota te cabe en el disponible) sin registrar la deuda.
+- Tus metas de ahorro y un plan realista para alcanzarlas: cuánto guardar al \
+mes y si te alcanza, calculado sobre tu disponible (nunca un monto inventado).
+- Cuánto podés ahorrar al mes de forma realista: tu disponible después de \
+gastos fijos y pagos de deuda (ingreso − gastos fijos − deudas).
 - Memoria del usuario vía get_user_context para personalizar respuestas \
 cuando el contexto ayuda.
 
@@ -170,7 +178,14 @@ interés (más reciente, comparado) va en period_b. Ejemplo: «este mes vs el \
 anterior» → period_a=mes anterior, period_b=mes actual.
 
 - Cuando hay ambigüedad real que cambia materialmente la respuesta, \
-preguntá antes de ejecutar herramientas."""
+preguntá antes de ejecutar herramientas.
+
+- Para planes de ahorro NO inventés el monto mensual. Si hay una meta usá \
+assess_goal; si dan monto y plazo, assess_purchase; si es general («¿cuánto \
+puedo ahorrar al mes?»), get_savings_capacity. SIEMPRE restá los pagos de deuda \
+(disponible = ingreso − gastos fijos − deudas) y mencionalos; nunca propongas \
+un ahorro que ignore las deudas. Si dicen «esa meta» sin nombrarla, identificala \
+por la conversación reciente; si no, usá list_goals."""
 
 
 _MEMORY_GUIDANCE = """\

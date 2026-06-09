@@ -81,13 +81,19 @@ class DebtTermsExtraction(BaseModel):
 
 
 class DebtUpdate(BaseModel):
-    """Phase 6e B7 — narrowed whitelist.
+    """Phase 6e B7 — narrowed whitelist (minimum_payment editable since 2026-06).
 
-    Financial fields (`original_amount`, `current_balance`, `interest_rate`,
-    `minimum_payment`, `term_months`, rate fields, insurance fields,
-    `prepayment_penalty_pct`, `payments_made`) are immutable post-creation. To
-    record a refinance, create a new debt. To reconcile balance against a real
+    Most financial fields (`original_amount`, `current_balance`,
+    `interest_rate`, `term_months`, rate fields, insurance fields,
+    `prepayment_penalty_pct`, `payments_made`) stay immutable post-creation — to
+    record a refinance, create a new debt; to reconcile the balance against a
     statement, record a payment via `POST /debts/{id}/payments`.
+
+    The monthly payment (`minimum_payment`) IS editable: the cuota changes in
+    real life (variable-rate adjustments, renegotiation) or was mistyped at
+    entry, and it drives the amortization schedule, payoff scenarios, and the
+    affordability / savings-capacity math. The router validates it (positive,
+    below the balance, and enough to cover the monthly interest).
     """
 
     model_config = {"extra": "forbid"}
@@ -96,6 +102,7 @@ class DebtUpdate(BaseModel):
     payment_due_day: Optional[int] = Field(None, ge=1, le=31)
     account_id: Optional[uuid.UUID] = None
     notes: Optional[str] = None
+    minimum_payment: Optional[float] = Field(None, gt=0)
     is_active: Optional[bool] = None
     archived: Optional[bool] = None
 

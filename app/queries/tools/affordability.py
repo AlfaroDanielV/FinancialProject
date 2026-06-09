@@ -15,13 +15,16 @@ from decimal import Decimal
 from typing import Annotated, Any, Optional
 
 from pydantic import Field
+from sqlalchemy import select
 
+from api.models.debt import Debt
 from api.models.user import User
 from api.services.finance.affordability import (
     FinancialContext,
     assess_for_user,
     gather_financial_context,
 )
+from api.services.fx import convert
 
 from app.queries.session import AsyncSessionLocal
 
@@ -138,12 +141,83 @@ async def assess_purchase(
     }
 
 
+GET_SAVINGS_CAPACITY_DESCRIPTION = (
+    "Devuelve, de forma determinista, cuánto puede ahorrar el usuario al mes: su "
+    "disponible = ingresos recurrentes − gastos fijos − pagos de deuda, y el "
+    "disponible seguro (margen del 80%). Usá esto SIEMPRE que pida planear "
+    "ahorros sin una meta o monto concreto («¿cuánto puedo ahorrar al mes?», "
+    "«ayudame a planear mis ahorros», «¿cómo reparto mi plata?», «¿cuánto me "
+    "queda libre?»). El campo «debts» trae el desglose de cada deuda activa con "
+    "su pago mensual (cuota), para que estructures el plan TENIENDO EN CUENTA las "
+    "deudas y sus pagos — mencionalos. monthly_debt_payments es el total mensual "
+    "de deudas que ya se restó del disponible. Si monthly_disposable es null no "
+    "hay ingresos registrados: pedile que los registre. NO inventés el monto que "
+    "puede ahorrar: usá monthly_disposable / safe_monthly_disposable tal cual."
+)
+
+_CENTS = Decimal("0.01")
+
+
+async def get_savings_capacity(*, user_id: uuid.UUID) -> dict[str, Any]:
+    async with AsyncSessionLocal() as db:
+        user = await db.get(User, user_id)
+        if user is None:
+            return {"error": "user_not_found"}
+        # Reuse the engine for the disposable/safe math so this can't drift from
+        # assess_purchase/assess_goal. desired_amount=0 → the feasibility fields
+        # are vacuous (ignored); we only want the income/fixed/debt/disposable.
+        result = await assess_for_user(
+            db, user=user, desired_amount=Decimal("0"), timeline_months=1
+        )
+        currency = result.currency
+        # Per-debt breakdown for visibility (sum == monthly_debt_payments).
+        rows = await db.execute(
+            select(Debt.name, Debt.minimum_payment, Debt.currency).where(
+                Debt.user_id == user.id,
+                Debt.is_active.is_(True),
+            )
+        )
+        debts: list[dict[str, Any]] = []
+        for name, payment, debt_currency in rows.all():
+            if payment is None:
+                continue
+            amount = Decimal(payment)
+            if amount <= 0:
+                continue
+            debts.append(
+                {
+                    "name": name,
+                    "monthly_payment": _money(
+                        convert(amount, debt_currency, currency).quantize(_CENTS)
+                    ),
+                    "currency": currency,
+                }
+            )
+
+    return {
+        "currency": currency,
+        "monthly_income": _money(result.monthly_income),
+        "monthly_fixed_expenses": _money(result.monthly_fixed_expenses),
+        "monthly_debt_payments": _money(result.monthly_debt_payments),
+        "monthly_disposable": _money(result.monthly_disposable),
+        "safe_monthly_disposable": _money(result.safe_monthly_disposable),
+        "safety_margin_pct": 80,
+        "debts": debts,
+        "notes": list(result.notes),
+    }
+
+
 def register_affordability_tools() -> None:
     if not is_tool_registered("assess_purchase"):
         query_tool(
             name="assess_purchase",
             description=ASSESS_PURCHASE_DESCRIPTION,
         )(assess_purchase)
+    if not is_tool_registered("get_savings_capacity"):
+        query_tool(
+            name="get_savings_capacity",
+            description=GET_SAVINGS_CAPACITY_DESCRIPTION,
+        )(get_savings_capacity)
 
 
 register_affordability_tools()

@@ -68,24 +68,26 @@ function formatMoney(amount: number, currency: string): string {
 
 export function DebtCreateScreen() {
   const nav = useNavigation<Nav>();
-  const { prefill } = useRoute<Rt>().params;
+  // prefill is present on the chat→form handoff; absent when opened fresh from
+  // the Deudas tab ("+ Nueva deuda"). Either way the form works.
+  const prefill = useRoute<Rt>().params?.prefill;
   const qc = useQueryClient();
 
-  const [name, setName] = useState(prefill.name ?? "");
+  const [name, setName] = useState(prefill?.name ?? "");
   const [debtType, setDebtType] = useState<DebtType>("personal_loan");
-  const [originalAmount, setOriginalAmount] = useState(prefill.original_amount ?? "");
+  const [originalAmount, setOriginalAmount] = useState(prefill?.original_amount ?? "");
   const [currentBalance, setCurrentBalance] = useState(
-    prefill.current_balance ?? prefill.original_amount ?? "",
+    prefill?.current_balance ?? prefill?.original_amount ?? "",
   );
-  const [ratePct, setRatePct] = useState(prefill.interest_rate_pct ?? "");
+  const [ratePct, setRatePct] = useState(prefill?.interest_rate_pct ?? "");
   const [termMonths, setTermMonths] = useState(
-    prefill.term_months != null ? String(prefill.term_months) : "",
+    prefill?.term_months != null ? String(prefill.term_months) : "",
   );
   const [minimumPayment, setMinimumPayment] = useState("");
   const [paymentDueDay, setPaymentDueDay] = useState("");
-  const [lender, setLender] = useState(prefill.lender ?? "");
+  const [lender, setLender] = useState(prefill?.lender ?? "");
   const [currency, setCurrency] = useState<"CRC" | "USD">(
-    prefill.currency === "USD" ? "USD" : "CRC",
+    prefill?.currency === "USD" ? "USD" : "CRC",
   );
   const [includesInsurance, setIncludesInsurance] = useState(false);
   const [insuranceMonthly, setInsuranceMonthly] = useState("");
@@ -171,6 +173,44 @@ export function DebtCreateScreen() {
   });
 
   const dueDayNum = parseInt(paymentDueDay, 10);
+
+  // ── sanity validations (a debt with impossible numbers is worse than none) ──
+  const originalNum = parseNum(originalAmount);
+  const minPayNum = parseNum(minimumPayment);
+  // Monthly interest on the balance — only meaningful once the rate is known.
+  const monthlyInterest =
+    rateProvided && !isNaN(balanceNum) && balanceNum > 0
+      ? balanceNum * (rateNum / 100 / 12)
+      : null;
+
+  const balanceError =
+    currentBalance.trim() !== "" &&
+    !isNaN(originalNum) &&
+    !isNaN(balanceNum) &&
+    balanceNum > originalNum
+      ? "El saldo actual no puede ser mayor que el monto original."
+      : null;
+
+  let paymentError: string | null = null;
+  if (isValidPositive(minimumPayment)) {
+    if (!isNaN(balanceNum) && balanceNum > 0 && minPayNum >= balanceNum) {
+      // The user's case: a cuota ≥ the whole debt isn't a loan.
+      paymentError = "La cuota mensual no puede ser mayor o igual al saldo de la deuda.";
+    } else if (monthlyInterest != null && minPayNum <= monthlyInterest) {
+      // Negative amortization: the payment doesn't even cover the interest.
+      paymentError = `La cuota no cubre ni el interés del mes (~${formatMoney(
+        monthlyInterest,
+        currency,
+      )}). Con ese monto el saldo nunca bajaría.`;
+    }
+  }
+
+  // Backend stores interest_rate as a 0–1 fraction (≤ 100% annual).
+  const rateError =
+    ratePct.trim() !== "" && !isNaN(rateNum) && rateNum > 100
+      ? "La tasa anual no puede superar 100%."
+      : null;
+
   const canSubmit =
     isValidPositive(originalAmount) &&
     rateProvided &&
@@ -178,6 +218,9 @@ export function DebtCreateScreen() {
     !isNaN(dueDayNum) &&
     dueDayNum >= 1 &&
     dueDayNum <= 31 &&
+    !balanceError &&
+    !paymentError &&
+    !rateError &&
     !createMutation.isPending &&
     !parseMutation.isPending;
 
@@ -313,7 +356,7 @@ export function DebtCreateScreen() {
 
         <Field label="Saldo actual" hint="Para un préstamo nuevo, igual al monto original.">
           <TextInput
-            style={styles.input}
+            style={[styles.input, balanceError != null && styles.inputError]}
             value={currentBalance}
             onChangeText={setCurrentBalance}
             placeholder="5000000"
@@ -321,11 +364,12 @@ export function DebtCreateScreen() {
             keyboardType="decimal-pad"
           />
         </Field>
+        {balanceError != null && <Text style={styles.fieldError}>{balanceError}</Text>}
 
         {/* ── Rate (percent) ───────────────────────────────────────────────── */}
         <Field label="Tasa de interés anual (%)">
           <TextInput
-            style={styles.input}
+            style={[styles.input, rateError != null && styles.inputError]}
             value={ratePct}
             onChangeText={setRatePct}
             placeholder="18"
@@ -333,6 +377,7 @@ export function DebtCreateScreen() {
             keyboardType="decimal-pad"
           />
         </Field>
+        {rateError != null && <Text style={styles.fieldError}>{rateError}</Text>}
 
         {!rateProvided && (
           <View style={styles.noRateCard}>
@@ -367,7 +412,7 @@ export function DebtCreateScreen() {
         {/* ── Minimum payment ──────────────────────────────────────────────── */}
         <Field label="Cuota mensual">
           <TextInput
-            style={styles.input}
+            style={[styles.input, paymentError != null && styles.inputError]}
             value={minimumPayment}
             onChangeText={setMinimumPayment}
             placeholder="126000"
@@ -375,6 +420,7 @@ export function DebtCreateScreen() {
             keyboardType="decimal-pad"
           />
         </Field>
+        {paymentError != null && <Text style={styles.fieldError}>{paymentError}</Text>}
 
         {/* ── Payment due day ──────────────────────────────────────────────── */}
         <Field label="Día de pago (1–31)">
@@ -481,6 +527,16 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.sm + 2,
     fontSize: FontSize.md,
     color: Colors.textPrimary,
+  },
+  inputError: {
+    borderColor: Colors.expense,
+  },
+  fieldError: {
+    fontSize: FontSize.xs,
+    color: Colors.expense,
+    marginTop: -Spacing.xs,
+    marginBottom: Spacing.sm,
+    lineHeight: 17,
   },
 
   // ── PDF card ──────────────────────────────────────────────────────────────

@@ -125,6 +125,7 @@ salud / ocio / vivienda / deudas / otros). Recibos de servicios → "servicios",
    - debt_name: un nombre corto del préstamo si lo da ("préstamo del carro", "hipoteca"). Si no, null.
    - currency: CRC o USD si lo dice; si no, null.
    - NO uses amount/merchant para deudas; usá los campos debt_*.
+   - IMPORTANTE: aunque NO dé monto ni ningún detalle, si pide REGISTRAR o dice que SACÓ / TIENE / DEBE un préstamo o deuda, ES create_debt con confianza ALTA (≥0.9). No bajés la confianza por falta de datos — la extracción es ligera y el formulario junta el resto. "Saqué un préstamo", "necesito registrar un préstamo", "quiero registrar una deuda" → create_debt con todos los campos debt_* en null.
 
 Ejemplos:
 - Usuario: "gasté 5000 en el super"
@@ -155,6 +156,10 @@ Ejemplos:
   Tool input: {"intent":"create_debt","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"debt_name":null,"debt_principal":5000000,"debt_interest_rate":null,"debt_term_months":60,"debt_lender":"BAC","confidence":0.9,"raw_notes":null}
 - Usuario: "saqué un crédito de carro de 8 millones al 12% a 7 años"
   Tool input: {"intent":"create_debt","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"debt_name":"crédito de carro","debt_principal":8000000,"debt_interest_rate":12,"debt_term_months":84,"debt_lender":null,"confidence":0.92,"raw_notes":null}
+- Usuario: "saqué un préstamo" (sin detalles — el formulario los pide)
+  Tool input: {"intent":"create_debt","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"debt_name":null,"debt_principal":null,"debt_interest_rate":null,"debt_term_months":null,"debt_lender":null,"confidence":0.9,"raw_notes":null}
+- Usuario: "quiero registrar una deuda"
+  Tool input: {"intent":"create_debt","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"debt_name":null,"debt_principal":null,"debt_interest_rate":null,"debt_term_months":null,"debt_lender":null,"confidence":0.9,"raw_notes":null}
 - Usuario: "si pido un préstamo para la prima y lo financio a 20 años con una tasa del 45%" (está explorando, NO registrando)
   Tool input: {"intent":"query","dispatcher":"query","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.88,"raw_notes":"explora financiar: 20 años al 45%"}
 - Usuario: "cuánto sería la cuota de un préstamo de 50 millones a 20 años al 45%"
