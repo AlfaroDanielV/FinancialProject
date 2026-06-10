@@ -15,7 +15,9 @@ from typing import Optional
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..models.debt import Debt
 from ..models.envelope import Envelope
+from ..models.recurring_bill import RecurringBill
 from ..models.recurring_income import RecurringIncome
 from ..models.transaction import Transaction
 from ..models.user import User
@@ -96,6 +98,22 @@ async def fetch_envelopes(
     return list((await db.execute(stmt)).scalars().all())
 
 
+async def is_valid_envelope_target(
+    db: AsyncSession, *, user_id: uuid.UUID, envelope_id: uuid.UUID
+) -> bool:
+    """An envelope is a valid attachment/assignment target iff it exists,
+    belongs to the user, and is non-archived. Shared by the bill/debt attach
+    endpoints, the chat ATTACH_EXPENSE flow, and PATCH /transactions."""
+    row = await db.execute(
+        select(Envelope.id).where(
+            Envelope.id == envelope_id,
+            Envelope.user_id == user_id,
+            Envelope.archived.is_(False),
+        )
+    )
+    return row.scalar_one_or_none() is not None
+
+
 async def active_children(
     db: AsyncSession, *, user_id: uuid.UUID, parent_id: uuid.UUID
 ) -> list[Envelope]:
@@ -130,13 +148,24 @@ def descendant_ids(
 
 
 async def archive_subtree(db: AsyncSession, *, user: User, root: Envelope) -> None:
-    """Soft-archive a root + its whole subtree. Idempotent; the caller commits."""
+    """Soft-archive a root + its whole subtree. Detaches any fixed expenses
+    pinned to the archived envelopes — soft archive doesn't fire the FK
+    SET NULL, so it's explicit; the bill/debt survives. Idempotent; the caller
+    commits."""
     envs = await fetch_envelopes(db, user_id=user.id, include_archived=True)
     ids = [root.id, *descendant_ids(envs, root.id)]
     await db.execute(
         update(Envelope)
         .where(Envelope.id.in_(ids))
         .values(archived=True, is_active=False)
+    )
+    await db.execute(
+        update(RecurringBill)
+        .where(RecurringBill.envelope_id.in_(ids))
+        .values(envelope_id=None)
+    )
+    await db.execute(
+        update(Debt).where(Debt.envelope_id.in_(ids)).values(envelope_id=None)
     )
 
 

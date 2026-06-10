@@ -66,6 +66,8 @@ class RecurringBillUpdate(BaseModel):
     is_active: Optional[bool] = None
     notes: Optional[str] = None
     linked_loan_id: Optional[uuid.UUID] = None
+    # Fixed-expense attachment: a UUID attaches to that envelope; null detaches.
+    envelope_id: Optional[uuid.UUID] = None
 
     @model_validator(mode="after")
     def _validate(self):
@@ -95,6 +97,7 @@ class RecurringBillResponse(BaseModel):
     is_active: bool
     notes: Optional[str]
     linked_loan_id: Optional[uuid.UUID]
+    envelope_id: Optional[uuid.UUID] = None
     created_at: datetime
     updated_at: datetime
 

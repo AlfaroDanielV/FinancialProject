@@ -25,6 +25,7 @@ from ..schemas.recurring_bills import (
     RecurringBillUpdate,
 )
 from ..services import recurrence
+from ..services.envelopes import is_valid_envelope_target
 
 router = APIRouter(prefix="/api/v1/recurring-bills", tags=["recurring-bills"])
 
@@ -125,6 +126,11 @@ async def update_recurring_bill(
         raise HTTPException(status_code=404, detail="Factura recurrente no encontrada.")
 
     update_data = payload.model_dump(exclude_unset=True)
+    env_id = update_data.get("envelope_id")
+    if env_id is not None and not await is_valid_envelope_target(
+        db, user_id=user.id, envelope_id=env_id
+    ):
+        raise HTTPException(status_code=400, detail="Sobre inválido.")
     schedule_changed = bool(_SCHEDULE_FIELDS & update_data.keys())
     was_active_before = bool(bill.is_active)
 

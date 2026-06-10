@@ -76,7 +76,7 @@ class AffordabilityInputs:
 
 @dataclass(frozen=True)
 class AffordabilityResult:
-    feasible: Optional[bool]  # None when GATED (no_income / no_budget)
+    feasible: Optional[bool]  # None when GATED (no_income / no_budget / under_coverage)
     gate_reason: Optional[str]  # which gate suppressed the verdict, else None
     currency: str
     desired_amount: Decimal
@@ -98,11 +98,10 @@ class AffordabilityResult:
     notes: tuple[str, ...] = ()
 
 
-# Canned voseo guidance per gate — each maps to a DISTINCT user action (register
-# income vs build a budget). Debts + recurring bills are counted directly from
-# their own tables, so there is no "cover your obligations with sobres" gate. The
-# full surfacing rules live in the tool descriptions + the write-path messaging;
-# these are the engine-level notes.
+# Canned voseo guidance per gate — each maps to a DISTINCT user action and the
+# copy must keep them distinct (register income vs build budget vs cover
+# obligations). The full surfacing rules live in the tool descriptions + the
+# write-path messaging; these are the engine-level notes.
 _GATE_NOTES = {
     "no_income": (
         "No hay ingresos recurrentes registrados; no puedo estimar cuánto te "
@@ -112,6 +111,11 @@ _GATE_NOTES = {
         "Todavía no tenés sobres (presupuesto) configurados, así que no puedo "
         "estimar con confianza cuánto te queda libre. Armá tus sobres y con eso "
         "te doy un número real."
+    ),
+    "under_coverage": (
+        "Tus sobres todavía no cubren tus deudas y gastos fijos registrados, así "
+        "que el sobrante real puede ser menor de lo que parece. Ajustá tus sobres "
+        "para cubrirlos y el cálculo será confiable."
     ),
 }
 

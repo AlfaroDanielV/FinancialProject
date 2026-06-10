@@ -34,6 +34,7 @@ from ..schemas.debts import (
     ScheduleSummary,
     UpcomingPayment,
 )
+from ..services.envelopes import is_valid_envelope_target
 from ..services.llm_extractor import extract_debt_terms
 
 from bot.app import get_llm_client
@@ -331,6 +332,12 @@ async def update_debt(
         raise HTTPException(status_code=404, detail="Deuda no encontrada.")
 
     update_data = payload.model_dump(exclude_unset=True)
+
+    env_id = update_data.get("envelope_id")
+    if env_id is not None and not await is_valid_envelope_target(
+        db, user_id=user.id, envelope_id=env_id
+    ):
+        raise HTTPException(status_code=400, detail="Sobre inválido.")
 
     # The cuota is the one editable financial field; validate it the same way
     # the create form does. A payment ≥ the balance isn't a loan, and a payment

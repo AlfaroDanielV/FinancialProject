@@ -105,12 +105,15 @@ class DebtUpdate(BaseModel):
     minimum_payment: Optional[float] = Field(None, gt=0)
     is_active: Optional[bool] = None
     archived: Optional[bool] = None
+    # Fixed-expense attachment: a UUID attaches to that envelope; null detaches.
+    envelope_id: Optional[uuid.UUID] = None
 
 
 class DebtResponse(BaseModel):
     id: uuid.UUID
     user_id: uuid.UUID
     account_id: Optional[uuid.UUID]
+    envelope_id: Optional[uuid.UUID] = None
     name: str
     debt_type: str
     lender: Optional[str]

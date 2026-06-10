@@ -22,6 +22,12 @@ class Debt(Base):
     account_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=True
     )
+    # Fixed-expense attachment: when set, this debt's minimum_payment is reserved
+    # inside the envelope (migration 0026). ON DELETE SET NULL → deleting the
+    # envelope detaches, never deletes the debt.
+    envelope_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("envelopes.id", ondelete="SET NULL"), nullable=True
+    )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     # mortgage | credit_card | auto_loan | personal_loan | student_loan | other
     debt_type: Mapped[str] = mapped_column(String(50), nullable=False)

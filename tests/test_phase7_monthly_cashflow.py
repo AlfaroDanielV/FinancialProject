@@ -35,16 +35,16 @@ def test_positive_surplus_is_reliable():
     # income 800,000 − committed (envelopes) 700,000 = 100,000 surplus.
     # envelopes 700,000 ≥ debt 100,000 + bills 150,000 → covers obligations.
     cf = build_monthly_cashflow(
-        monthly_income=_d("1000000"),
+        monthly_income=_d("800000"),
         debt_payments=_d("100000"),
         recurring_bills=_d("150000"),
-        envelope_allocations=_d("250000"),
+        envelope_allocations=_d("700000"),
         has_budget=True,
     )
-    # committed = debt 100k + bills 150k + envelopes 250k = 500k → surplus 500k.
-    assert cf.committed_outflows == _d("500000.00")
-    assert cf.surplus == _d("500000.00")
+    assert cf.committed_outflows == _d("700000.00")
+    assert cf.surplus == _d("100000.00")
     assert cf.has_budget is True
+    assert cf.covers_obligations is True
     assert cf.income_known is True
     assert cf.reliable is True
     assert cf.gate_reason is None
@@ -52,15 +52,15 @@ def test_positive_surplus_is_reliable():
 
 
 def test_deficit_is_negative_surplus_surfaced_as_such():
-    # income 500,000 − committed 600,000 = −100,000 → a reliable, honest deficit.
+    # income 500,000 − committed 600,000 = −100,000. No debt/bills so the
+    # budget trivially "covers" them → a reliable, honest deficit (pushback).
     cf = build_monthly_cashflow(
         monthly_income=_d("500000"),
-        debt_payments=_d("100000"),
+        debt_payments=_d("0"),
         recurring_bills=_d("0"),
-        envelope_allocations=_d("500000"),
+        envelope_allocations=_d("600000"),
         has_budget=True,
     )
-    assert cf.committed_outflows == _d("600000.00")
     assert cf.surplus == _d("-100000.00")
     assert cf.reliable is True
     assert cf.gate_reason is None
@@ -85,10 +85,28 @@ def test_no_budget_gates():
     assert cf.recurring_bills == _d("150000.00")
 
 
-def test_committed_is_debts_plus_bills_plus_envelopes():
-    # Debts + recurring bills are counted from their own tables (the user never
-    # mirrors them as sobres), envelopes are discretionary on top. Each amount is
-    # counted exactly once. income 1,000,000; committed = 300k + 200k + 400k = 900k.
+def test_under_coverage_gates():
+    # Envelopes exist but only allocate 100,000, below debt 100,000 +
+    # bills 150,000 = 250,000 of registered fixed obligations → the budget
+    # understates committed → surplus is inflated → gate (same posture as
+    # no-budget), do NOT trust the surplus.
+    cf = build_monthly_cashflow(
+        monthly_income=_d("800000"),
+        debt_payments=_d("100000"),
+        recurring_bills=_d("150000"),
+        envelope_allocations=_d("100000"),
+        has_budget=True,
+    )
+    assert cf.has_budget is True
+    assert cf.covers_obligations is False
+    assert cf.reliable is False
+    assert cf.gate_reason == "under_coverage"
+
+
+def test_double_count_guard_committed_is_envelopes_only():
+    # Model A: committed == envelopes, never envelopes + debt + bills. With
+    # income 1,000,000 and envelopes 400,000, committed is 400,000 (surplus
+    # 600,000) — NOT 900,000 of committed (which would be the double count).
     cf = build_monthly_cashflow(
         monthly_income=_d("1000000"),
         debt_payments=_d("300000"),
@@ -96,8 +114,9 @@ def test_committed_is_debts_plus_bills_plus_envelopes():
         envelope_allocations=_d("400000"),
         has_budget=True,
     )
-    assert cf.committed_outflows == _d("900000.00")  # 300k + 200k + 400k, no dupes
-    assert cf.surplus == _d("100000.00")
+    assert cf.committed_outflows == cf.envelope_allocations == _d("400000.00")
+    assert cf.committed_outflows != _d("900000.00")  # not envelopes + debt + bills
+    assert cf.surplus == _d("600000.00")
 
 
 def test_savings_allocations_is_transparency_only():
@@ -240,16 +259,15 @@ async def test_compute_monthly_cashflow_excludes_cr_lump_cycles(db_with_user):
                 minimum_payment=_d("100000"),
                 payment_due_day=1,
             ),
-            # Discretionary budget: 150,000 needs + 100,000 wants + 100,000
-            # savings = 350,000 of root allocations. committed = debt 100k +
-            # bills 150k + envelopes 350k = 600,000. The savings envelope counts
-            # toward committed (ALL classes, sub-decision B) AND surfaces in
-            # savings_allocations.
+            # Budget that fully covers obligations: 500,000 needs + 100,000 wants
+            # + 100,000 savings = 700,000 of root allocations ≥ 250,000 of
+            # debt + bills. The savings envelope counts toward committed (ALL
+            # classes, sub-decision B) AND surfaces in savings_allocations.
             Envelope(
                 user_id=user_id,
                 name="Gastos del mes",
                 envelope_class="needs",
-                limit_amount=_d("150000"),
+                limit_amount=_d("500000"),
                 currency="CRC",
             ),
             Envelope(
@@ -276,11 +294,12 @@ async def test_compute_monthly_cashflow_excludes_cr_lump_cycles(db_with_user):
     assert cf.monthly_income == _d("800000.00")
     assert cf.debt_payments == _d("100000.00")
     assert cf.recurring_bills == _d("150000.00")
-    assert cf.envelope_allocations == _d("350000.00")  # roots only, all classes
-    assert cf.committed_outflows == _d("600000.00")  # debt + bills + envelopes
+    assert cf.envelope_allocations == _d("700000.00")  # roots only, all classes
+    assert cf.committed_outflows == _d("700000.00")  # Model A = envelopes
     assert cf.savings_allocations == _d("100000.00")  # transparency: savings root
-    assert cf.surplus == _d("200000.00")
+    assert cf.surplus == _d("100000.00")
     assert cf.has_budget is True
+    assert cf.covers_obligations is True
     assert cf.reliable is True
     assert cf.gate_reason is None
-    assert cf.months_to_goal(_d("600000")) == 3
+    assert cf.months_to_goal(_d("500000")) == 5

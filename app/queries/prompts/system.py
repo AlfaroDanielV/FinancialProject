@@ -184,13 +184,12 @@ preguntá antes de ejecutar herramientas.
 
 - Para planes de ahorro NO inventés el monto mensual. Si hay una meta usá \
 assess_goal; si dan monto y plazo, assess_purchase; si es general («¿cuánto \
-puedo ahorrar al mes?»), get_savings_capacity. El sobrante = ingreso − deudas − \
-gastos fijos − lo asignado en sobres (las deudas y gastos fijos se cuentan de sus \
-propias tablas, no hace falta un sobre que los refleje). Respetá gate_reason: si \
-viene no_income / no_budget NO des un número de sobrante; pedí la acción que \
-corresponde (registrar ingreso / armar sobres) — son distintas. Si dicen «esa \
-meta» sin nombrarla, identificala por la conversación reciente; si no, usá \
-list_goals."""
+puedo ahorrar al mes?»), get_savings_capacity. El sobrante se calcula sobre el \
+presupuesto: sobrante = ingreso − lo asignado en sobres. Respetá gate_reason: si \
+viene no_income / no_budget / under_coverage NO des un número de sobrante; pedí \
+la acción que corresponde (registrar ingreso / armar sobres / que los sobres \
+cubran deudas y gastos fijos) — son distintas. Si dicen «esa meta» sin nombrarla, \
+identificala por la conversación reciente; si no, usá list_goals."""
 
 
 _MEMORY_GUIDANCE = """\

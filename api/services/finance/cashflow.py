@@ -6,26 +6,25 @@ savings independently (Decision - Unified Monthly Cashflow). The LLM never
 computes these figures — it calls a tool that calls this and narrates the
 result.
 
-**Committed outflows = tracked obligations + discretionary envelopes.**
-``committed_outflows = debt_payments + recurring_bills + envelope_allocations``.
-Debts and recurring bills are first-class rows in their OWN tables (`debts`,
-`recurring_bills`) — the user does NOT create an envelope to mirror them — so
-they are counted directly. Envelopes cover the discretionary spend on top. There
-is no double-count because debts/bills are never enveloped (operator dogfood,
-2026-06-09 — this reversed the original "Model A: envelopes are the complete
-budget" assumption, which wrongly demanded the user envelope their debts; see
-Decision - Unified Monthly Cashflow). Envelope allocations are roots-only, so
-nested children aren't double-counted either.
+**Model A — envelopes are the complete budget.**
+``committed_outflows = envelope_allocations``. Debt payments and recurring bills
+are computed for transparency but NOT re-added: a fixed obligation is expected to
+live inside an envelope (attached via ``RecurringBill/Debt.envelope_id``), and the
+per-item ``under_coverage`` gate flags any obligation with no envelope. Envelope
+allocations are roots-only, so nested children aren't double-counted.
 
-**Two gate conditions** withhold the trustworthy surplus/savings claims. When
-either holds, the prose layer shows the transparency breakdown but NOT "te sobran
-₡X" / "ahorrás en N meses", because the underlying number isn't one we trust:
+**Gate conditions** withhold the trustworthy surplus/savings claims. When one
+holds, the prose layer shows the transparency breakdown but NOT "te sobran ₡X" /
+"ahorrás en N meses", because the underlying number isn't one we trust:
 
-  - ``no_income``  — no recurring income on file; without income there is no
-                     surplus to compute (mirrors the engine's ``feasible=None``).
-  - ``no_budget``  — no active (discretionary) envelopes; committed would be just
-                     debts + bills, so surplus ignores everyday spend and is
-                     over-stated. Ask the user to build their sobres.
+  - ``no_income``      — no recurring income on file; without income there is no
+                         surplus to compute (mirrors the engine's ``feasible=None``).
+  - ``no_budget``      — no active envelopes at all; committed would be 0 and
+                         surplus would collapse to the old inflated income figure.
+  - ``under_coverage`` — a registered debt/bill isn't covered by the budget, so
+                         committed (= just the envelopes) understates reality and
+                         surplus is inflated. (Aggregate baseline here; upgraded to
+                         per-item by the attachment feature — Block 3.)
 
 Currency is the user's (CRC default). All math is Decimal — never float.
 """
@@ -59,12 +58,13 @@ class MonthlyCashflow:
     """
 
     monthly_income: Decimal  # CRC; aguinaldo + salario escolar EXCLUDED
-    debt_payments: Decimal  # active cuotas / month (counted in committed)
-    recurring_bills: Decimal  # active fixed bills / month (counted in committed)
+    debt_payments: Decimal  # active cuotas / month (transparency)
+    recurring_bills: Decimal  # active fixed bills / month (transparency)
     envelope_allocations: Decimal  # active root envelope allocations / month
-    committed_outflows: Decimal  # debt_payments + recurring_bills + envelopes
+    committed_outflows: Decimal  # Model A: == envelope_allocations
     surplus: Decimal  # income − committed; negative = deficit
     has_budget: bool  # at least one active envelope exists
+    covers_obligations: bool  # allocations ≥ debt_payments + recurring_bills
     income_known: bool  # a recurring income is on file
     # Transparency only (sub-decision B): Σ allocations of savings + investing
     # roots. Subtracts NOTHING from committed/surplus — the engine never decides
@@ -78,19 +78,22 @@ class MonthlyCashflow:
 
     @property
     def reliable(self) -> bool:
-        """True only when a confident surplus/savings claim may be surfaced:
-        income is known AND a (discretionary) budget exists."""
-        return self.income_known and self.has_budget
+        """True only when a confident surplus/savings claim may be surfaced.
+        Every gate must pass: income is known, a budget exists, and it covers
+        the registered fixed obligations."""
+        return self.income_known and self.has_budget and self.covers_obligations
 
     @property
     def gate_reason(self) -> Optional[str]:
         """Which gate (if any) suppresses the confident claim. Precedence runs
         most-fundamental first: without income nothing downstream is trustworthy,
-        then without discretionary envelopes the surplus ignores everyday spend."""
+        then no budget, then a budget that under-covers obligations."""
         if not self.income_known:
             return "no_income"
         if not self.has_budget:
             return "no_budget"
+        if not self.covers_obligations:
+            return "under_coverage"
         return None
 
     @property
@@ -129,8 +132,9 @@ def build_monthly_cashflow(
     excluded_custom_bills: int = 0,
     currency: str = "CRC",
 ) -> MonthlyCashflow:
-    """Pure deterministic assembly — no DB, no LLM. ``monthly_income=None`` means
-    no income on file (honest unknown → ``income_known=False``, surfaced as the
+    """Pure deterministic assembly — no DB, no LLM. Applies the Model A
+    summation and the gate evaluation. ``monthly_income=None`` means no income
+    on file (honest unknown → ``income_known=False``, surfaced as the
     ``no_income`` gate)."""
     income_known = monthly_income is not None
     income = _q(Decimal(monthly_income)) if income_known else _ZERO
@@ -138,11 +142,16 @@ def build_monthly_cashflow(
     bills = _q(Decimal(recurring_bills))
     allocations = _q(Decimal(envelope_allocations))
 
-    # committed = tracked obligations (debts + recurring bills, from their own
-    # tables — never enveloped) + discretionary envelopes. No double-count: the
-    # user does not mirror debts/bills as sobres (operator dogfood 2026-06-09).
-    committed = _q(debt + bills + allocations)
+    # Model A: committed = envelopes only. Bills + debt stay transparency-only;
+    # re-adding them would double-count obligations attached inside an envelope.
+    # The double-count guard is structural — there is no `+ debt + bills` here.
+    committed = allocations
     surplus = _q(income - committed)
+
+    # Aggregate under_coverage gate: a budget that doesn't cover the registered
+    # fixed obligations understates committed → surplus inflated → untrusted.
+    # (Block 3 upgrades this to a per-item check off the attachment FK.)
+    covers_obligations = allocations >= (debt + bills)
 
     return MonthlyCashflow(
         monthly_income=income,
@@ -152,6 +161,7 @@ def build_monthly_cashflow(
         committed_outflows=committed,
         surplus=surplus,
         has_budget=has_budget,
+        covers_obligations=covers_obligations,
         income_known=income_known,
         savings_allocations=_q(Decimal(savings_allocations)),
         excluded_variable_bills=excluded_variable_bills,

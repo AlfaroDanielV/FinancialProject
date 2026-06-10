@@ -48,6 +48,14 @@ class RecurringBill(Base):
         ForeignKey("debts.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Fixed-expense attachment: when set, this bill's expected amount is reserved
+    # inside the envelope (migration 0026). ON DELETE SET NULL → deleting the
+    # envelope detaches, never deletes the bill.
+    envelope_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("envelopes.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), default=datetime.utcnow
     )

@@ -537,12 +537,17 @@ def _goal_feasibility_line(
         return f" Necesitás ~{monthly_str}/mes para llegar."
 
     # Gated → no trustworthy surplus → no feasibility claim, and the ask is
-    # DISTINCT per gate (register income / build budget).
+    # DISTINCT per gate (register income / build budget / cover obligations).
     if assessment.feasible is None:
         if assessment.gate_reason == "no_budget":
             extra = (
                 "Todavía no tenés sobres (presupuesto) armados, así que no puedo "
                 "confirmar si te alcanza. Armá tus sobres y te digo."
+            )
+        elif assessment.gate_reason == "under_coverage":
+            extra = (
+                "Tus sobres todavía no cubren tus deudas y gastos fijos, así que no "
+                "puedo confirmar con certeza si te alcanza. Ajustalos y te digo."
             )
         else:  # no_income (or unknown)
             extra = (
@@ -1058,6 +1063,11 @@ async def _debt_financing_advice(
             line += " Te cabe dentro de tu sobrante seguro."
     elif cashflow.gate_reason == "no_budget":
         line += " (Armá tus sobres para confirmar si la cuota te cabe en tu presupuesto.)"
+    elif cashflow.gate_reason == "under_coverage":
+        line += (
+            " (Tus sobres aún no cubren tus deudas y gastos fijos; ajustalos para "
+            "confirmar si te cabe.)"
+        )
     else:  # no_income
         line += " (Registrá tus ingresos para confirmar si la cuota te cabe.)"
     return line
