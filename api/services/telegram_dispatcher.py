@@ -25,6 +25,7 @@ from ..schemas.recurring_bills import VALID_RECURRING_BILL_CATEGORIES
 from .dispatch.lazy_detection import classify_hint_type, match_account_hint
 from .accounts import resolve_account, list_active
 from .amortization import compute_french_payment
+from .envelopes import match_envelopes_by_name, match_obligations_by_name
 from .finance.affordability import (
     SAFETY_MARGIN,
     AffordabilityResult,
@@ -264,6 +265,11 @@ async def dispatch(
 
     if intent is Intent.CREATE_DEBT:
         return await _dispatch_create_debt(
+            extraction=extraction, user=user, db=db
+        )
+
+    if intent is Intent.ATTACH_EXPENSE:
+        return await _dispatch_attach_expense(
             extraction=extraction, user=user, db=db
         )
 
@@ -1003,6 +1009,100 @@ def _dispatch_create_bill(
     )
     return ProposeAction(
         action_type="create_bill", payload=payload, summary_es=summary
+    )
+
+
+# ── Fixed-expense attachment (chat → propose → commit writes envelope_id) ─────
+
+
+async def _dispatch_attach_expense(
+    *, extraction: ExtractionResult, user: User, db: AsyncSession
+) -> DispatcherResult:
+    """Attach an existing recurring bill / debt to an envelope ("poné el recibo
+    del ICE en el sobre Servicios"). Resolves both by name, then proposes the
+    attachment; the commit writes obligation.envelope_id, after which the
+    obligation's expected amount is reserved inside the envelope (B2)."""
+    if not extraction.expense_hint:
+        return AskClarification(
+            question_es=(
+                "¿Cuál gasto fijo o deuda querés asignar a un sobre? Decime el "
+                "nombre (ej: 'ICE', 'préstamo del carro')."
+            ),
+            awaiting_field="expense_hint",
+            partial=extraction.model_dump(mode="json"),
+        )
+    if not extraction.envelope_hint:
+        return AskClarification(
+            question_es="¿A cuál sobre lo asigno? Decime el nombre del sobre.",
+            awaiting_field="envelope_hint",
+            partial=extraction.model_dump(mode="json"),
+        )
+
+    envelopes = await match_envelopes_by_name(
+        db, user_id=user.id, hint=extraction.envelope_hint
+    )
+    if not envelopes:
+        return AskClarification(
+            question_es=(
+                f"No encontré un sobre que se llame «{extraction.envelope_hint}». "
+                "Revisá el nombre o creá el sobre primero."
+            ),
+            awaiting_field="envelope_hint",
+            partial=extraction.model_dump(mode="json"),
+        )
+    if len(envelopes) > 1:
+        names = ", ".join(e.name for e in envelopes)
+        return AskClarification(
+            question_es=f"¿A cuál sobre? Coinciden varios: {names}.",
+            awaiting_field="envelope_hint",
+            partial=extraction.model_dump(mode="json"),
+        )
+    envelope = envelopes[0]
+
+    obligations = await match_obligations_by_name(
+        db, user_id=user.id, hint=extraction.expense_hint
+    )
+    if not obligations:
+        return AskClarification(
+            question_es=(
+                "No encontré un gasto fijo ni una deuda que se llame "
+                f"«{extraction.expense_hint}»."
+            ),
+            awaiting_field="expense_hint",
+            partial=extraction.model_dump(mode="json"),
+        )
+    if len(obligations) > 1:
+        labels = ", ".join(
+            f"{o.name} ({'recibo' if o.kind == 'bill' else 'deuda'})"
+            for o in obligations
+        )
+        return AskClarification(
+            question_es=f"¿Cuál de estos querés asignar? {labels}.",
+            awaiting_field="expense_hint",
+            partial=extraction.model_dump(mode="json"),
+        )
+    obligation = obligations[0]
+
+    noun = "el recibo" if obligation.kind == "bill" else "la cuota de"
+    amount_note = ""
+    if obligation.amount is not None:
+        amount_note = (
+            f" Su monto ({_whole(obligation.amount, envelope.currency)}) queda "
+            "reservado dentro del sobre."
+        )
+    payload = {
+        "action_type": "attach_expense",
+        "obligation_kind": obligation.kind,
+        "obligation_id": str(obligation.id),
+        "obligation_name": obligation.name,
+        "envelope_id": str(envelope.id),
+        "envelope_name": envelope.name,
+    }
+    summary = (
+        f"¿Asigno {noun} «{obligation.name}» al sobre «{envelope.name}»?{amount_note}"
+    )
+    return ProposeAction(
+        action_type="attach_expense", payload=payload, summary_es=summary
     )
 
 

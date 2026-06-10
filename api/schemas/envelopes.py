@@ -77,6 +77,11 @@ class EnvelopeSummaryItem(BaseModel):
     # bar shows. `direct_spent` is only what's tagged directly to this node.
     spent: float
     direct_spent: float
+    # B2 fixed-expense attachment: `reserved` = Σ attached bills/debts unpaid this
+    # cycle (rolled up); `available` = limit − reserved − spent (the truly free
+    # amount). `remaining` (limit − spent) stays for back-compat.
+    reserved: float = 0.0
+    available: float = 0.0
     remaining: float  # limit − rolled-up spent
     pct: float  # rolled-up spent / limit, 0..>1 (clamp in UI; >1 = over)
     over_limit: bool

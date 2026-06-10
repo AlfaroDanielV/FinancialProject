@@ -20,6 +20,14 @@ from api.models.envelope import Envelope
 from api.models.recurring_bill import RecurringBill
 from api.models.user import User
 from api.services.envelopes import archive_subtree, is_valid_envelope_target
+from api.services.llm_extractor import ExtractionResult, Intent
+from api.services.telegram_dispatcher import AskClarification, ProposeAction, dispatch
+
+
+def _attach_extraction(**overrides) -> ExtractionResult:
+    base = dict(intent=Intent.ATTACH_EXPENSE, dispatcher="write", confidence=0.9)
+    base.update(overrides)
+    return ExtractionResult(**base)
 
 
 def _envelope(user_id, *, name="Servicios", klass="needs", limit="200000", archived=False):
@@ -123,3 +131,89 @@ async def test_archive_envelope_detaches_obligations(db_with_user):
     assert debt.envelope_id is None
     assert await session.get(RecurringBill, bill.id) is not None
     assert await session.get(Debt, debt.id) is not None
+
+
+# ── chat ATTACH_EXPENSE dispatch (resolve by name → propose) ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_chat_attach_bill_proposes(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    env = _envelope(user_id, name="Servicios")
+    bill = _bill(user_id, name="ICE")
+    session.add_all([env, bill])
+    await session.commit()
+
+    decision = await dispatch(
+        extraction=_attach_extraction(expense_hint="ICE", envelope_hint="Servicios"),
+        user=user, today=date.today(), db=session,
+    )
+    assert isinstance(decision, ProposeAction)
+    assert decision.action_type == "attach_expense"
+    assert decision.payload["obligation_kind"] == "bill"
+    assert decision.payload["obligation_id"] == str(bill.id)
+    assert decision.payload["envelope_id"] == str(env.id)
+    assert "Servicios" in decision.summary_es
+
+
+@pytest.mark.asyncio
+async def test_chat_attach_debt_proposes(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    env = _envelope(user_id, name="Deudas")
+    debt = _debt(user_id, name="Préstamo carro")
+    session.add_all([env, debt])
+    await session.commit()
+
+    decision = await dispatch(
+        extraction=_attach_extraction(expense_hint="carro", envelope_hint="Deudas"),
+        user=user, today=date.today(), db=session,
+    )
+    assert isinstance(decision, ProposeAction)
+    assert decision.payload["obligation_kind"] == "debt"
+    assert decision.payload["obligation_id"] == str(debt.id)
+
+
+@pytest.mark.asyncio
+async def test_chat_attach_unknown_envelope_clarifies(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    session.add(_bill(user_id, name="ICE"))
+    await session.commit()
+    decision = await dispatch(
+        extraction=_attach_extraction(expense_hint="ICE", envelope_hint="NoExiste"),
+        user=user, today=date.today(), db=session,
+    )
+    assert isinstance(decision, AskClarification)
+    assert decision.awaiting_field == "envelope_hint"
+
+
+@pytest.mark.asyncio
+async def test_chat_attach_unknown_obligation_clarifies(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    session.add(_envelope(user_id, name="Servicios"))
+    await session.commit()
+    decision = await dispatch(
+        extraction=_attach_extraction(expense_hint="NoExiste", envelope_hint="Servicios"),
+        user=user, today=date.today(), db=session,
+    )
+    assert isinstance(decision, AskClarification)
+    assert decision.awaiting_field == "expense_hint"
+
+
+@pytest.mark.asyncio
+async def test_chat_attach_missing_hints_clarify(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    d1 = await dispatch(
+        extraction=_attach_extraction(envelope_hint="Servicios"),
+        user=user, today=date.today(), db=session,
+    )
+    assert isinstance(d1, AskClarification) and d1.awaiting_field == "expense_hint"
+    d2 = await dispatch(
+        extraction=_attach_extraction(expense_hint="ICE"),
+        user=user, today=date.today(), db=session,
+    )
+    assert isinstance(d2, AskClarification) and d2.awaiting_field == "envelope_hint"

@@ -256,6 +256,10 @@ async def mark_bill_paid(
         category=bill.category,
         transaction_date=transaction_date,
         source="manual",
+        # Fixed-expense attachment (B2): tag the payment to the bill's envelope so
+        # the actual amount counts as spend there and the reservation releases the
+        # same cycle (never both).
+        envelope_id=bill.envelope_id,
     )
     db.add(txn)
     await db.flush()

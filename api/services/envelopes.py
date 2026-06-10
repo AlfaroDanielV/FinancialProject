@@ -5,6 +5,7 @@ so the bars can never drift from the ledger. One grouped query per summary.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -15,7 +16,8 @@ from typing import Optional
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models.debt import Debt
+from ..models.bill_occurrence import BillOccurrence
+from ..models.debt import Debt, DebtPayment
 from ..models.envelope import Envelope
 from ..models.recurring_bill import RecurringBill
 from ..models.recurring_income import RecurringIncome
@@ -112,6 +114,111 @@ async def is_valid_envelope_target(
         )
     )
     return row.scalar_one_or_none() is not None
+
+
+# ── name resolution for chat attachment (Intent.ATTACH_EXPENSE) ───────────────
+
+
+@dataclass(frozen=True)
+class AttachableObligation:
+    """A recurring bill or debt the user can attach to an envelope."""
+
+    kind: str  # "bill" | "debt"
+    id: uuid.UUID
+    name: str
+    amount: Optional[Decimal]  # amount_expected (bill, may be None) / minimum_payment (debt)
+
+
+def _name_match(items: list, hint: str, key) -> list:
+    """Case-insensitive name match: exact first, else substring either way.
+    Mirrors app/queries/tools/goals.py::_match so chat resolution behaves the
+    same on the read + write sides."""
+    q = " ".join(hint.split()).lower()
+    if not q:
+        return []
+    exact = [i for i in items if key(i).lower() == q]
+    if exact:
+        return exact
+    return [i for i in items if q in key(i).lower() or key(i).lower() in q]
+
+
+async def match_envelopes_by_name(
+    db: AsyncSession, *, user_id: uuid.UUID, hint: str
+) -> list[Envelope]:
+    """Active (non-archived) envelopes whose name matches the hint."""
+    envs = await fetch_envelopes(db, user_id=user_id, include_archived=False)
+    return _name_match(envs, hint, lambda e: e.name)
+
+
+async def match_obligations_by_name(
+    db: AsyncSession, *, user_id: uuid.UUID, hint: str
+) -> list[AttachableObligation]:
+    """Active recurring bills + debts whose name matches the hint, as a unified
+    candidate list for chat attachment."""
+    bill_rows = (
+        await db.execute(
+            select(RecurringBill).where(
+                RecurringBill.user_id == user_id,
+                RecurringBill.is_active.is_(True),
+            )
+        )
+    ).scalars().all()
+    debt_rows = (
+        await db.execute(
+            select(Debt).where(
+                Debt.user_id == user_id,
+                Debt.is_active.is_(True),
+                Debt.archived.is_(False),
+            )
+        )
+    ).scalars().all()
+    cands: list[AttachableObligation] = [
+        AttachableObligation(
+            "bill",
+            b.id,
+            b.name,
+            Decimal(b.amount_expected) if b.amount_expected is not None else None,
+        )
+        for b in bill_rows
+    ]
+    cands += [
+        AttachableObligation("debt", d.id, d.name, Decimal(d.minimum_payment))
+        for d in debt_rows
+    ]
+    return _name_match(cands, hint, lambda c: c.name)
+
+
+async def list_unattached_obligations(
+    db: AsyncSession, *, user_id: uuid.UUID
+) -> list[tuple[str, Optional[Decimal], str]]:
+    """Active recurring bills + debts NOT attached to any envelope
+    (envelope_id IS NULL), as ``(name, amount, source)``. Drives the per-item
+    under_coverage gate (B3). ``amount`` is None for variable-amount bills."""
+    bill_rows = (
+        await db.execute(
+            select(RecurringBill.name, RecurringBill.amount_expected).where(
+                RecurringBill.user_id == user_id,
+                RecurringBill.is_active.is_(True),
+                RecurringBill.envelope_id.is_(None),
+            )
+        )
+    ).all()
+    debt_rows = (
+        await db.execute(
+            select(Debt.name, Debt.minimum_payment).where(
+                Debt.user_id == user_id,
+                Debt.is_active.is_(True),
+                Debt.archived.is_(False),
+                Debt.envelope_id.is_(None),
+            )
+        )
+    ).all()
+    out: list[tuple[str, Optional[Decimal], str]] = [
+        (name, Decimal(str(amt)) if amt is not None else None, "bill")
+        for name, amt in bill_rows
+    ]
+    out += [(name, Decimal(str(amt)), "debt") for name, amt in debt_rows]
+    return out
 
 
 async def active_children(
@@ -251,6 +358,106 @@ async def compute_envelope_summary(
     for env in envelopes:
         _rollup(env.id)
 
+    # ── reservations: attached fixed expenses, unpaid this cycle (B2) ──────────
+    # An attached bill/debt reserves its expected amount inside the envelope WHILE
+    # UNPAID this cycle. Once the actual payment lands (the bill's current-month
+    # occurrence is PAID/PARTIALLY_PAID, or a DebtPayment exists this month) the
+    # reservation releases — the actual transaction counts as spend instead, never
+    # both. Variable bills (no amount_expected) reserve 0; the link still counts
+    # toward per-item coverage (B3).
+    env_currency = {e.id: e.currency for e in envelopes}
+    direct_reserved: dict[uuid.UUID, Decimal] = {}
+
+    bill_rows = (
+        await db.execute(
+            select(
+                RecurringBill.id,
+                RecurringBill.envelope_id,
+                RecurringBill.amount_expected,
+                RecurringBill.currency,
+                RecurringBill.is_variable_amount,
+            ).where(
+                RecurringBill.user_id == user.id,
+                RecurringBill.is_active.is_(True),
+                RecurringBill.envelope_id.isnot(None),
+            )
+        )
+    ).all()
+    bill_ids = [r[0] for r in bill_rows]
+    paid_bills: set = set()
+    if bill_ids:
+        occ_rows = (
+            await db.execute(
+                select(
+                    BillOccurrence.recurring_bill_id, BillOccurrence.status
+                ).where(
+                    BillOccurrence.recurring_bill_id.in_(bill_ids),
+                    BillOccurrence.due_date >= start,
+                    BillOccurrence.due_date < end,
+                )
+            )
+        ).all()
+        paid_bills = {
+            bid for bid, status in occ_rows
+            if status in ("paid", "partially_paid")
+        }
+    for bid, env_id, amount_expected, bcur, is_variable in bill_rows:
+        ec = env_currency.get(env_id)
+        if ec is None or is_variable or amount_expected is None or bid in paid_bills:
+            continue
+        direct_reserved[env_id] = direct_reserved.get(
+            env_id, Decimal("0")
+        ) + convert(Decimal(str(amount_expected)), bcur, ec)
+
+    debt_rows = (
+        await db.execute(
+            select(
+                Debt.id, Debt.envelope_id, Debt.minimum_payment, Debt.currency
+            ).where(
+                Debt.user_id == user.id,
+                Debt.is_active.is_(True),
+                Debt.archived.is_(False),
+                Debt.envelope_id.isnot(None),
+            )
+        )
+    ).all()
+    debt_ids = [r[0] for r in debt_rows]
+    paid_debts: set = set()
+    if debt_ids:
+        pay_rows = (
+            await db.execute(
+                select(DebtPayment.debt_id).where(
+                    DebtPayment.debt_id.in_(debt_ids),
+                    DebtPayment.payment_date >= start,
+                    DebtPayment.payment_date < end,
+                )
+            )
+        ).all()
+        paid_debts = {r[0] for r in pay_rows}
+    for did, env_id, min_payment, dcur in debt_rows:
+        ec = env_currency.get(env_id)
+        if ec is None or did in paid_debts:
+            continue
+        direct_reserved[env_id] = direct_reserved.get(
+            env_id, Decimal("0")
+        ) + convert(Decimal(str(min_payment)), dcur, ec)
+
+    # Roll reservations up the tree (own + descendants), like spend.
+    rolled_reserved: dict[uuid.UUID, Decimal] = {}
+
+    def _rollup_reserved(env_id: uuid.UUID) -> Decimal:
+        cached = rolled_reserved.get(env_id)
+        if cached is not None:
+            return cached
+        total = direct_reserved.get(env_id, Decimal("0"))
+        for child in children_map.get(env_id, []):
+            total += _rollup_reserved(child.id)
+        rolled_reserved[env_id] = total
+        return total
+
+    for env in envelopes:
+        _rollup_reserved(env.id)
+
     items: list[EnvelopeSummaryItem] = []
     # Per-class subtotals + the total are reported in the summary (user)
     # currency, so each node's figures are converted from its own currency.
@@ -265,6 +472,7 @@ async def compute_envelope_summary(
         )
         limit_f = float(limit_dec)
         rolled_f = float(rolled_dec)
+        reserved_f = float(rolled_reserved.get(env.id, Decimal("0")))
         items.append(
             EnvelopeSummaryItem(
                 id=env.id,
@@ -276,6 +484,9 @@ async def compute_envelope_summary(
                 limit_amount=round(limit_f, 2),
                 spent=round(rolled_f, 2),
                 direct_spent=round(float(direct_dec), 2),
+                reserved=round(reserved_f, 2),
+                # Free = limit − reserved (attached, unpaid) − spent (actual).
+                available=round(limit_f - reserved_f - rolled_f, 2),
                 remaining=round(limit_f - rolled_f, 2),
                 pct=round((rolled_f / limit_f) if limit_f > 0 else 0.0, 4),
                 over_limit=rolled_dec > limit_dec,

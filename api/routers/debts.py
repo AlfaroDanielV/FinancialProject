@@ -11,6 +11,7 @@ from ..config import settings
 from ..database import get_db
 from ..dependencies import current_user
 from ..models.debt import Debt, DebtPayment
+from ..models.transaction import Transaction
 from ..models.user import User
 from ..schemas.debts import (
     AmortizationRow,
@@ -421,6 +422,22 @@ async def record_payment(
         notes=payload.notes,
     )
     db.add(payment)
+
+    # Fixed-expense attachment (B2): if the debt is attached to an envelope and
+    # this payment links a transaction, tag that transaction to the envelope so
+    # the actual payment counts as spend there and the reservation releases the
+    # same cycle (never both).
+    if payload.transaction_id is not None and debt.envelope_id is not None:
+        txn = (
+            await db.execute(
+                select(Transaction).where(
+                    Transaction.id == payload.transaction_id,
+                    Transaction.user_id == user.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if txn is not None and txn.envelope_id is None:
+            txn.envelope_id = debt.envelope_id
 
     debt.current_balance = remaining
     debt.payments_made = (debt.payments_made or 0) + 1

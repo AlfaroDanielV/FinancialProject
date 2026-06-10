@@ -22,6 +22,7 @@ class Intent(str, Enum):
     CREATE_INCOME = "create_income"
     CREATE_BILL = "create_bill"
     CREATE_DEBT = "create_debt"
+    ATTACH_EXPENSE = "attach_expense"
     QUERY = "query"
     CONFIRM_YES = "confirm_yes"
     CONFIRM_NO = "confirm_no"
@@ -83,6 +84,11 @@ class ExtractionResult(BaseModel):
     debt_interest_rate: Optional[Decimal] = Field(default=None)
     debt_term_months: Optional[int] = Field(default=None)
     debt_lender: Optional[str] = Field(default=None, max_length=100)
+    # Fixed-expense attachment (intent=attach_expense): attach an EXISTING
+    # recurring bill / debt to an envelope. expense_hint = the obligation name
+    # ("ICE", "préstamo del carro"); envelope_hint = the sobre name ("Servicios").
+    expense_hint: Optional[str] = Field(default=None, max_length=255)
+    envelope_hint: Optional[str] = Field(default=None, max_length=120)
     confidence: float = Field(..., ge=0.0, le=1.0)
     raw_notes: Optional[str] = Field(default=None, max_length=500)
 
@@ -119,7 +125,7 @@ class ExtractionResult(BaseModel):
 
     @field_validator(
         "category_hint", "account_hint", "merchant", "goal_name", "bill_name",
-        "debt_name", "debt_lender",
+        "debt_name", "debt_lender", "expense_hint", "envelope_hint",
     )
     @classmethod
     def _normalize_strings(cls, v: Optional[str]) -> Optional[str]:

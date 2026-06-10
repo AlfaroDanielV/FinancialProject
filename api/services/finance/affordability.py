@@ -35,7 +35,7 @@ from ..fx import convert
 from ..recurrence import get_upcoming_feed
 
 if TYPE_CHECKING:  # avoid a circular import — cashflow.py imports from this module
-    from .cashflow import MonthlyCashflow
+    from .cashflow import MonthlyCashflow, UnattachedObligation
 
 # 80% of disposable income is the safe ceiling — the margin the CLAUDE.md
 # affordability spec mandates. A plan is "feasible" only if its monthly
@@ -95,6 +95,9 @@ class AffordabilityResult:
     shortfall: Optional[Decimal]  # vs the safe ceiling; 0 when feasible
     min_timeline_months_feasible: Optional[int]
     max_amount_feasible_in_timeline: Optional[Decimal]
+    # Per-item under_coverage (B3): active bills/debts with no envelope, so the
+    # copy can name what to attach. Always populated (empty when fully attached).
+    unattached_obligations: tuple["UnattachedObligation", ...]
     notes: tuple[str, ...] = ()
 
 
@@ -125,6 +128,18 @@ def gate_guidance(gate_reason: Optional[str]) -> str:
     Shared by every surface so the three gates keep their distinct, deterministic
     copy ([[Decision - Unified Monthly Cashflow]])."""
     return _GATE_NOTES.get(gate_reason or "", "")
+
+
+def _gate_note(cashflow: "MonthlyCashflow") -> str:
+    """Gate guidance; the per-item under_coverage note NAMES the unattached
+    obligations the user must assign to a sobre (B3)."""
+    if cashflow.gate_reason == "under_coverage" and cashflow.unattached_obligations:
+        names = ", ".join(o.name for o in cashflow.unattached_obligations)
+        return (
+            f"Estos gastos fijos / deudas no están en ningún sobre: {names}. "
+            "Asignalos a un sobre para que el cálculo de tu sobrante sea confiable."
+        )
+    return _GATE_NOTES.get(cashflow.gate_reason or "", "")
 
 
 def assess_affordability(
@@ -176,13 +191,14 @@ def assess_affordability(
         committed_outflows=cashflow.committed_outflows,
         savings_allocations=cashflow.savings_allocations,
         surplus=(cashflow.surplus if cashflow.income_known else None),
+        unattached_obligations=cashflow.unattached_obligations,
     )
 
     # Gated → no trustworthy surplus → withhold the verdict. The gate_reason
     # carries the canned guidance; the prose layer shows the transparency
     # breakdown but never a confident "te sobra / sí podés" claim.
     if not cashflow.reliable:
-        notes.append(_GATE_NOTES.get(cashflow.gate_reason or "", ""))
+        notes.append(_gate_note(cashflow))
         return AffordabilityResult(
             feasible=None,
             safe_surplus=None,

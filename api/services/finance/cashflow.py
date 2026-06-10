@@ -37,7 +37,7 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models.user import User
-from ..envelopes import compute_envelope_summary
+from ..envelopes import compute_envelope_summary, list_unattached_obligations
 from .affordability import gather_affordability_inputs
 
 _CENTS = Decimal("0.01")
@@ -46,6 +46,17 @@ _ZERO = Decimal("0")
 
 def _q(value: Decimal) -> Decimal:
     return value.quantize(_CENTS, rounding=ROUND_HALF_UP)
+
+
+@dataclass(frozen=True)
+class UnattachedObligation:
+    """An active recurring bill / debt with no envelope. Drives the per-item
+    under_coverage gate (B3) and lets the copy name what to attach. ``amount`` is
+    None for variable-amount bills."""
+
+    name: str
+    amount: Optional[Decimal]
+    source: str  # "bill" | "debt"
 
 
 @dataclass(frozen=True)
@@ -64,7 +75,6 @@ class MonthlyCashflow:
     committed_outflows: Decimal  # Model A: == envelope_allocations
     surplus: Decimal  # income − committed; negative = deficit
     has_budget: bool  # at least one active envelope exists
-    covers_obligations: bool  # allocations ≥ debt_payments + recurring_bills
     income_known: bool  # a recurring income is on file
     # Transparency only (sub-decision B): Σ allocations of savings + investing
     # roots. Subtracts NOTHING from committed/surplus — the engine never decides
@@ -74,25 +84,33 @@ class MonthlyCashflow:
     # Recurring bills we couldn't price into recurring_bills, surfaced as notes.
     excluded_variable_bills: int = 0
     excluded_custom_bills: int = 0
+    # Per-item under_coverage (B3): active bills/debts with no envelope. The gate
+    # fires iff this is non-empty; the copy names the items the user must attach.
+    unattached_obligations: tuple[UnattachedObligation, ...] = ()
     currency: str = "CRC"
 
     @property
+    def covers_obligations(self) -> bool:
+        """Per-item coverage: every active bill/debt is attached to an envelope."""
+        return not self.unattached_obligations
+
+    @property
     def reliable(self) -> bool:
-        """True only when a confident surplus/savings claim may be surfaced.
-        Every gate must pass: income is known, a budget exists, and it covers
-        the registered fixed obligations."""
-        return self.income_known and self.has_budget and self.covers_obligations
+        """True only when a confident surplus/savings claim may be surfaced:
+        income is known, a budget exists, and every registered obligation is
+        attached to an envelope (so committed isn't understated)."""
+        return self.income_known and self.has_budget and not self.unattached_obligations
 
     @property
     def gate_reason(self) -> Optional[str]:
         """Which gate (if any) suppresses the confident claim. Precedence runs
         most-fundamental first: without income nothing downstream is trustworthy,
-        then no budget, then a budget that under-covers obligations."""
+        then no budget, then an obligation with no envelope (committed understated)."""
         if not self.income_known:
             return "no_income"
         if not self.has_budget:
             return "no_budget"
-        if not self.covers_obligations:
+        if self.unattached_obligations:
             return "under_coverage"
         return None
 
@@ -130,12 +148,14 @@ def build_monthly_cashflow(
     savings_allocations: Decimal = _ZERO,
     excluded_variable_bills: int = 0,
     excluded_custom_bills: int = 0,
+    unattached_obligations: tuple[UnattachedObligation, ...] = (),
     currency: str = "CRC",
 ) -> MonthlyCashflow:
     """Pure deterministic assembly — no DB, no LLM. Applies the Model A
-    summation and the gate evaluation. ``monthly_income=None`` means no income
-    on file (honest unknown → ``income_known=False``, surfaced as the
-    ``no_income`` gate)."""
+    summation; the per-item under_coverage gate is driven by
+    ``unattached_obligations`` (resolved against the attachment FK by the DB
+    caller). ``monthly_income=None`` means no income on file (honest unknown →
+    ``income_known=False``, surfaced as the ``no_income`` gate)."""
     income_known = monthly_income is not None
     income = _q(Decimal(monthly_income)) if income_known else _ZERO
     debt = _q(Decimal(debt_payments))
@@ -148,11 +168,6 @@ def build_monthly_cashflow(
     committed = allocations
     surplus = _q(income - committed)
 
-    # Aggregate under_coverage gate: a budget that doesn't cover the registered
-    # fixed obligations understates committed → surplus inflated → untrusted.
-    # (Block 3 upgrades this to a per-item check off the attachment FK.)
-    covers_obligations = allocations >= (debt + bills)
-
     return MonthlyCashflow(
         monthly_income=income,
         debt_payments=debt,
@@ -161,11 +176,11 @@ def build_monthly_cashflow(
         committed_outflows=committed,
         surplus=surplus,
         has_budget=has_budget,
-        covers_obligations=covers_obligations,
         income_known=income_known,
         savings_allocations=_q(Decimal(savings_allocations)),
         excluded_variable_bills=excluded_variable_bills,
         excluded_custom_bills=excluded_custom_bills,
+        unattached_obligations=unattached_obligations,
         currency=currency,
     )
 
@@ -196,6 +211,14 @@ async def compute_monthly_cashflow(db: AsyncSession, *, user: User) -> MonthlyCa
         Decimal("0"),
     )
     has_budget = bool(summary.envelopes)
+    # Per-item under_coverage (B3): active bills/debts with no envelope. Attaching
+    # an obligation only moves this list — committed/surplus are untouched.
+    unattached = tuple(
+        UnattachedObligation(name=name, amount=amount, source=source)
+        for name, amount, source in await list_unattached_obligations(
+            db, user_id=user.id
+        )
+    )
     return build_monthly_cashflow(
         monthly_income=inputs.monthly_income,
         debt_payments=inputs.monthly_debt_payments,
@@ -205,5 +228,6 @@ async def compute_monthly_cashflow(db: AsyncSession, *, user: User) -> MonthlyCa
         savings_allocations=savings_allocations,
         excluded_variable_bills=inputs.excluded_variable_bills,
         excluded_custom_bills=inputs.excluded_custom_bills,
+        unattached_obligations=unattached,
         currency=inputs.currency,
     )

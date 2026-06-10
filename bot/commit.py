@@ -13,8 +13,10 @@ from decimal import Decimal
 from typing import Optional
 
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.models.debt import Debt
 from api.models.goal import Goal
 from api.models.recurring_bill import RecurringBill
 from api.models.recurring_income import RecurringIncome
@@ -44,6 +46,11 @@ async def commit_pending(
 
     if pending.action_type == "create_bill":
         return await _commit_bill(user=user, pending=pending, db=db, redis=redis)
+
+    if pending.action_type == "attach_expense":
+        return await _commit_attach_expense(
+            user=user, pending=pending, db=db, redis=redis
+        )
 
     if pending.action_type not in ("log_expense", "log_income"):
         raise ValueError(f"unknown action_type: {pending.action_type}")
@@ -173,6 +180,45 @@ async def _commit_income(
         redis=redis,
     )
     return income.id
+
+
+async def _commit_attach_expense(
+    *,
+    user: User,
+    pending: PendingAction,
+    db: AsyncSession,
+    redis: Redis,
+) -> uuid.UUID:
+    """Attach an existing recurring bill / debt to an envelope by setting its
+    envelope_id (mirrors PATCH /recurring-bills|/debts with envelope_id). Returns
+    the obligation id."""
+    payload = pending.payload
+    kind = payload["obligation_kind"]
+    obligation_id = uuid.UUID(payload["obligation_id"])
+    envelope_id = uuid.UUID(payload["envelope_id"])
+    model = RecurringBill if kind == "bill" else Debt
+    row = (
+        await db.execute(
+            select(model).where(model.id == obligation_id, model.user_id == user.id)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise ValueError("obligation not found for attach_expense")
+    row.envelope_id = envelope_id
+
+    await resolve_from_pending(
+        session=db, pending=pending, resolution="confirmed"
+    )
+    await db.commit()
+
+    await clear_pending(user_id=user.id, redis=redis)
+    await save_last_action(
+        user_id=user.id,
+        action_type="attach_expense",
+        record_id=obligation_id,
+        redis=redis,
+    )
+    return obligation_id
 
 
 async def _commit_bill(

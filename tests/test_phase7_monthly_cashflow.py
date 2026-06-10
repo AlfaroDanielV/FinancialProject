@@ -18,6 +18,7 @@ from api.models.recurring_bill import RecurringBill
 from api.models.recurring_income import RecurringIncome
 from api.models.user import User
 from api.services.finance.cashflow import (
+    UnattachedObligation,
     build_monthly_cashflow,
     compute_monthly_cashflow,
 )
@@ -86,16 +87,15 @@ def test_no_budget_gates():
 
 
 def test_under_coverage_gates():
-    # Envelopes exist but only allocate 100,000, below debt 100,000 +
-    # bills 150,000 = 250,000 of registered fixed obligations → the budget
-    # understates committed → surplus is inflated → gate (same posture as
-    # no-budget), do NOT trust the surplus.
+    # A budget exists, but an active obligation has no envelope (per-item B3) →
+    # committed (= envelopes) understates reality → surplus inflated → gate.
     cf = build_monthly_cashflow(
         monthly_income=_d("800000"),
         debt_payments=_d("100000"),
         recurring_bills=_d("150000"),
         envelope_allocations=_d("100000"),
         has_budget=True,
+        unattached_obligations=(UnattachedObligation("Internet", _d("150000"), "bill"),),
     )
     assert cf.has_budget is True
     assert cf.covers_obligations is False
@@ -226,6 +226,13 @@ async def test_compute_monthly_cashflow_excludes_cr_lump_cycles(db_with_user):
     )
     session.add(salary)
     await session.flush()  # need salary.id for the CR-cycle FK + CHECK
+    # The 'needs' envelope the bill + debt attach to (per-item coverage, B3).
+    needs_env = Envelope(
+        user_id=user_id, name="Gastos del mes", envelope_class="needs",
+        limit_amount=_d("500000"), currency="CRC",
+    )
+    session.add(needs_env)
+    await session.flush()
     session.add_all(
         [
             # Aguinaldo: annual lump = one monthly salary. MUST be excluded from
@@ -248,6 +255,7 @@ async def test_compute_monthly_cashflow_excludes_cr_lump_cycles(db_with_user):
                 currency="CRC",
                 frequency="monthly",
                 start_date=date.today(),
+                envelope_id=needs_env.id,  # attached → no unattached gate
             ),
             Debt(
                 user_id=user_id,
@@ -258,18 +266,11 @@ async def test_compute_monthly_cashflow_excludes_cr_lump_cycles(db_with_user):
                 interest_rate=_d("0.18"),
                 minimum_payment=_d("100000"),
                 payment_due_day=1,
+                envelope_id=needs_env.id,  # attached → no unattached gate
             ),
-            # Budget that fully covers obligations: 500,000 needs + 100,000 wants
-            # + 100,000 savings = 700,000 of root allocations ≥ 250,000 of
-            # debt + bills. The savings envelope counts toward committed (ALL
+            # 500,000 needs + 100,000 wants + 100,000 savings = 700,000 of root
+            # allocations. The savings envelope counts toward committed (ALL
             # classes, sub-decision B) AND surfaces in savings_allocations.
-            Envelope(
-                user_id=user_id,
-                name="Gastos del mes",
-                envelope_class="needs",
-                limit_amount=_d("500000"),
-                currency="CRC",
-            ),
             Envelope(
                 user_id=user_id,
                 name="Gustos",

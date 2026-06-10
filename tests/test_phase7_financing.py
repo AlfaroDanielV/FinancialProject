@@ -58,9 +58,15 @@ def _patch_session(monkeypatch, session):
 
 
 async def _seed_finances(session, user_id):
-    # income 800,000; bills 150,000 + debt 100,000 = 250,000 obligations; a
-    # 250,000 'needs' envelope covers them exactly → committed 250,000, surplus
-    # 550,000 (== old disposable), safe = 80% = 440,000.
+    # income 800,000; a 250,000 'needs' envelope with the bill (150k) + debt
+    # (100k) ATTACHED (per-item coverage, B3) → reliable, surplus 550,000, safe
+    # = 80% = 440,000.
+    env = Envelope(
+        user_id=user_id, name="Gastos", envelope_class="needs",
+        limit_amount=Decimal("250000"), currency="CRC",
+    )
+    session.add(env)
+    await session.flush()
     session.add_all(
         [
             RecurringIncome(
@@ -80,6 +86,7 @@ async def _seed_finances(session, user_id):
                 currency="CRC",
                 frequency="monthly",
                 start_date=_TODAY,
+                envelope_id=env.id,
             ),
             Debt(
                 user_id=user_id,
@@ -90,13 +97,7 @@ async def _seed_finances(session, user_id):
                 interest_rate=Decimal("0.18"),
                 minimum_payment=Decimal("100000"),
                 payment_due_day=1,
-            ),
-            Envelope(
-                user_id=user_id,
-                name="Gastos",
-                envelope_class="needs",
-                limit_amount=Decimal("250000"),
-                currency="CRC",
+                envelope_id=env.id,
             ),
         ]
     )

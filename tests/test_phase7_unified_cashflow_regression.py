@@ -20,7 +20,11 @@ from api.models.recurring_bill import RecurringBill
 from api.models.recurring_income import RecurringIncome
 from api.models.user import User
 from api.services.finance.affordability import assess_affordability, gate_guidance
-from api.services.finance.cashflow import build_monthly_cashflow, compute_monthly_cashflow
+from api.services.finance.cashflow import (
+    UnattachedObligation,
+    build_monthly_cashflow,
+    compute_monthly_cashflow,
+)
 from app.queries.tools.affordability import assess_purchase, get_savings_capacity
 
 
@@ -51,9 +55,15 @@ async def test_phone_1m_verdict_surplus_and_plan_are_consistent(db_with_user, mo
         "app.queries.tools.affordability.AsyncSessionLocal",
         lambda: _SessionContext(session),
     )
-    # income 900,000; bills 100,000 + debt 100,000 = 200,000 obligations; budget
-    # 600,000 needs + 200,000 savings = 800,000 committed (covers obligations).
-    # surplus = 900,000 − 800,000 = 100,000. safe = 80,000.
+    # income 900,000; budget 600,000 needs + 200,000 savings = 800,000 committed.
+    # The bill (100k) + debt (100k) are ATTACHED to the needs envelope (per-item
+    # coverage, B3) → reliable. surplus = 900,000 − 800,000 = 100,000. safe = 80,000.
+    needs = Envelope(
+        user_id=user_id, name="Gastos", envelope_class="needs",
+        limit_amount=_d("600000"), currency="CRC",
+    )
+    session.add(needs)
+    await session.flush()
     session.add_all(
         [
             RecurringIncome(
@@ -64,16 +74,13 @@ async def test_phone_1m_verdict_surplus_and_plan_are_consistent(db_with_user, mo
             RecurringBill(
                 user_id=user_id, name="Internet", category="servicios",
                 amount_expected=_d("100000"), currency="CRC", frequency="monthly",
-                start_date=date.today(),
+                start_date=date.today(), envelope_id=needs.id,
             ),
             Debt(
                 user_id=user_id, name="Préstamo", debt_type="loan",
                 original_amount=_d("2000000"), current_balance=_d("1500000"),
-                interest_rate=_d("0.18"), minimum_payment=_d("100000"), payment_due_day=1,
-            ),
-            Envelope(
-                user_id=user_id, name="Gastos", envelope_class="needs",
-                limit_amount=_d("600000"), currency="CRC",
+                interest_rate=_d("0.18"), minimum_payment=_d("100000"),
+                payment_due_day=1, envelope_id=needs.id,
             ),
             Envelope(
                 user_id=user_id, name="Ahorro", envelope_class="savings",
@@ -109,20 +116,24 @@ async def test_phone_1m_verdict_surplus_and_plan_are_consistent(db_with_user, mo
 # The three gates each fire distinct guidance                                 #
 # --------------------------------------------------------------------------- #
 
-def _cf(income, bills, debt, envelopes, *, has_budget):
+def _cf(income, bills, debt, envelopes, *, has_budget, unattached=()):
     return build_monthly_cashflow(
         monthly_income=income,
         debt_payments=_d(debt),
         recurring_bills=_d(bills),
         envelope_allocations=_d(envelopes),
         has_budget=has_budget,
+        unattached_obligations=unattached,
     )
 
 
 def test_three_gates_have_distinct_reason_and_copy():
     no_income = _cf(None, "0", "0", "0", has_budget=False)
     no_budget = _cf(_d("800000"), "150000", "100000", "0", has_budget=False)
-    under = _cf(_d("800000"), "150000", "100000", "100000", has_budget=True)
+    under = _cf(
+        _d("800000"), "150000", "100000", "300000", has_budget=True,
+        unattached=(UnattachedObligation("Internet", _d("150000"), "bill"),),
+    )
 
     assert no_income.gate_reason == "no_income"
     assert no_budget.gate_reason == "no_budget"

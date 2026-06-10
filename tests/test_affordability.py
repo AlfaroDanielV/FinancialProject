@@ -19,7 +19,7 @@ from api.models.envelope import Envelope
 from api.models.recurring_bill import RecurringBill
 from api.models.recurring_income import RecurringIncome
 from api.services.finance.affordability import SAFETY_MARGIN, assess_affordability
-from api.services.finance.cashflow import build_monthly_cashflow
+from api.services.finance.cashflow import build_monthly_cashflow, UnattachedObligation
 from app.queries.tools.affordability import assess_purchase, get_savings_capacity
 
 
@@ -37,10 +37,11 @@ def _cf(
     savings: str = "0",
     excl_var: int = 0,
     excl_custom: int = 0,
+    unattached: tuple = (),
 ):
-    """Build a MonthlyCashflow fixture. Setting envelopes == fixed + debt makes
-    the surplus equal the old income−fixed−debt disposable — handy for showing
-    the new model agrees when the budget exactly covers the obligations."""
+    """Build a MonthlyCashflow fixture. Under the per-item gate (B3) the
+    debt/bills passed here are transparency-only; pass ``unattached`` to simulate
+    obligations with no envelope (which trigger under_coverage)."""
     return build_monthly_cashflow(
         monthly_income=(_d(income) if income is not None else None),
         debt_payments=_d(debt),
@@ -50,6 +51,7 @@ def _cf(
         savings_allocations=_d(savings),
         excluded_variable_bills=excl_var,
         excluded_custom_bills=excl_custom,
+        unattached_obligations=unattached,
     )
 
 
@@ -125,13 +127,16 @@ def test_no_budget_gates_the_verdict():
 
 
 def test_under_coverage_gates_the_verdict():
-    # Envelopes 100,000 < debt 100,000 + bills 150,000 → budget understates
-    # committed → surplus inflated → gate.
-    cf = _cf("800000", "150000", "100000", "100000", has_budget=True)
+    # An active bill with no envelope → committed (= envelopes) understates
+    # reality → surplus inflated → gate, naming the unattached item.
+    cf = _cf(
+        "800000", "150000", "100000", "300000", has_budget=True,
+        unattached=(UnattachedObligation("ICE", _d("150000"), "bill"),),
+    )
     r = assess_affordability(cf, desired_amount=_d("100000"))
     assert r.feasible is None
     assert r.gate_reason == "under_coverage"
-    assert any("cubren" in n for n in r.notes)
+    assert any("ICE" in n for n in r.notes)  # the copy names what to attach
 
 
 def test_savings_allocations_ride_along_in_the_result():
@@ -177,8 +182,17 @@ def _patch_session(monkeypatch, session):
 
 async def _seed_finances(session, user_id, *, with_budget=True):
     """Income 800,000, bill 150,000, debt 100,000. With a 250,000 'needs'
-    envelope (== bills + debt) the budget exactly covers obligations, so the
-    surplus is 550,000 — matching the old income−fixed−debt disposable."""
+    envelope the bill + debt are ATTACHED to it (per-item coverage, B3), so the
+    cashflow is reliable; surplus = income − envelopes = 550,000."""
+    env_id = None
+    if with_budget:
+        env = Envelope(
+            user_id=user_id, name="Gastos", envelope_class="needs",
+            limit_amount=Decimal("250000"), currency="CRC",
+        )
+        session.add(env)
+        await session.flush()
+        env_id = env.id
     rows = [
         RecurringIncome(
             user_id=user_id,
@@ -197,6 +211,7 @@ async def _seed_finances(session, user_id, *, with_budget=True):
             currency="CRC",
             frequency="monthly",
             start_date=date.today(),
+            envelope_id=env_id,
         ),
         Debt(
             user_id=user_id,
@@ -207,18 +222,9 @@ async def _seed_finances(session, user_id, *, with_budget=True):
             interest_rate=Decimal("0.18"),
             minimum_payment=Decimal("100000"),
             payment_due_day=1,
+            envelope_id=env_id,
         ),
     ]
-    if with_budget:
-        rows.append(
-            Envelope(
-                user_id=user_id,
-                name="Gastos",
-                envelope_class="needs",
-                limit_amount=Decimal("250000"),
-                currency="CRC",
-            )
-        )
     session.add_all(rows)
     await session.commit()
 

@@ -34,6 +34,7 @@ Reglas duras:
    - "create_income": el usuario quiere CONFIGURAR un ingreso RECURRENTE ("me pagan X cada quincena", "mi salario es X mensual", "configurá mi salario", "registrá mi ingreso recurrente"). La señal clave es la repetición ("cada", "mensual", "quincenal", "todos los meses"). Un pago único es log_income, NO create_income.
    - "create_bill": el usuario quiere CONFIGURAR un gasto fijo / recibo RECURRENTE ("el recibo de luz de 18 mil cada mes", "pago de internet 25 mil mensual", "configurá el alquiler de 300 mil", "agregá la factura del agua"). La señal clave es la repetición de un cobro. Una compra única es log_expense, NO create_bill.
    - "create_debt": el usuario quiere REGISTRAR un préstamo / deuda / crédito que YA decidió o ya tiene ("tengo un préstamo de 5 millones a 5 años con el BAC", "saqué un crédito de carro", "debo 3 millones al Banco Nacional", "registrá mi hipoteca"). La señal clave es REGISTRAR un saldo prestado ("registrá", "saqué", "tengo", "debo"). Un pago único de una deuda es log_expense, NO create_debt. OJO: si el usuario está EXPLORANDO o preguntando si le conviene financiar ("¿me conviene financiar?", "¿cuánto sería la cuota si lo financio?", "si pido un préstamo a 20 años al 45%", "si doy una prima y financio el resto") eso NO es create_debt — es una consulta de análisis (intent="query"). create_debt es solo cuando ya decidió y pide registrarlo.
+   - "attach_expense": el usuario quiere ASIGNAR un gasto fijo / recibo / deuda YA EXISTENTE a un sobre ("poné el recibo del ICE en el sobre Servicios", "asigná la cuota del préstamo al sobre Deudas", "meté la factura de internet en el sobre Casa"). Llená expense_hint con el nombre del gasto o deuda y envelope_hint con el nombre del sobre. NO es create_bill (eso configura uno nuevo) ni log_expense (eso registra una compra única).
    - "query": cualquier pregunta o solicitud de informacion de solo lectura. Incluye análisis de accesibilidad y simulación de financiamiento sin registrar nada ("¿me alcanza para X?", "¿cuánto sería la cuota de un préstamo de X a N años al T%?", "¿me conviene financiar este carro?").
    - "confirm_yes": confirma un paso previo ("sí", "dale", "ok", "correcto", "confirmá").
    - "confirm_no": cancela un paso previo ("no", "cancelar", "mejor no").
@@ -160,6 +161,8 @@ Ejemplos:
   Tool input: {"intent":"create_debt","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"debt_name":null,"debt_principal":null,"debt_interest_rate":null,"debt_term_months":null,"debt_lender":null,"confidence":0.9,"raw_notes":null}
 - Usuario: "quiero registrar una deuda"
   Tool input: {"intent":"create_debt","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"debt_name":null,"debt_principal":null,"debt_interest_rate":null,"debt_term_months":null,"debt_lender":null,"confidence":0.9,"raw_notes":null}
+- Usuario: "poné el recibo del ICE en el sobre Servicios"
+  Tool input: {"intent":"attach_expense","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"expense_hint":"ICE","envelope_hint":"Servicios","confidence":0.93,"raw_notes":null}
 - Usuario: "si pido un préstamo para la prima y lo financio a 20 años con una tasa del 45%" (está explorando, NO registrando)
   Tool input: {"intent":"query","dispatcher":"query","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.88,"raw_notes":"explora financiar: 20 años al 45%"}
 - Usuario: "cuánto sería la cuota de un préstamo de 50 millones a 20 años al 45%"
@@ -187,6 +190,7 @@ TOOL_DEFINITION = {
                     "create_income",
                     "create_bill",
                     "create_debt",
+                    "attach_expense",
                     "query",
                     "confirm_yes",
                     "confirm_no",
@@ -341,6 +345,23 @@ TOOL_DEFINITION = {
                 "description": (
                     "Lender/bank as the user said it ('BAC', 'Banco Nacional'). "
                     "create_debt only."
+                ),
+            },
+            "expense_hint": {
+                "type": ["string", "null"],
+                "maxLength": 255,
+                "description": (
+                    "attach_expense only. Name of the EXISTING recurring bill or "
+                    "debt to attach to an envelope ('ICE', 'el recibo de la luz', "
+                    "'préstamo del carro')."
+                ),
+            },
+            "envelope_hint": {
+                "type": ["string", "null"],
+                "maxLength": 120,
+                "description": (
+                    "attach_expense only. Name of the envelope/sobre to attach the "
+                    "bill or debt to ('Servicios', 'Deudas')."
                 ),
             },
             "confidence": {
