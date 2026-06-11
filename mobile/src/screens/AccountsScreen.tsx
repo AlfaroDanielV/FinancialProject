@@ -27,6 +27,7 @@ import {
   ACCOUNT_TYPE_LABELS,
   type AccountResponse,
 } from "../api/accounts";
+import { TransferModal } from "../components/TransferModal";
 import { CardShadow, Colors, FontSize, Radius, Spacing } from "../theme";
 import type { AccountsStackParamList } from "../navigation/AccountsNavigator";
 
@@ -82,7 +83,12 @@ function AccountCard({
               bal < 0 && { color: Colors.expense },
             ]}
           >
-            {fmt(bal, account.currency)}
+            {/* Phase 7b: a credit card shows what's OWED, not a raw negative. */}
+            {account.account_type === "credit"
+              ? bal < 0
+                ? `Debés ${fmt(Math.abs(bal), account.currency)}`
+                : "Sin deuda"
+              : fmt(bal, account.currency)}
           </Text>
           {account.month_start_balance != null && (
             <Text
@@ -108,6 +114,7 @@ export function AccountsScreen() {
   const nav = useNavigation<Nav>();
   const qc = useQueryClient();
   const [showArchived, setShowArchived] = useState(false);
+  const [transferVisible, setTransferVisible] = useState(false);
 
   const { data, isLoading, isRefetching, refetch, error } = useQuery({
     queryKey: ["accounts", { archived: showArchived }],
@@ -136,6 +143,14 @@ export function AccountsScreen() {
           )}
         </View>
         <View style={styles.headerActions}>
+          {active.length >= 2 && (
+            <Pressable
+              onPress={() => setTransferVisible(true)}
+              style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.7 }]}
+            >
+              <Feather name="repeat" size={16} color={Colors.textMuted} />
+            </Pressable>
+          )}
           {archived.length > 0 && (
             <Pressable
               onPress={() => setShowArchived((v) => !v)}
@@ -216,6 +231,11 @@ export function AccountsScreen() {
           ))
         )}
       </ScrollView>
+
+      <TransferModal
+        visible={transferVisible}
+        onClose={() => setTransferVisible(false)}
+      />
     </SafeAreaView>
   );
 }

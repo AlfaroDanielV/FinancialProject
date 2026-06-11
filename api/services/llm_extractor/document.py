@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models.llm_extraction import LLMExtraction
 from ...models.user import User
+from ...schemas.card_terms import CardTermsExtraction
 from ...schemas.debts import DebtTermsExtraction
 from .client import LLMClient, LLMClientError
 
@@ -119,6 +120,139 @@ _LOAN_TERMS_TOOL = {
 }
 
 
+# ── Phase 7b B3: credit-card statement/contract extraction ────────────────────
+
+_CARD_SYSTEM_PROMPT = (
+    "Sos un extractor de términos de tarjetas de crédito para un sistema "
+    "financiero costarricense. Tu único trabajo es leer el documento adjunto "
+    "(el CONTRATO de la tarjeta, o un estado de cuenta si eso fue lo que "
+    "subieron) y llamar la herramienta extract_card_terms. No respondas con "
+    "texto — siempre llamá la herramienta. Si un dato no está en el "
+    "documento, dejalo en null; NO inventes. Preferimos una extracción "
+    "parcial honesta a una completa inventada."
+)
+
+_CARD_PROMPT = (
+    "Adjunté el contrato (o estado de cuenta) de mi tarjeta de crédito. "
+    "Extraé los términos usando la herramienta extract_card_terms. Las tasas "
+    "(annual_interest_rate, cash_advance_rate, minimum_payment_pct) van como "
+    "FRACCIÓN entre 0 y 1: '45%' → 0.45, '2,5%' → 0.025. statement_day es el "
+    "día de corte y payment_due_day el día límite de pago (1–31). OJO: muchas "
+    "tarjetas costarricenses operan en AMBAS monedas — si el documento "
+    "distingue términos en colones y en dólares, poné los de colones en los "
+    "campos base y los de dólares en los campos *_usd; si la tarjeta es de "
+    "una sola moneda, dejá los *_usd en null. Si no encontrás algún dato, "
+    "dejalo en null."
+)
+
+_CARD_TERMS_TOOL = {
+    "name": "extract_card_terms",
+    "description": (
+        "Extract credit-card terms from the attached Costa Rican card "
+        "contract (or statement) PDF. Always call this tool; never reply in "
+        "free text. Leave any field that is not present in the document as "
+        "null. Many CR cards operate in BOTH currencies: base fields are the "
+        "COLONES terms; fill the *_usd fields only when the document lists "
+        "separate dollar terms."
+    ),
+    "input_schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["confidence"],
+        "properties": {
+            "issuer": {
+                "type": ["string", "null"],
+                "description": "Issuing bank ('BAC', 'Promerica').",
+            },
+            "credit_limit": {
+                "type": ["number", "null"],
+                "description": (
+                    "Credit limit / límite de crédito in COLONES (positive)."
+                ),
+            },
+            "statement_balance": {
+                "type": ["number", "null"],
+                "description": (
+                    "Statement balance owed / saldo al corte in COLONES "
+                    "(positive magnitude). Usually only on statements, not "
+                    "contracts."
+                ),
+            },
+            "annual_interest_rate": {
+                "type": ["number", "null"],
+                "description": (
+                    "Annual PURCHASE interest rate in COLONES as a FRACTION "
+                    "0–1 (45% → 0.45). NOT a percent."
+                ),
+            },
+            "cash_advance_rate": {
+                "type": ["number", "null"],
+                "description": (
+                    "Annual CASH-ADVANCE rate as a FRACTION 0–1, if listed."
+                ),
+            },
+            "annual_interest_rate_usd": {
+                "type": ["number", "null"],
+                "description": (
+                    "Annual PURCHASE rate in DOLLARS as a FRACTION 0–1, only "
+                    "when the document lists a separate USD rate (CR dual-"
+                    "currency cards usually do; it's often lower than the "
+                    "colones rate)."
+                ),
+            },
+            "credit_limit_usd": {
+                "type": ["number", "null"],
+                "description": (
+                    "Credit limit in DOLLARS, only when listed separately."
+                ),
+            },
+            "statement_balance_usd": {
+                "type": ["number", "null"],
+                "description": (
+                    "Statement balance owed in DOLLARS (positive magnitude), "
+                    "only when the statement carries a separate USD balance."
+                ),
+            },
+            "minimum_payment_pct": {
+                "type": ["number", "null"],
+                "description": (
+                    "Minimum payment as a FRACTION of the balance 0–1 "
+                    "('pago mínimo 2.5%' → 0.025), if the formula is listed."
+                ),
+            },
+            "minimum_payment_amount": {
+                "type": ["number", "null"],
+                "description": (
+                    "The minimum payment AMOUNT printed on this statement "
+                    "(positive)."
+                ),
+            },
+            "statement_day": {
+                "type": ["integer", "null"],
+                "description": "Día de corte (1–31).",
+            },
+            "payment_due_day": {
+                "type": ["integer", "null"],
+                "description": "Día límite de pago (1–31).",
+            },
+            "currency": {
+                "type": ["string", "null"],
+                "enum": ["CRC", "USD", None],
+            },
+            "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": (
+                    "How confident the extraction is. Low when the document "
+                    "is a scan, unclear, or not a credit-card document."
+                ),
+            },
+        },
+    },
+}
+
+
 async def extract_debt_terms(
     *,
     user: User,
@@ -131,6 +265,62 @@ async def extract_debt_terms(
     """Run PDF loan-term extraction with Haiku-first, Sonnet retry on low
     confidence. Returns a validated `DebtTermsExtraction` (does NOT create a
     debt)."""
+    return await _extract_document(
+        user=user,
+        pdf_bytes=pdf_bytes,
+        client=client,
+        haiku_model=haiku_model,
+        sonnet_model=sonnet_model,
+        db=db,
+        system_prompt=_DOCUMENT_SYSTEM_PROMPT,
+        user_prompt=_DOCUMENT_PROMPT,
+        tool=_LOAN_TERMS_TOOL,
+        result_model=DebtTermsExtraction,
+        intent="parse_debt_document",
+    )
+
+
+async def extract_card_terms(
+    *,
+    user: User,
+    pdf_bytes: bytes,
+    client: LLMClient,
+    haiku_model: str,
+    sonnet_model: str,
+    db: AsyncSession,
+) -> CardTermsExtraction:
+    """Phase 7b B3 — card-term extraction from a statement/contract PDF.
+    Same Haiku-first / Sonnet-retry contract as `extract_debt_terms`. Returns
+    a validated `CardTermsExtraction` (does NOT create anything)."""
+    return await _extract_document(
+        user=user,
+        pdf_bytes=pdf_bytes,
+        client=client,
+        haiku_model=haiku_model,
+        sonnet_model=sonnet_model,
+        db=db,
+        system_prompt=_CARD_SYSTEM_PROMPT,
+        user_prompt=_CARD_PROMPT,
+        tool=_CARD_TERMS_TOOL,
+        result_model=CardTermsExtraction,
+        intent="parse_card_document",
+    )
+
+
+async def _extract_document(
+    *,
+    user: User,
+    pdf_bytes: bytes,
+    client: LLMClient,
+    haiku_model: str,
+    sonnet_model: str,
+    db: AsyncSession,
+    system_prompt: str,
+    user_prompt: str,
+    tool: dict,
+    result_model,
+    intent: str,
+):
     pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("ascii")
     content_blocks: list[dict] = [
         {
@@ -141,7 +331,7 @@ async def extract_debt_terms(
                 "data": pdf_b64,
             },
         },
-        {"type": "text", "text": _DOCUMENT_PROMPT},
+        {"type": "text", "text": user_prompt},
     ]
 
     result = await _run_one(
@@ -152,6 +342,10 @@ async def extract_debt_terms(
         model=haiku_model,
         db=db,
         is_retry=False,
+        system_prompt=system_prompt,
+        tool=tool,
+        result_model=result_model,
+        intent=intent,
     )
 
     if result.confidence < _CONFIDENCE_THRESHOLD:
@@ -163,6 +357,10 @@ async def extract_debt_terms(
             model=sonnet_model,
             db=db,
             is_retry=True,
+            system_prompt=system_prompt,
+            tool=tool,
+            result_model=result_model,
+            intent=intent,
         )
 
     return result
@@ -177,13 +375,17 @@ async def _run_one(
     model: str,
     db: AsyncSession,
     is_retry: bool,
-) -> DebtTermsExtraction:
+    system_prompt: str = _DOCUMENT_SYSTEM_PROMPT,
+    tool: dict = _LOAN_TERMS_TOOL,
+    result_model=DebtTermsExtraction,
+    intent: str = "parse_debt_document",
+):
     t0 = time.perf_counter()
     raw = await client.extract(
         user_message=content_blocks,
         prior_turns=[],
-        system_prompt=_DOCUMENT_SYSTEM_PROMPT,
-        tool=_LOAN_TERMS_TOOL,
+        system_prompt=system_prompt,
+        tool=tool,
         model=model,
         timeout_s=_DOCUMENT_TIMEOUT_S,
     )
@@ -191,7 +393,7 @@ async def _run_one(
     latency_ms = int((time.perf_counter() - t0) * 1000)
 
     try:
-        result = DebtTermsExtraction.model_validate(raw.tool_input)
+        result = result_model.model_validate(raw.tool_input)
     except ValidationError as e:
         await _log(
             db=db,
@@ -210,6 +412,7 @@ async def _run_one(
             cache_read_tokens=raw.cache_read_input_tokens,
             cache_creation_tokens=raw.cache_creation_input_tokens,
             model=model,
+            intent=intent,
         )
         raise
 
@@ -229,6 +432,7 @@ async def _run_one(
         cache_read_tokens=raw.cache_read_input_tokens,
         cache_creation_tokens=raw.cache_creation_input_tokens,
         model=model,
+        intent=intent,
     )
     return result
 
@@ -245,11 +449,12 @@ async def _log(
     cache_read_tokens: int,
     cache_creation_tokens: int,
     model: str,
+    intent: str = "parse_debt_document",
 ) -> None:
     row = LLMExtraction(
         user_id=user.id,
         message_hash=f"document:{_PDF_MEDIA_TYPE}",
-        intent="parse_debt_document",
+        intent=intent,
         confidence=confidence,
         extraction=extraction,
         latency_ms=latency_ms,

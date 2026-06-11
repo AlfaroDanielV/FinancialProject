@@ -628,7 +628,7 @@ async def compute_pending_notifications(
 
 @dataclass
 class FeedEntry:
-    item_type: str  # "bill" | "event" | "debt"
+    item_type: str  # "bill" | "event" | "debt" | "card_payment"
     id: uuid.UUID
     date: date
     title: str
@@ -642,6 +642,9 @@ class FeedEntry:
     # B5: debt cuotas are PROJECTED at read time (no materialized row); this is
     # the source Debt id when item_type == "debt", else None.
     debt_id: Optional[uuid.UUID] = None
+    # Phase 7b B5: card minimums are likewise projected live; this is the
+    # credit account id when item_type == "card_payment", else None.
+    account_id: Optional[uuid.UUID] = None
 
 
 def _monthly_due_dates(day: int, from_date: date, to_date: date) -> list[date]:
@@ -764,16 +767,27 @@ async def get_upcoming_feed(
             )
         )
 
+    # Phase 7b coexistence rule: a credit_card Debt linked to an account that
+    # has card terms is superseded by the card projection below (no double
+    # count). Unlinked legacy card-debts keep projecting unchanged.
+    from .credit_cards import (
+        list_active_cards_with_terms,
+        superseded_credit_card_debt_ids,
+    )
+
+    superseded = await superseded_credit_card_debt_ids(session, user_id=user_id)
+
     # B5: project each active debt's NEXT cuota in the window as a fixed expense.
     # No RecurringBill row — derived from payment_due_day + minimum_payment, so a
     # paid-off / archived debt simply stops projecting (zero cleanup).
-    debt_result = await session.execute(
-        select(Debt).where(
-            Debt.user_id == user_id,
-            Debt.is_active.is_(True),
-            Debt.archived.is_(False),
-        )
+    debt_stmt = select(Debt).where(
+        Debt.user_id == user_id,
+        Debt.is_active.is_(True),
+        Debt.archived.is_(False),
     )
+    if superseded:
+        debt_stmt = debt_stmt.where(Debt.id.notin_(superseded))
+    debt_result = await session.execute(debt_stmt)
     for d in debt_result.scalars().all():
         dues = _monthly_due_dates(d.payment_due_day, from_date, to_date)
         if not dues:
@@ -793,6 +807,35 @@ async def get_upcoming_feed(
                 recurring_bill_id=None,
                 is_overdue=due < today,
                 debt_id=d.id,
+            )
+        )
+
+    # Phase 7b B5: project each card's minimum due in the window — derived
+    # LIVE from payment_due_day + the terms formula over the current balance.
+    # A paid-down card (minimum 0) stops projecting with zero cleanup.
+    for card in await list_active_cards_with_terms(session, user_id=user_id):
+        if card.minimum_due <= 0:
+            continue
+        dues = _monthly_due_dates(
+            card.terms.payment_due_day, from_date, to_date
+        )
+        if not dues:
+            continue
+        due = dues[0]
+        entries.append(
+            FeedEntry(
+                item_type="card_payment",
+                id=card.account.id,
+                date=due,
+                title=f"Pago de tarjeta {card.account.name}",
+                amount=float(card.minimum_due),
+                currency=card.account.currency,
+                status=None,
+                category=None,
+                provider=None,
+                recurring_bill_id=None,
+                is_overdue=due < today,
+                account_id=card.account.id,
             )
         )
 

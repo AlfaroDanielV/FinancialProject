@@ -24,10 +24,11 @@ from app.queries.prompts.system import (
 )
 
 
-# Maximum allowed prompt length. Current build is ~6300 chars; this cap
+# Maximum allowed prompt length. Current build is ~8600 chars; this cap
 # leaves headroom for a couple more few-shots before forcing review.
 # Going above this should require an intentional bump + cache-rate check.
-MAX_PROMPT_CHARS = 8500
+# Bumped 8500 → 8900 at Phase 7b B4 (card-analysis capability bullet).
+MAX_PROMPT_CHARS = 8900
 
 
 def _user(

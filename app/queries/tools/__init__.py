@@ -11,6 +11,7 @@ from api.config import settings
 from .accounts import register_account_tools
 from .affordability import register_affordability_tools
 from .compare_periods import register_compare_periods_tool
+from .credit_cards import register_credit_card_tools
 from .debts import register_debt_tools
 from .envelopes import register_envelope_tools
 from .financing import register_financing_tools
@@ -33,6 +34,7 @@ def register_builtin_tools() -> None:
     register_financing_tools()
     register_goal_tools()
     register_salary_tools()
+    register_credit_card_tools()
     if settings.insights_dispatcher_enabled:
         register_user_context_tool()
     # compare_periods stays last so it remains the cache breakpoint anchor

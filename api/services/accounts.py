@@ -13,11 +13,15 @@ from decimal import Decimal
 from typing import Iterable, Optional
 
 from rapidfuzz import fuzz, utils
-from sqlalchemy import case, func, select
+from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.account import Account
+from ..models.debt import Debt
+from ..models.goal import Goal
+from ..models.recurring_bill import RecurringBill
 from ..models.transaction import Transaction
+from ..models.transfer import Transfer
 from ..models.user import User
 
 # Above this ratio we consider a fuzzy name a confident hit. Below, the
@@ -158,3 +162,150 @@ async def compute_account_balances(
             month_start=initial + before_month,
         )
     return balances
+
+
+# ── Phase 7b B2: TRUE hard delete with cascade ────────────────────────────────
+
+
+@dataclass(frozen=True)
+class AccountDeleteImpact:
+    """What a hard delete would remove / detach. Shown to the user BEFORE
+    confirming (every financial action must be auditable)."""
+
+    transactions: int
+    transfers: int
+    debts_detached: int
+    bills_detached: int
+    goals_detached: int
+
+
+async def compute_delete_impact(
+    db: AsyncSession, *, user_id: uuid.UUID, account_id: uuid.UUID
+) -> AccountDeleteImpact:
+    async def _count(stmt) -> int:
+        return int((await db.execute(stmt)).scalar_one() or 0)
+
+    return AccountDeleteImpact(
+        transactions=await _count(
+            select(func.count()).where(
+                Transaction.user_id == user_id,
+                Transaction.account_id == account_id,
+            )
+        ),
+        transfers=await _count(
+            select(func.count()).where(
+                Transfer.user_id == user_id,
+                or_(
+                    Transfer.from_account_id == account_id,
+                    Transfer.to_account_id == account_id,
+                ),
+            )
+        ),
+        debts_detached=await _count(
+            select(func.count()).where(
+                Debt.user_id == user_id, Debt.account_id == account_id
+            )
+        ),
+        bills_detached=await _count(
+            select(func.count()).where(
+                RecurringBill.user_id == user_id,
+                RecurringBill.account_id == account_id,
+            )
+        ),
+        goals_detached=await _count(
+            select(func.count()).where(
+                Goal.user_id == user_id, Goal.linked_account_id == account_id
+            )
+        ),
+    )
+
+
+async def hard_delete_account(
+    db: AsyncSession, *, user_id: uuid.UUID, account: Account
+) -> AccountDeleteImpact:
+    """Permanently delete an account and ALL its transactions (Phase 7b B2).
+
+    Cascade contract (decision note: Account Hard Delete With Cascade):
+    - The account's transactions are DELETED. Their referrers survive with the
+      link nulled (debt_payments/bill_occurrences via migration 0028;
+      goal_contributions/gmail_messages_seen were already SET NULL).
+    - Debts, recurring bills, and goals linked to the account are DETACHED,
+      never deleted.
+    - Transfers touching the account are deleted; the surviving leg in the
+      OTHER account keeps its amount (that account's balance history must not
+      change), loses its transfer_id via the FK, and is annotated so the user
+      can tell why it became a plain row.
+
+    One DB transaction; the caller commits. Returns the impact counts (also
+    used by the delete-impact preview endpoint).
+    """
+    impact = await compute_delete_impact(
+        db, user_id=user_id, account_id=account.id
+    )
+
+    # 1. Annotate the surviving leg of every transfer that touches this
+    #    account BEFORE deleting the transfer rows (afterwards transfer_id is
+    #    NULL and they're indistinguishable from plain transactions).
+    transfer_ids = [
+        row
+        for row in (
+            await db.execute(
+                select(Transfer.id).where(
+                    Transfer.user_id == user_id,
+                    or_(
+                        Transfer.from_account_id == account.id,
+                        Transfer.to_account_id == account.id,
+                    ),
+                )
+            )
+        ).scalars()
+    ]
+    if transfer_ids:
+        note = f" (transferencia — cuenta «{account.name}» eliminada)"
+        await db.execute(
+            update(Transaction)
+            .where(
+                Transaction.transfer_id.in_(transfer_ids),
+                Transaction.account_id != account.id,
+            )
+            .values(
+                description=func.coalesce(Transaction.description, "") + note
+            )
+        )
+        # 2. Delete the transfer rows → surviving legs' transfer_id nulls via
+        #    the FK (transactions.transfer_id ON DELETE SET NULL).
+        await db.execute(delete(Transfer).where(Transfer.id.in_(transfer_ids)))
+
+    # 3. Detach obligations + goals (their FKs are NO ACTION / app-managed).
+    await db.execute(
+        update(Debt)
+        .where(Debt.user_id == user_id, Debt.account_id == account.id)
+        .values(account_id=None)
+    )
+    await db.execute(
+        update(RecurringBill)
+        .where(
+            RecurringBill.user_id == user_id,
+            RecurringBill.account_id == account.id,
+        )
+        .values(account_id=None)
+    )
+    await db.execute(
+        update(Goal)
+        .where(Goal.user_id == user_id, Goal.linked_account_id == account.id)
+        .values(linked_account_id=None)
+    )
+
+    # 4. Delete the account's transactions (incl. its own former transfer
+    #    legs, whose transfer_id is now NULL).
+    await db.execute(
+        delete(Transaction).where(
+            Transaction.user_id == user_id,
+            Transaction.account_id == account.id,
+        )
+    )
+
+    # 5. Delete the account. lazy_detection_events.matched_account_id is
+    #    SET NULL at the DB level; credit_card_terms (Phase 7b B3) CASCADEs.
+    await db.delete(account)
+    return impact

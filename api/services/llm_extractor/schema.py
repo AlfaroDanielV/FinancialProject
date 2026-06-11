@@ -18,10 +18,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class Intent(str, Enum):
     LOG_EXPENSE = "log_expense"
     LOG_INCOME = "log_income"
+    LOG_TRANSFER = "log_transfer"
     CREATE_GOAL = "create_goal"
     CREATE_INCOME = "create_income"
     CREATE_BILL = "create_bill"
     CREATE_DEBT = "create_debt"
+    CREATE_CARD = "create_card"
     ATTACH_EXPENSE = "attach_expense"
     QUERY = "query"
     CONFIRM_YES = "confirm_yes"
@@ -57,6 +59,12 @@ class ExtractionResult(BaseModel):
     merchant: Optional[str] = Field(default=None, max_length=255)
     category_hint: Optional[str] = Field(default=None, max_length=100)
     account_hint: Optional[str] = Field(default=None, max_length=100)
+    # Phase 7b — transfers between the user's own accounts (intent=log_transfer).
+    # A credit-card payment IS a transfer (source account → credit account);
+    # amount/currency/occurred_at_hint are reused. Either hint may be null —
+    # the dispatcher clarifies the missing side deterministically.
+    transfer_from_hint: Optional[str] = Field(default=None, max_length=100)
+    transfer_to_hint: Optional[str] = Field(default=None, max_length=100)
     occurred_at_hint: Optional[str] = Field(default=None, max_length=100)
     query_window: Optional[str] = Field(default=None, max_length=32)
     # Phase 6f — conversational goal creation (intent=create_goal).
@@ -84,6 +92,12 @@ class ExtractionResult(BaseModel):
     debt_interest_rate: Optional[Decimal] = Field(default=None)
     debt_term_months: Optional[int] = Field(default=None)
     debt_lender: Optional[str] = Field(default=None, max_length=100)
+    # Phase 7b — credit-card account creation (intent=create_card). LIGHT
+    # extraction like debt: chat hands off to the native card form
+    # (open_screen card_create); the form + PDF upload gather the terms.
+    card_name: Optional[str] = Field(default=None, max_length=255)
+    card_issuer: Optional[str] = Field(default=None, max_length=100)
+    card_limit: Optional[Decimal] = Field(default=None)
     # Fixed-expense attachment (intent=attach_expense): attach an EXISTING
     # recurring bill / debt to an envelope. expense_hint = the obligation name
     # ("ICE", "préstamo del carro"); envelope_hint = the sobre name ("Servicios").
@@ -126,6 +140,7 @@ class ExtractionResult(BaseModel):
     @field_validator(
         "category_hint", "account_hint", "merchant", "goal_name", "bill_name",
         "debt_name", "debt_lender", "expense_hint", "envelope_hint",
+        "transfer_from_hint", "transfer_to_hint", "card_name", "card_issuer",
     )
     @classmethod
     def _normalize_strings(cls, v: Optional[str]) -> Optional[str]:
@@ -171,7 +186,7 @@ class ExtractionResult(BaseModel):
             return None
         return v if 1 <= v <= 31 else None
 
-    @field_validator("amount", "goal_target_amount", "debt_principal")
+    @field_validator("amount", "goal_target_amount", "debt_principal", "card_limit")
     @classmethod
     def _positive_amount(cls, v: Optional[Decimal]) -> Optional[Decimal]:
         # The sign in the DB is decided by the dispatcher from `intent`; the

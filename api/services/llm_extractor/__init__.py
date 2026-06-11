@@ -23,7 +23,7 @@ from .client import (
 from .prompt import SYSTEM_PROMPT, TOOL_DEFINITION
 from .runner import extract_finance_intent
 from .vision import extract_vision
-from .document import extract_debt_terms
+from .document import extract_card_terms, extract_debt_terms
 
 __all__ = [
     "ExtractionResult",
@@ -39,5 +39,6 @@ __all__ = [
     "TOOL_DEFINITION",
     "extract_finance_intent",
     "extract_vision",
+    "extract_card_terms",
     "extract_debt_terms",
 ]

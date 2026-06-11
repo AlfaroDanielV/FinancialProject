@@ -43,8 +43,12 @@ class BillOccurrence(Base):
     paid_at: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
+    # ON DELETE SET NULL (migration 0028): occurrence history survives
+    # transaction deletion (undo, account hard-delete) with the link nulled.
     transaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("transactions.id"), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("transactions.id", ondelete="SET NULL"),
+        nullable=True,
     )
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

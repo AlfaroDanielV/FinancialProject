@@ -123,10 +123,11 @@ class NotificationEventResponse(BaseModel):
 
 
 class UpcomingFeedItem(BaseModel):
-    """Polymorphic feed entry — a bill_occurrence, a custom_event, or a PROJECTED
-    debt cuota (B5: derived at read time, no materialized row)."""
+    """Polymorphic feed entry — a bill_occurrence, a custom_event, a PROJECTED
+    debt cuota, or a PROJECTED card minimum (derived at read time, no
+    materialized rows)."""
 
-    item_type: Literal["bill", "event", "debt"]
+    item_type: Literal["bill", "event", "debt", "card_payment"]
     id: uuid.UUID
     date: date
     title: str
@@ -137,6 +138,8 @@ class UpcomingFeedItem(BaseModel):
     provider: Optional[str] = None
     recurring_bill_id: Optional[uuid.UUID] = None
     debt_id: Optional[uuid.UUID] = None  # source debt when item_type == "debt"
+    # Phase 7b: source credit account when item_type == "card_payment".
+    account_id: Optional[uuid.UUID] = None
     is_overdue: bool = False
 
 

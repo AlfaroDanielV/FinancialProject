@@ -94,6 +94,12 @@ def merge_reply(
         # the user's active accounts; if the reply is nonsense it returns
         # None and the dispatcher asks again.
         merged["account_hint"] = reply
+    elif field == "transfer_from":
+        # Phase 7b transfers — raw pass-through; the dispatcher fuzzy-matches
+        # and re-asks listing the account names if the reply is nonsense.
+        merged["transfer_from_hint"] = reply
+    elif field == "transfer_to":
+        merged["transfer_to_hint"] = reply
     elif field == "amount":
         amount = _parse_amount_es(reply)
         if amount is None:

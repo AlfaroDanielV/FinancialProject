@@ -88,8 +88,12 @@ class DebtPayment(Base):
     debt_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("debts.id"), nullable=False
     )
+    # ON DELETE SET NULL (migration 0028): payment history survives transaction
+    # deletion (undo, account hard-delete) with the link nulled.
     transaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("transactions.id"), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("transactions.id", ondelete="SET NULL"),
+        nullable=True,
     )
     payment_date: Mapped[date] = mapped_column(Date, nullable=False)
     amount_paid: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)

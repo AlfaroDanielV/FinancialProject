@@ -38,3 +38,21 @@ class AccountResponse(BaseModel):
     month_start_balance: Optional[Decimal] = None
 
     model_config = {"from_attributes": True}
+
+
+class AccountDeleteImpactResponse(BaseModel):
+    """Phase 7b B2 — preview of what a hard delete removes / detaches. The
+    native confirm sheet shows these counts before asking for the typed name."""
+
+    transactions: int
+    transfers: int
+    debts_detached: int
+    bills_detached: int
+    goals_detached: int
+
+
+class AccountHardDeleteResponse(BaseModel):
+    """Phase 7b B2 — snapshot of the deleted account + what was removed."""
+
+    account: AccountResponse
+    impact: AccountDeleteImpactResponse

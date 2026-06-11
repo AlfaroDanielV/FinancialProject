@@ -121,12 +121,16 @@ async def is_valid_envelope_target(
 
 @dataclass(frozen=True)
 class AttachableObligation:
-    """A recurring bill or debt the user can attach to an envelope."""
+    """A recurring bill, debt, or credit card the user can attach to an
+    envelope. For kind="card", `id` is the credit ACCOUNT id (the terms row is
+    resolved from it at commit)."""
 
-    kind: str  # "bill" | "debt"
+    kind: str  # "bill" | "debt" | "card"
     id: uuid.UUID
     name: str
-    amount: Optional[Decimal]  # amount_expected (bill, may be None) / minimum_payment (debt)
+    # amount_expected (bill, may be None) / minimum_payment (debt) /
+    # live minimum due (card)
+    amount: Optional[Decimal]
 
 
 def _name_match(items: list, hint: str, key) -> list:
@@ -185,15 +189,37 @@ async def match_obligations_by_name(
         AttachableObligation("debt", d.id, d.name, Decimal(d.minimum_payment))
         for d in debt_rows
     ]
+    # Phase 7b B5: credit cards with terms ("meté el pago de la tarjeta en el
+    # sobre Deudas"). The candidate id is the ACCOUNT id; superseded
+    # credit_card Debts are excluded so a card never matches twice.
+    from .credit_cards import (
+        list_active_cards_with_terms,
+        superseded_credit_card_debt_ids,
+    )
+
+    superseded = await superseded_credit_card_debt_ids(db, user_id=user_id)
+    if superseded:
+        cands = [
+            c for c in cands if not (c.kind == "debt" and c.id in superseded)
+        ]
+    cands += [
+        AttachableObligation(
+            "card", c.account.id, c.account.name, c.minimum_due or None
+        )
+        for c in await list_active_cards_with_terms(db, user_id=user_id)
+    ]
     return _name_match(cands, hint, lambda c: c.name)
 
 
 async def list_unattached_obligations(
     db: AsyncSession, *, user_id: uuid.UUID
 ) -> list[tuple[str, Optional[Decimal], str]]:
-    """Active recurring bills + debts NOT attached to any envelope
-    (envelope_id IS NULL), as ``(name, amount, source)``. Drives the per-item
-    under_coverage gate (B3). ``amount`` is None for variable-amount bills."""
+    """Active recurring bills + debts + credit-card minimums NOT attached to
+    any envelope (envelope_id IS NULL), as ``(name, amount, source)``. Drives
+    the per-item under_coverage gate (B3). ``amount`` is None for
+    variable-amount bills. A card with nothing owed produces no obligation;
+    a credit_card Debt superseded by an account-with-terms is excluded
+    (coexistence rule — never count the same card twice)."""
     bill_rows = (
         await db.execute(
             select(RecurringBill.name, RecurringBill.amount_expected).where(
@@ -203,21 +229,31 @@ async def list_unattached_obligations(
             )
         )
     ).all()
-    debt_rows = (
-        await db.execute(
-            select(Debt.name, Debt.minimum_payment).where(
-                Debt.user_id == user_id,
-                Debt.is_active.is_(True),
-                Debt.archived.is_(False),
-                Debt.envelope_id.is_(None),
-            )
-        )
-    ).all()
+    from .credit_cards import (
+        list_active_cards_with_terms,
+        superseded_credit_card_debt_ids,
+    )
+
+    superseded = await superseded_credit_card_debt_ids(db, user_id=user_id)
+    debt_stmt = select(Debt.name, Debt.minimum_payment).where(
+        Debt.user_id == user_id,
+        Debt.is_active.is_(True),
+        Debt.archived.is_(False),
+        Debt.envelope_id.is_(None),
+    )
+    if superseded:
+        debt_stmt = debt_stmt.where(Debt.id.notin_(superseded))
+    debt_rows = (await db.execute(debt_stmt)).all()
     out: list[tuple[str, Optional[Decimal], str]] = [
         (name, Decimal(str(amt)) if amt is not None else None, "bill")
         for name, amt in bill_rows
     ]
     out += [(name, Decimal(str(amt)), "debt") for name, amt in debt_rows]
+    out += [
+        (c.account.name, c.minimum_due, "card")
+        for c in await list_active_cards_with_terms(db, user_id=user_id)
+        if c.terms.envelope_id is None and c.minimum_due > 0
+    ]
     return out
 
 
@@ -274,6 +310,15 @@ async def archive_subtree(db: AsyncSession, *, user: User, root: Envelope) -> No
     await db.execute(
         update(Debt).where(Debt.envelope_id.in_(ids)).values(envelope_id=None)
     )
+    # Phase 7b B5: card terms attach to envelopes too (FK only fires on a
+    # hard delete, so the soft archive detaches explicitly, same as above).
+    from ..models.credit_card_terms import CreditCardTerms
+
+    await db.execute(
+        update(CreditCardTerms)
+        .where(CreditCardTerms.envelope_id.in_(ids))
+        .values(envelope_id=None)
+    )
 
 
 async def set_class_subtree(
@@ -301,10 +346,17 @@ async def compute_envelope_summary(
 
     envelopes = await fetch_envelopes(db, user_id=user.id, include_archived=False)
 
-    # Live OWN (direct) spend per envelope: confirmed, non-archived, non-transfer
-    # EXPENSES (amount < 0) dated in the current month. Grouped by currency too,
-    # because a USD expense tagged to a CRC envelope must be converted before it
-    # counts (see api/services/fx.py) — otherwise $30 would read as ₡30.
+    # Live OWN (direct) spend per envelope: confirmed, non-archived EXPENSES
+    # (amount < 0) dated in the current month. Grouped by currency too, because
+    # a USD expense tagged to a CRC envelope must be converted before it counts
+    # (see api/services/fx.py) — otherwise $30 would read as ₡30.
+    #
+    # Transfer legs: the query already requires envelope_id IS NOT NULL, and the
+    # ONLY path that puts an envelope_id on a transfer leg is the deterministic
+    # card-payment stamp in create_transfer_with_transactions (Phase 7b B5 —
+    # PATCH still 409s legs). That stamped debit leg MUST count as spend so the
+    # card reservation swaps to spend when paid, never both. So no transfer
+    # exclusion here — an envelope-tagged expense counts, leg or not.
     spend_rows = await db.execute(
         select(
             Transaction.envelope_id,
@@ -316,7 +368,6 @@ async def compute_envelope_summary(
             Transaction.envelope_id.isnot(None),
             Transaction.amount < 0,
             Transaction.archived.is_(False),
-            Transaction.transfer_id.is_(None),
             Transaction.status == "confirmed",
             Transaction.transaction_date >= start,
             Transaction.transaction_date < end,
@@ -441,6 +492,53 @@ async def compute_envelope_summary(
         direct_reserved[env_id] = direct_reserved.get(
             env_id, Decimal("0")
         ) + convert(Decimal(str(min_payment)), dcur, ec)
+
+    # Phase 7b B5: an attached credit card reserves its LIVE minimum while
+    # unpaid this cycle. "Paid" ⟺ Σ(credit transfer legs INTO the card this
+    # month) ≥ the current minimum — and the matching debit leg was stamped
+    # with the envelope (it counts as spend above), so the reservation swaps
+    # to spend exactly, never both.
+    from .credit_cards import list_active_cards_with_terms
+
+    attached_cards = [
+        c
+        for c in await list_active_cards_with_terms(db, user_id=user.id)
+        if c.terms.envelope_id is not None and c.minimum_due > 0
+    ]
+    if attached_cards:
+        pay_rows = (
+            await db.execute(
+                select(
+                    Transaction.account_id,
+                    func.coalesce(func.sum(Transaction.amount), 0),
+                )
+                .where(
+                    Transaction.user_id == user.id,
+                    Transaction.account_id.in_(
+                        [c.account.id for c in attached_cards]
+                    ),
+                    Transaction.transfer_id.isnot(None),
+                    Transaction.amount > 0,
+                    Transaction.status == "confirmed",
+                    Transaction.archived.is_(False),
+                    Transaction.transaction_date >= start,
+                    Transaction.transaction_date < end,
+                )
+                .group_by(Transaction.account_id)
+            )
+        ).all()
+        paid_into_card = {
+            acc_id: Decimal(str(total)) for acc_id, total in pay_rows
+        }
+        for c in attached_cards:
+            ec = env_currency.get(c.terms.envelope_id)
+            if ec is None:
+                continue
+            if paid_into_card.get(c.account.id, Decimal("0")) >= c.minimum_due:
+                continue
+            direct_reserved[c.terms.envelope_id] = direct_reserved.get(
+                c.terms.envelope_id, Decimal("0")
+            ) + convert(c.minimum_due, c.account.currency, ec)
 
     # Roll reservations up the tree (own + descendants), like spend.
     rolled_reserved: dict[uuid.UUID, Decimal] = {}

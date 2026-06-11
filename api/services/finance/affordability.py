@@ -271,12 +271,22 @@ async def gather_affordability_inputs(
             continue
         fixed += convert(Decimal(amount) * factor, bill_currency, currency)
 
-    debt_rows = await db.execute(
-        select(Debt.minimum_payment, Debt.currency).where(
-            Debt.user_id == user.id,
-            Debt.is_active.is_(True),
-        )
+    # Phase 7b B5 coexistence: a credit_card Debt superseded by an account
+    # with card terms is excluded — the LIVE card minimum below replaces it
+    # (never both).
+    from ..credit_cards import (
+        list_active_cards_with_terms,
+        superseded_credit_card_debt_ids,
     )
+
+    superseded = await superseded_credit_card_debt_ids(db, user_id=user.id)
+    debt_stmt = select(Debt.minimum_payment, Debt.currency).where(
+        Debt.user_id == user.id,
+        Debt.is_active.is_(True),
+    )
+    if superseded:
+        debt_stmt = debt_stmt.where(Debt.id.notin_(superseded))
+    debt_rows = await db.execute(debt_stmt)
     commitments = _ZERO
     for payment, debt_currency in debt_rows.all():
         if payment is None:
@@ -284,6 +294,15 @@ async def gather_affordability_inputs(
         amount = Decimal(payment)
         if amount > _ZERO:
             commitments += convert(amount, debt_currency, currency)
+
+    # Phase 7b B5: card minimums join the debt-commitment transparency figure
+    # (Model A's committed_outflows is untouched — this only feeds the
+    # over_commitment nudge + reporting, like debt cuotas already do).
+    for card in await list_active_cards_with_terms(db, user_id=user.id):
+        if card.minimum_due > _ZERO:
+            commitments += convert(
+                card.minimum_due, card.account.currency, currency
+            )
 
     return AffordabilityInputs(
         currency=currency,

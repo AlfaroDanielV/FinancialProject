@@ -127,7 +127,7 @@ finance-agent/
 ├── workers/                    # gmail_daily.py, insights_nightly.py, insights_lifecycle.py
 │                               # (web/ Phase 6d/6e SPA — DELETED at 6f B16, 2026-06-01)
 ├── mobile/                     # Phase 6f native iOS app (Expo, React Native) — created at 6f B1
-├── migrations/versions/        # Hand-written Alembic (0001 → 0025)
+├── migrations/versions/        # Hand-written Alembic (0001 → 0029)
 ├── tests/                      # pytest suite
 ├── scripts/                    # Phase smoke scripts (phase5a/5b/6b/6c/etc.)
 ├── docs/phase-*/               # Per-phase operational docs (privacy, deployment, etc.)
@@ -1186,6 +1186,80 @@ Fixed-Expense Attachment.md`.
 Phase-7 regression migrated and green; mobile `tsc --noEmit` clean. `alembic
 current → 0027 (head)`. **Remaining polish:** symmetric bills/debts-screen attach
 entry point; "cuota de préstamo" label on debt feed entries.
+
+## Phase 7b (active) — Accounts CRUD + Hard Delete, Transfers, Credit-Card Clarity
+
+Three operator asks packaged as one phase (decisions locked 2026-06-11).
+**Code-complete 2026-06-11 — operator on-device sign-off pending.**
+Verification: `scripts/test_phase_7b.sh` green (mobile `tsc --noEmit`; 47
+focused + 136 regression incl. the byte-locked unified-cashflow regression);
+`scripts/test_phase_6f.sh` cross-check green; `alembic current → 0029 (head)`.
+Canonical: `docs/phase-7b-decisions.md`; vault `Decision - Full Transfers In
+Chat (Card Payment Is A Transfer)`, `Decision - Account Hard Delete With
+Cascade`, `Decision - Credit Card Terms As Account Parameters (Not A Debt)`.
+
+- **B1 — Full transfers (chat + native, no migration).** A card payment is a
+  **transfer** (source → credit account), never an expense — fixes the
+  double-count where "pagué la tarjeta" logged a second charge. New
+  `Intent.LOG_TRANSFER` + `transfer_from_hint`/`transfer_to_hint`;
+  deterministic dispatch (clarify missing side; card-payment copy when the
+  destination is credit; **cross-currency chat-rejected v1** → native modal);
+  commit through the same `create_transfer_with_transactions` the REST path
+  uses; undo deletes transfer + both legs. `GET /transfers` gains
+  `account_id` + `offset`. Mobile: `TransferModal` (keyboard scaffold) +
+  "Transferir" on accounts list + "Registrar pago" on credit detail.
+- **B2 — Account edit + TRUE hard delete (migration `0028`).**
+  `DELETE /accounts/{id}?hard=true&confirm=<typed name>` cascades: the
+  account's transactions are deleted; debts/bills/goals **detached, never
+  deleted**; transfers touching the account deleted with the surviving
+  other-account leg kept (amount unchanged, `transfer_id` NULLed, annotated
+  "cuenta eliminada"). `GET /accounts/{id}/delete-impact` previews counts.
+  Migration `0028` flips `debt_payments.transaction_id` +
+  `bill_occurrences.transaction_id` to `ON DELETE SET NULL` (also fixes the
+  latent `bot/undo.py` FK-violation on linked transactions). Mobile:
+  `AccountEditModal` (name/type) + danger-zone typed-name delete.
+- **B3 — `credit_card_terms` (migration `0029`).** 1:1 table on `account_id`
+  (UNIQUE, CASCADE): purchase/cash-advance APR (0–1 fractions),
+  `minimum_payment_pct` + `minimum_payment_floor` (mínimo = max(pct·saldo,
+  piso)), `credit_limit`, `statement_day`, `payment_due_day`, `envelope_id`.
+  **No balance column ever** — live from `compute_account_balances`. NOT a
+  reused `Debt(debt_type='credit_card')` (static balance would drift; French
+  endpoints wrong for revolving). `extract_card_terms` (Haiku→Sonnet 0.65) +
+  `POST /accounts/parse-card-document` + `GET/PUT/DELETE
+  /accounts/{id}/card-terms`. Chat `Intent.CREATE_CARD` → `open_screen
+  card_create` (chat never commits a card). Mobile `CardAccountCreateScreen`
+  (mirrors DebtCreateScreen: **contract-first** PDF prefill — "subí el
+  contrato", statements also accepted —, low-confidence note, no-rate
+  "llamá a tu banco" fallback) + `CardTermsEditModal`; credit accounts render
+  "Debés ₡X" + "Disponible ₡(límite − deuda)". **Dual-currency cards** (most
+  CR cards run ₡ AND $): "₡ + $ Ambas" creates TWO credit accounts
+  ("<nombre> ₡"/"<nombre> $"), each with its own terms (per-currency rate/
+  límite/piso/saldo; shared mínimo %/corte/fecha límite) — rides the
+  single-currency machinery untouched; extraction `*_usd` fields
+  auto-switch the form to Ambas. No multi-currency account.
+- **B4 — Revolving engine + analysis.** Pure `app/domain/credit/revolving.py`
+  (no LLM/DB/network): minimum-only projection with **never-payoff detection**
+  (payment ≤ monthly interest), fixed-payment projection, strategy comparison.
+  `GET /accounts/{id}/card-analysis` on the live balance; read-only chat tool
+  `get_card_analysis` (registered before the `compare_periods` cache anchor);
+  mobile `CardAnalysisCard` ("Si pagás solo el mínimo: N meses, ₡Y solo en
+  intereses").
+- **B5 — Card minimum as first-class obligation** (mirrors the debt-cuota
+  integration; no new migration): feed `item_type="card_payment"` derived
+  live; envelope reservation while unpaid this cycle (released by Σ transfer
+  legs into the card this month ≥ minimum; the deterministic transfer path
+  stamps the **debit leg** with the card's envelope so reservation swaps to
+  spend, never both); per-item `under_coverage` + affordability transparency.
+  `ATTACH_EXPENSE` gains `kind="card"`. **Coexistence:** a `credit_card` Debt
+  linked to an account with terms is excluded from feed/gate/affordability.
+  `committed_outflows` UNCHANGED (Model A; byte-locked regression).
+- **B6 — `scripts/test_phase_7b.sh`** (mobile tsc + focused + regression
+  slice). Card notifications deferred (needs a `notification_events` 4th
+  target — 0027 pattern).
+
+**Hard rule added:** a payment between the user's own accounts (incl. "pagué
+la tarjeta") is `log_transfer`, never `log_expense`. The LLM never calculates
+card interest — `app/domain/credit` does.
 
 ## CR Salary Calculator + Ingresos CRUD (post-7a, 2026-06-09)
 

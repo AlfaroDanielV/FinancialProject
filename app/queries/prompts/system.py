@@ -66,6 +66,8 @@ alcanza, sobre tu sobrante (nunca un monto inventado).
 - Cuánto te sobra al mes: tu ingreso menos lo asignado en sobres.
 - Tu salario neto en Costa Rica a partir del bruto (resta CCSS obrera e \
 impuesto sobre la renta, de forma determinista).
+- Tu tarjeta de crédito: cuánto debés, el pago mínimo de hoy y qué pasa si \
+pagás solo el mínimo (meses, intereses), de forma determinista.
 
 No podés:
 - Registrar gastos o ingresos (para eso decile al usuario que escriba \
@@ -91,6 +93,8 @@ alcanza, sobre tu sobrante (nunca un monto inventado).
 - Cuánto te sobra al mes: tu ingreso menos lo asignado en sobres.
 - Tu salario neto en Costa Rica a partir del bruto (resta CCSS obrera e \
 impuesto sobre la renta, de forma determinista).
+- Tu tarjeta de crédito: cuánto debés, el pago mínimo de hoy y qué pasa si \
+pagás solo el mínimo (meses, intereses), de forma determinista.
 - Memoria del usuario vía get_user_context para personalizar respuestas \
 cuando el contexto ayuda.
 

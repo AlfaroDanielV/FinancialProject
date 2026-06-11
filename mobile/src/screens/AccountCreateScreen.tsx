@@ -98,7 +98,15 @@ export function AccountCreateScreen() {
             {ACCOUNT_TYPES.map((t) => (
               <Pressable
                 key={t}
-                onPress={() => setAccountType(t)}
+                onPress={() => {
+                  // Phase 7b B3: credit cards have their own creation flow
+                  // (terms + PDF upload) — redirect instead of the bare form.
+                  if (t === "credit") {
+                    nav.replace("CardCreate", undefined);
+                    return;
+                  }
+                  setAccountType(t);
+                }}
                 style={({ pressed }) => [
                   styles.segmentItem,
                   accountType === t && styles.segmentItemActive,

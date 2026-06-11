@@ -248,6 +248,14 @@ async def dispatch(
             extraction=extraction, user=user, today=today, db=db
         )
 
+    # Like the create_* intents, log_transfer carries an explicit verb
+    # ("pagué la tarjeta", "pasé plata") so it skips the generic low-confidence
+    # question and does field-specific clarification below.
+    if intent is Intent.LOG_TRANSFER:
+        return await _dispatch_log_transfer(
+            extraction=extraction, user=user, today=today, db=db
+        )
+
     if intent is Intent.CREATE_GOAL:
         return await _dispatch_create_goal(
             extraction=extraction, user=user, today=today, db=db
@@ -267,6 +275,9 @@ async def dispatch(
         return await _dispatch_create_debt(
             extraction=extraction, user=user, db=db
         )
+
+    if intent is Intent.CREATE_CARD:
+        return _dispatch_create_card(extraction=extraction, user=user)
 
     if intent is Intent.ATTACH_EXPENSE:
         return await _dispatch_attach_expense(
@@ -441,6 +452,181 @@ def _build_summary(
     if currency_defaulted:
         lead += f" (Usé {currency} por defecto.)"
     return lead + " ¿Confirmo?"
+
+
+# ── Phase 7b: transfers between own accounts (card payment = transfer) ────────
+
+
+def _match_transfer_account(hint: str, accounts: list) -> tuple[str, Any]:
+    """Resolve one transfer side. Returns (status, account) with status in
+    matched | ambiguous | unknown. Card shortcut: a hint that mentions
+    'tarjeta' resolves deterministically when the user has exactly one
+    credit account ('pagué la tarjeta' shouldn't need a follow-up)."""
+    match = match_account_hint(hint, accounts)
+    if match.status == "matched":
+        return "matched", match.account
+    if "tarjeta" in hint.lower():
+        credit = [a for a in accounts if a.account_type == "credit"]
+        if len(credit) == 1:
+            return "matched", credit[0]
+    return (match.status if match.status != "no_hint" else "unknown"), None
+
+
+def _transfer_date_es(occurred_at: date, today: date) -> str:
+    if occurred_at == today:
+        return "hoy"
+    if occurred_at == today - timedelta(days=1):
+        return "ayer"
+    return occurred_at.isoformat()
+
+
+async def _dispatch_log_transfer(
+    *,
+    extraction: ExtractionResult,
+    user: User,
+    today: date,
+    db: AsyncSession,
+) -> DispatcherResult:
+    """A movement between the user's own accounts — including paying their
+    credit card. Commits through the same transfers service the REST endpoint
+    uses, so the two legs are excluded from income/expense math (no double
+    count). Cross-currency is chat-rejected v1 (the native modal exposes
+    fx_rate; the deterministic write path stays conservative)."""
+    if extraction.amount is None:
+        return AskClarification(
+            question_es=(
+                "¿Cuánto fue la transferencia? Decime el monto "
+                "(puede ser '5000' o '80 mil')."
+            ),
+            awaiting_field="amount",
+            partial=extraction.model_dump(mode="json"),
+        )
+
+    accounts = await list_active(user, db)
+    if len(accounts) < 2:
+        return Reject(
+            reason_code="transfer_needs_two_accounts",
+            message_es=(
+                "Para registrar una transferencia necesitás al menos dos "
+                "cuentas. Creá la otra cuenta primero (decime 'crear cuenta' "
+                "o usá la pestaña Cuentas)."
+            ),
+        )
+    names = ", ".join(a.name for a in accounts)
+
+    to_account = None
+    if extraction.transfer_to_hint:
+        status, to_account = _match_transfer_account(
+            extraction.transfer_to_hint, accounts
+        )
+        if status != "matched":
+            return AskClarification(
+                question_es=(
+                    f"¿A cuál cuenta va la plata? Opciones: {names}."
+                ),
+                awaiting_field="transfer_to",
+                partial=extraction.model_dump(mode="json"),
+            )
+
+    from_account = None
+    if extraction.transfer_from_hint:
+        status, from_account = _match_transfer_account(
+            extraction.transfer_from_hint, accounts
+        )
+        if status != "matched":
+            return AskClarification(
+                question_es=(
+                    f"¿Desde cuál cuenta salió la plata? Opciones: {names}."
+                ),
+                awaiting_field="transfer_from",
+                partial=extraction.model_dump(mode="json"),
+            )
+
+    # With exactly two active accounts, one resolved side determines the
+    # other — stated in the summary so a wrong default is caught at confirm.
+    defaulted_side: Optional[str] = None
+    if from_account is None and to_account is not None and len(accounts) == 2:
+        from_account = next(a for a in accounts if a.id != to_account.id)
+        defaulted_side = "from"
+    if to_account is None and from_account is not None and len(accounts) == 2:
+        to_account = next(a for a in accounts if a.id != from_account.id)
+        defaulted_side = "to"
+
+    if to_account is None:
+        return AskClarification(
+            question_es=f"¿A cuál cuenta va la plata? Opciones: {names}.",
+            awaiting_field="transfer_to",
+            partial=extraction.model_dump(mode="json"),
+        )
+    if from_account is None:
+        return AskClarification(
+            question_es=(
+                f"¿Desde cuál cuenta salió la plata? Opciones: {names}."
+            ),
+            awaiting_field="transfer_from",
+            partial=extraction.model_dump(mode="json"),
+        )
+    if from_account.id == to_account.id:
+        return AskClarification(
+            question_es=(
+                "La cuenta origen y destino no pueden ser la misma. "
+                f"¿Desde cuál cuenta salió la plata? Opciones: {names}."
+            ),
+            awaiting_field="transfer_from",
+            partial=extraction.model_dump(mode="json"),
+        )
+
+    if from_account.currency != to_account.currency:
+        return Reject(
+            reason_code="transfer_cross_currency",
+            message_es=(
+                "Esas cuentas están en monedas distintas. Las transferencias "
+                "entre monedas hacelas desde la pestaña Cuentas — ahí podés "
+                "poner el tipo de cambio."
+            ),
+        )
+    if extraction.currency and extraction.currency != from_account.currency:
+        return Reject(
+            reason_code="transfer_currency_mismatch",
+            message_es=(
+                f"La cuenta «{from_account.name}» está en "
+                f"{from_account.currency}, no en {extraction.currency}. "
+                "Revisá el monto o usá la pestaña Cuentas para una "
+                "transferencia entre monedas."
+            ),
+        )
+
+    occurred_at = _resolve_occurred_at(extraction.occurred_at_hint, today)
+    is_card_payment = to_account.account_type == "credit"
+    amount: Decimal = extraction.amount
+
+    payload = {
+        "action_type": "log_transfer",
+        "amount": str(amount),
+        "currency": from_account.currency,
+        "from_account_id": str(from_account.id),
+        "from_account_name": from_account.name,
+        "to_account_id": str(to_account.id),
+        "to_account_name": to_account.name,
+        "occurred_at": occurred_at.isoformat(),
+        "is_card_payment": is_card_payment,
+    }
+
+    amt = _format_amount(amount, from_account.currency)
+    fecha = _transfer_date_es(occurred_at, today)
+    label = "Pago de tarjeta" if is_card_payment else "Transferencia"
+    summary = (
+        f"{label}: {amt} de {from_account.name} a {to_account.name}, {fecha}."
+    )
+    if defaulted_side == "from":
+        summary += f" (Asumí que sale de {from_account.name}.)"
+    elif defaulted_side == "to":
+        summary += f" (Asumí que entra a {to_account.name}.)"
+    return ProposeAction(
+        action_type="log_transfer",
+        payload=payload,
+        summary_es=summary + " ¿Confirmo?",
+    )
 
 
 # ── Phase 6f: conversational goal creation ────────────────────────────────────
@@ -1072,9 +1258,9 @@ async def _dispatch_attach_expense(
             partial=extraction.model_dump(mode="json"),
         )
     if len(obligations) > 1:
+        kind_labels = {"bill": "recibo", "debt": "deuda", "card": "tarjeta"}
         labels = ", ".join(
-            f"{o.name} ({'recibo' if o.kind == 'bill' else 'deuda'})"
-            for o in obligations
+            f"{o.name} ({kind_labels.get(o.kind, o.kind)})" for o in obligations
         )
         return AskClarification(
             question_es=f"¿Cuál de estos querés asignar? {labels}.",
@@ -1083,7 +1269,12 @@ async def _dispatch_attach_expense(
         )
     obligation = obligations[0]
 
-    noun = "el recibo" if obligation.kind == "bill" else "la cuota de"
+    nouns = {
+        "bill": "el recibo",
+        "debt": "la cuota de",
+        "card": "el pago de la tarjeta",
+    }
+    noun = nouns.get(obligation.kind, "el pago de")
     amount_note = ""
     if obligation.amount is not None:
         amount_note = (
@@ -1224,4 +1415,37 @@ async def _dispatch_create_debt(
         screen="debt_create",
         prefill=prefill,
         message_es=message,
+    )
+
+
+# ── Phase 7b: credit-card account creation (chat → native form handoff) ───────
+
+
+CARD_FORM_HANDOFF = (
+    "Te abro el formulario de tarjeta con lo que me diste. Si tenés el "
+    "contrato de la tarjeta en PDF, subilo ahí y te leo la tasa, el pago "
+    "mínimo y las fechas."
+)
+
+
+def _dispatch_create_card(
+    *, extraction: ExtractionResult, user: User
+) -> DispatcherResult:
+    """Light extraction → hand off to the native card form (same pattern as
+    debt: the chat never commits a card — the terms need a form + optionally
+    the statement PDF). Telegram ignores open_screen and shows the text."""
+    prefill = {
+        "name": extraction.card_name,
+        "issuer": extraction.card_issuer,
+        "credit_limit": (
+            str(extraction.card_limit)
+            if extraction.card_limit is not None
+            else None
+        ),
+        "currency": extraction.currency or user.currency,
+    }
+    return OpenScreenAction(
+        screen="card_create",
+        prefill=prefill,
+        message_es=CARD_FORM_HANDOFF,
     )

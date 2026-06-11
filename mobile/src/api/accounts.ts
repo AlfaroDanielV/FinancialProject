@@ -74,6 +74,42 @@ export async function archiveAccount(id: string): Promise<AccountResponse> {
   return data;
 }
 
+// ── Phase 7b B2: TRUE hard delete ────────────────────────────────────────────
+
+export interface AccountDeleteImpact {
+  transactions: number;
+  transfers: number;
+  debts_detached: number;
+  bills_detached: number;
+  goals_detached: number;
+}
+
+export interface AccountHardDeleteResponse {
+  account: AccountResponse;
+  impact: AccountDeleteImpact;
+}
+
+export async function fetchDeleteImpact(
+  id: string,
+): Promise<AccountDeleteImpact> {
+  const { data } = await api.get<AccountDeleteImpact>(
+    `/accounts/${id}/delete-impact`,
+  );
+  return data;
+}
+
+/** Permanent delete — `confirmName` must equal the exact account name. */
+export async function hardDeleteAccount(
+  id: string,
+  confirmName: string,
+): Promise<AccountHardDeleteResponse> {
+  const { data } = await api.delete<AccountHardDeleteResponse>(
+    `/accounts/${id}`,
+    { params: { hard: true, confirm: confirmName } },
+  );
+  return data;
+}
+
 export async function fetchAccountTransactions(
   accountId: string,
   cursor?: string,

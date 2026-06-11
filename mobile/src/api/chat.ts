@@ -28,6 +28,18 @@ export interface DebtPrefill {
 }
 
 /**
+ * Phase 7b — credit-card creation handoff (`screen: "card_create"`). Light
+ * extraction like debt: the native card form gathers the terms (or reads
+ * them from the statement PDF). `credit_limit` is a string magnitude.
+ */
+export interface CardPrefill {
+  name: string | null;
+  issuer: string | null;
+  credit_limit: string | null;
+  currency: string;
+}
+
+/**
  * Envelope budgeting (Sobres) — emitted after an EXPENSE commits
  * (`screen: "assign_envelope"`). The chat offers an in-chat "Asignar a un
  * sobre" affordance for the just-created transaction; no navigation.
@@ -41,7 +53,7 @@ export interface AssignEnvelopePrefill {
 
 export interface ChatOpenScreen {
   screen: string;
-  prefill: DebtPrefill | AssignEnvelopePrefill;
+  prefill: DebtPrefill | CardPrefill | AssignEnvelopePrefill;
 }
 
 export interface ChatMessageResponse {

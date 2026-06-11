@@ -30,6 +30,11 @@ import {
   ACCOUNT_TYPE_LABELS,
   type TransactionResponse,
 } from "../api/accounts";
+import { fetchCardAnalysis, fetchCardTerms } from "../api/cardTerms";
+import { AccountDeleteConfirmModal } from "../components/AccountDeleteConfirmModal";
+import { AccountEditModal } from "../components/AccountEditModal";
+import { CardTermsEditModal } from "../components/CardTermsEditModal";
+import { TransferModal } from "../components/TransferModal";
 import { Colors, FontSize, Radius, Spacing, CardShadow } from "../theme";
 import type { AccountsStackParamList } from "../navigation/AccountsNavigator";
 
@@ -90,10 +95,26 @@ export function AccountDetailScreen({ route }: Props) {
   const { accountId } = route.params;
   const nav = useNavigation<Nav>();
   const qc = useQueryClient();
+  const [payVisible, setPayVisible] = useState(false);
+  const [editVisible, setEditVisible] = useState(false);
+  const [deleteVisible, setDeleteVisible] = useState(false);
+  const [termsVisible, setTermsVisible] = useState(false);
 
   const { data: account, isLoading: accountLoading, refetch: refetchAccount } = useQuery({
     queryKey: ["account", accountId],
     queryFn: () => fetchAccount(accountId),
+  });
+
+  const isCredit = account?.account_type === "credit";
+  const { data: cardTerms } = useQuery({
+    queryKey: ["cardTerms", accountId],
+    queryFn: () => fetchCardTerms(accountId),
+    enabled: isCredit,
+  });
+  const { data: analysis } = useQuery({
+    queryKey: ["cardAnalysis", accountId],
+    queryFn: () => fetchCardAnalysis(accountId),
+    enabled: isCredit && cardTerms != null,
   });
 
   const {
@@ -167,16 +188,24 @@ export function AccountDetailScreen({ route }: Props) {
 
   return (
     <SafeAreaView style={styles.safe} edges={["bottom"]}>
-      {/* ── archive action ───────────────────────────────────────────────── */}
-      <Pressable
-        onPress={onArchivePress}
-        style={styles.archiveHitArea}
-        disabled={archiveMutation.isPending}
-      >
-        <Text style={styles.archiveLink}>
-          {account.archived ? "Restaurar" : "Archivar"}
-        </Text>
-      </Pressable>
+      {/* ── edit + archive actions ───────────────────────────────────────── */}
+      <View style={styles.headerActions}>
+        <Pressable
+          onPress={() => setEditVisible(true)}
+          style={styles.archiveHitArea}
+        >
+          <Text style={styles.archiveLink}>Editar</Text>
+        </Pressable>
+        <Pressable
+          onPress={onArchivePress}
+          style={styles.archiveHitArea}
+          disabled={archiveMutation.isPending}
+        >
+          <Text style={styles.archiveLink}>
+            {account.archived ? "Restaurar" : "Archivar"}
+          </Text>
+        </Pressable>
+      </View>
 
       <FlatList
         data={transactions}
@@ -199,11 +228,43 @@ export function AccountDetailScreen({ route }: Props) {
                 {" · "}
                 {account.currency}
               </Text>
-              <Text
-                style={[styles.balance, bal < 0 && { color: Colors.expense }]}
-              >
-                {fmt(bal, account.currency)}
-              </Text>
+              {isCredit ? (
+                // Phase 7b: card clarity for the least-engaged user — show
+                // what's OWED as a plain positive figure, never a raw negative.
+                <>
+                  <Text
+                    style={[
+                      styles.balance,
+                      bal < 0 && { color: Colors.expense },
+                    ]}
+                  >
+                    {bal < 0
+                      ? `Debés ${fmt(Math.abs(bal), account.currency)}`
+                      : bal === 0
+                        ? "Sin deuda"
+                        : `A favor ${fmt(bal, account.currency)}`}
+                  </Text>
+                  {cardTerms?.credit_limit != null && bal <= 0 && (
+                    <Text style={styles.availableLine}>
+                      Disponible{" "}
+                      {fmt(
+                        Math.max(
+                          0,
+                          parseFloat(cardTerms.credit_limit) + bal,
+                        ),
+                        account.currency,
+                      )}{" "}
+                      de {fmt(parseFloat(cardTerms.credit_limit), account.currency)}
+                    </Text>
+                  )}
+                </>
+              ) : (
+                <Text
+                  style={[styles.balance, bal < 0 && { color: Colors.expense }]}
+                >
+                  {fmt(bal, account.currency)}
+                </Text>
+              )}
               {account.month_start_balance != null && (
                 <Text
                   style={[
@@ -221,7 +282,129 @@ export function AccountDetailScreen({ route }: Props) {
                   <Text style={styles.archivedBadgeText}>Archivada</Text>
                 </View>
               )}
+              {account.account_type === "credit" && !account.archived && (
+                <Pressable
+                  onPress={() => setPayVisible(true)}
+                  style={({ pressed }) => [
+                    styles.payBtn,
+                    pressed && { opacity: 0.85 },
+                  ]}
+                >
+                  <Feather name="arrow-down-circle" size={16} color={Colors.textOnDark} />
+                  <Text style={styles.payBtnText}>Registrar pago</Text>
+                </Pressable>
+              )}
             </View>
+
+            {/* ── card terms (credit accounts, Phase 7b) ───────────────────── */}
+            {isCredit && (
+              <View style={styles.termsCard}>
+                <View style={styles.termsHeader}>
+                  <Text style={styles.sectionTitle}>TÉRMINOS DE LA TARJETA</Text>
+                  <Pressable onPress={() => setTermsVisible(true)}>
+                    <Text style={styles.termsEditLink}>
+                      {cardTerms ? "Editar" : "Agregar"}
+                    </Text>
+                  </Pressable>
+                </View>
+                {cardTerms ? (
+                  <View style={styles.termsGrid}>
+                    <TermRow
+                      label="Tasa anual de compras"
+                      value={`${(parseFloat(cardTerms.annual_interest_rate) * 100).toFixed(2).replace(/\.00$/, "")}%`}
+                    />
+                    <TermRow
+                      label="Pago mínimo"
+                      value={`${(parseFloat(cardTerms.minimum_payment_pct) * 100).toFixed(2).replace(/\.00$/, "")}% del saldo${
+                        cardTerms.minimum_payment_floor != null
+                          ? ` (mín. ${fmt(parseFloat(cardTerms.minimum_payment_floor), account.currency)})`
+                          : ""
+                      }`}
+                    />
+                    {cardTerms.statement_day != null && (
+                      <TermRow
+                        label="Día de corte"
+                        value={`${cardTerms.statement_day}`}
+                      />
+                    )}
+                    <TermRow
+                      label="Día límite de pago"
+                      value={`${cardTerms.payment_due_day}`}
+                    />
+                  </View>
+                ) : (
+                  <Text style={styles.termsEmpty}>
+                    Agregá la tasa y el pago mínimo para ver cuánto te cuesta
+                    pagar solo el mínimo.
+                  </Text>
+                )}
+              </View>
+            )}
+
+            {/* ── card analysis (Phase 7b B4) ──────────────────────────────── */}
+            {isCredit && analysis != null && parseFloat(analysis.balance_owed) > 0 && (
+              <View style={styles.termsCard}>
+                <Text style={styles.sectionTitle}>SI PAGÁS SOLO EL MÍNIMO</Text>
+                <Text style={styles.analysisLine}>
+                  Pago mínimo de hoy:{" "}
+                  <Text style={styles.analysisStrong}>
+                    {fmt(parseFloat(analysis.minimum_payment), analysis.currency)}
+                  </Text>
+                </Text>
+                <Text style={styles.analysisLine}>
+                  Este mes en intereses:{" "}
+                  <Text style={styles.analysisStrong}>
+                    {fmt(parseFloat(analysis.monthly_interest_cost), analysis.currency)}
+                  </Text>
+                </Text>
+                {analysis.never_pays_off ? (
+                  <View style={styles.neverCard}>
+                    <Feather name="alert-triangle" size={15} color={Colors.expense} />
+                    <Text style={styles.neverText}>
+                      Pagando solo el mínimo, esta tarjeta NUNCA se termina de
+                      pagar — el mínimo no cubre ni los intereses del mes.
+                    </Text>
+                  </View>
+                ) : (
+                  analysis.months_to_payoff_minimum != null && (
+                    <Text style={styles.analysisLine}>
+                      Terminás de pagarla en{" "}
+                      <Text style={styles.analysisStrong}>
+                        {analysis.months_to_payoff_minimum} meses
+                      </Text>
+                      {analysis.total_interest_minimum != null && (
+                        <>
+                          {" "}y pagás{" "}
+                          <Text style={[styles.analysisStrong, { color: Colors.expense }]}>
+                            {fmt(
+                              parseFloat(analysis.total_interest_minimum),
+                              analysis.currency,
+                            )}
+                          </Text>{" "}
+                          solo en intereses.
+                        </>
+                      )}
+                    </Text>
+                  )
+                )}
+                {analysis.strategies.map((s) => (
+                  <View key={s.label} style={styles.strategyRow}>
+                    <Text style={styles.strategyLabel}>
+                      {s.label} ({fmt(parseFloat(s.monthly_payment), analysis.currency)}/mes)
+                    </Text>
+                    <Text style={styles.strategyValue}>
+                      {s.months != null ? `${s.months} meses` : "no alcanza"}
+                      {s.interest_saved_vs_minimum != null &&
+                        parseFloat(s.interest_saved_vs_minimum) > 0 &&
+                        ` · ahorrás ${fmt(
+                          parseFloat(s.interest_saved_vs_minimum),
+                          analysis.currency,
+                        )}`}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            )}
 
             {/* ── transactions heading ─────────────────────────────────────── */}
             <View style={styles.sectionHeader}>
@@ -241,28 +424,93 @@ export function AccountDetailScreen({ route }: Props) {
           ) : null
         }
         ListFooterComponent={
-          hasNextPage ? (
+          <>
+            {hasNextPage && (
+              <Pressable
+                onPress={() => fetchNextPage()}
+                disabled={isFetchingNextPage}
+                style={({ pressed }) => [
+                  styles.loadMore,
+                  pressed && { opacity: 0.7 },
+                ]}
+              >
+                {isFetchingNextPage ? (
+                  <ActivityIndicator size="small" color={Colors.accent} />
+                ) : (
+                  <Text style={styles.loadMoreText}>Cargar más</Text>
+                )}
+              </Pressable>
+            )}
+            {/* ── danger zone: permanent delete (Phase 7b B2) ──────────── */}
             <Pressable
-              onPress={() => fetchNextPage()}
-              disabled={isFetchingNextPage}
+              onPress={() => setDeleteVisible(true)}
               style={({ pressed }) => [
-                styles.loadMore,
+                styles.dangerRow,
                 pressed && { opacity: 0.7 },
               ]}
             >
-              {isFetchingNextPage ? (
-                <ActivityIndicator size="small" color={Colors.accent} />
-              ) : (
-                <Text style={styles.loadMoreText}>Cargar más</Text>
-              )}
+              <Feather name="trash-2" size={15} color={Colors.expense} />
+              <Text style={styles.dangerText}>
+                Eliminar cuenta definitivamente
+              </Text>
             </Pressable>
-          ) : null
+          </>
         }
         contentContainerStyle={styles.listContent}
         ItemSeparatorComponent={() => <View style={styles.separator} />}
         showsVerticalScrollIndicator={false}
       />
+
+      <TransferModal
+        visible={payVisible}
+        onClose={() => setPayVisible(false)}
+        initialToAccountId={accountId}
+      />
+      <AccountEditModal
+        visible={editVisible}
+        account={account}
+        onClose={() => setEditVisible(false)}
+        onSaved={() => {
+          setEditVisible(false);
+          qc.invalidateQueries({ queryKey: ["accounts"] });
+          qc.invalidateQueries({ queryKey: ["account", accountId] });
+        }}
+      />
+      <AccountDeleteConfirmModal
+        visible={deleteVisible}
+        account={account}
+        onClose={() => setDeleteVisible(false)}
+        onDeleted={() => {
+          setDeleteVisible(false);
+          qc.invalidateQueries({ queryKey: ["accounts"] });
+          qc.invalidateQueries({ queryKey: ["transactions"] });
+          qc.invalidateQueries({ queryKey: ["dashboard"] });
+          nav.goBack();
+        }}
+      />
+      {isCredit && (
+        <CardTermsEditModal
+          visible={termsVisible}
+          accountId={accountId}
+          terms={cardTerms ?? null}
+          onClose={() => setTermsVisible(false)}
+          onSaved={() => {
+            setTermsVisible(false);
+            qc.invalidateQueries({ queryKey: ["cardTerms", accountId] });
+            qc.invalidateQueries({ queryKey: ["cardAnalysis", accountId] });
+          }}
+        />
+      )}
     </SafeAreaView>
+  );
+}
+
+function TermRow({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.termRow}>
+      <Text style={styles.termLabel}>{label}</Text>
+      <Text style={styles.termValue}>{value}</Text>
+    </View>
   );
 }
 
@@ -272,14 +520,32 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.bg,
   },
 
-  archiveHitArea: {
+  headerActions: {
+    flexDirection: "row",
     alignSelf: "flex-end",
+  },
+  archiveHitArea: {
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,
   },
   archiveLink: {
     fontSize: FontSize.sm,
     color: Colors.textMuted,
+  },
+  dangerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.xs,
+    marginTop: Spacing.xl,
+    paddingVertical: Spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: Colors.borderLight,
+  },
+  dangerText: {
+    fontSize: FontSize.sm,
+    color: Colors.expense,
+    fontWeight: "500",
   },
 
   // ── balance header ────────────────────────────────────────────────────────
@@ -321,6 +587,107 @@ const styles = StyleSheet.create({
   archivedBadgeText: {
     fontSize: FontSize.xs,
     color: Colors.textMuted,
+  },
+  payBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.xs,
+    backgroundColor: Colors.accent,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.sm + 2,
+    marginTop: Spacing.sm,
+  },
+  payBtnText: {
+    color: Colors.textOnDark,
+    fontSize: FontSize.md,
+    fontWeight: "600",
+  },
+  availableLine: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    fontVariant: ["tabular-nums"],
+  },
+
+  // ── card terms (Phase 7b) ─────────────────────────────────────────────────
+  termsCard: {
+    marginHorizontal: Spacing.md,
+    marginBottom: Spacing.md,
+    backgroundColor: Colors.bgCard,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+    gap: Spacing.sm,
+  },
+  termsHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  termsEditLink: {
+    fontSize: FontSize.sm,
+    color: Colors.accent,
+    fontWeight: "600",
+  },
+  termsGrid: { gap: Spacing.xs },
+  termRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: Spacing.sm,
+  },
+  termLabel: { fontSize: FontSize.sm, color: Colors.textMuted },
+  termValue: {
+    fontSize: FontSize.sm,
+    color: Colors.textPrimary,
+    fontWeight: "500",
+    flexShrink: 1,
+    textAlign: "right",
+  },
+  termsEmpty: {
+    fontSize: FontSize.sm,
+    color: Colors.textMuted,
+    lineHeight: 19,
+  },
+
+  // ── card analysis (Phase 7b B4) ───────────────────────────────────────────
+  analysisLine: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    lineHeight: 20,
+  },
+  analysisStrong: {
+    fontWeight: "700",
+    color: Colors.textPrimary,
+    fontVariant: ["tabular-nums"],
+  },
+  neverCard: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: Spacing.xs,
+    backgroundColor: Colors.bgElevated,
+    borderRadius: Radius.sm,
+    padding: Spacing.sm,
+  },
+  neverText: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    color: Colors.expense,
+    lineHeight: 19,
+    fontWeight: "500",
+  },
+  strategyRow: {
+    borderTopWidth: 1,
+    borderTopColor: Colors.borderLight,
+    paddingTop: Spacing.xs,
+    gap: 1,
+  },
+  strategyLabel: { fontSize: FontSize.xs, color: Colors.textMuted },
+  strategyValue: {
+    fontSize: FontSize.sm,
+    color: Colors.textPrimary,
+    fontWeight: "500",
+    fontVariant: ["tabular-nums"],
   },
 
   // ── section ───────────────────────────────────────────────────────────────

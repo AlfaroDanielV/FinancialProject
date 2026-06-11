@@ -62,6 +62,16 @@ COMMITTED_EXPENSE = "Guardado: gasto de {amount}. Mandá /undo si te equivocaste
 COMMITTED_INCOME = "Guardado: ingreso de {amount}. Mandá /undo si te equivocaste."
 COMMITTED_DISCARDED = "Listo, no guardé nada."
 
+# Phase 7b — transfers between own accounts (card payment = transfer).
+TRANSFER_COMMITTED = (
+    "Listo, registré la transferencia de {amount} de {from_name} a "
+    "{to_name}. Mandá /undo si te equivocaste."
+)
+CARD_PAYMENT_COMMITTED = (
+    "Listo, registré el pago de tu tarjeta {to_name}: {amount} desde "
+    "{from_name}. Mandá /undo si te equivocaste."
+)
+
 # Phase 6f — conversational goal creation.
 GOAL_CREATED = "🎯 Meta creada: {name}. La encontrás en la pestaña Metas."
 

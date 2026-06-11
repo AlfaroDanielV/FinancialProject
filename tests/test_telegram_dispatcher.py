@@ -241,7 +241,8 @@ async def test_log_expense_unknown_account_hint_prompts_lazy_creation(monkeypatc
     assert isinstance(result, td.LazyDetectionPrompt)
     assert "BAC" in result.message_es
     assert "crear" in result.message_es
-    assert "link" in result.message_es
+    # ("link" assertion removed: the prompt stopped mentioning the SPA setup
+    # link when web/ was retired at 6f B16 — the copy is conversational now.)
     assert result.telemetry_events[0].hint_type == "bank"
     assert result.telemetry_events[0].resolution == "pending"
 

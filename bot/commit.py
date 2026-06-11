@@ -1,14 +1,15 @@
 """Commit a PendingAction into the DB.
 
 Action types: log_expense / log_income (transactions, via the shared
-transactions service so the REST router and the bot produce the same rows)
-and create_goal (Phase 6f conversational goal creation, mirroring
-api/routers/goals.py::create_goal).
+transactions service so the REST router and the bot produce the same rows),
+log_transfer (Phase 7b, via the shared transfers service — same two legs the
+REST endpoint creates) and create_goal (Phase 6f conversational goal
+creation, mirroring api/routers/goals.py::create_goal).
 """
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -21,8 +22,10 @@ from api.models.goal import Goal
 from api.models.recurring_bill import RecurringBill
 from api.models.recurring_income import RecurringIncome
 from api.models.user import User
+from api.schemas.transfers import TransferCreate
 from api.services import recurrence
 from api.services.transactions import create_transaction
+from api.services.transfers import create_transfer_with_transactions
 
 from .pending import PendingAction, clear_pending, save_last_action
 from .pending_db import resolve_from_pending
@@ -51,6 +54,9 @@ async def commit_pending(
         return await _commit_attach_expense(
             user=user, pending=pending, db=db, redis=redis
         )
+
+    if pending.action_type == "log_transfer":
+        return await _commit_transfer(user=user, pending=pending, db=db, redis=redis)
 
     if pending.action_type not in ("log_expense", "log_income"):
         raise ValueError(f"unknown action_type: {pending.action_type}")
@@ -93,6 +99,51 @@ async def commit_pending(
         redis=redis,
     )
     return txn.id
+
+
+async def _commit_transfer(
+    *,
+    user: User,
+    pending: PendingAction,
+    db: AsyncSession,
+    redis: Redis,
+) -> uuid.UUID:
+    """Create a transfer (two legs) from a confirmed log_transfer proposal —
+    Phase 7b. Goes through the same create_transfer_with_transactions the REST
+    endpoint uses so chat- and app-created transfers are identical rows (legs
+    excluded from income/expense math via transfer_id). Returns the transfer id.
+    """
+    payload = pending.payload
+    occurred_at = datetime.combine(
+        date.fromisoformat(payload["occurred_at"]), time.min, tzinfo=timezone.utc
+    )
+    result = await create_transfer_with_transactions(
+        db,
+        user_id=user.id,
+        payload=TransferCreate(
+            from_account_id=uuid.UUID(payload["from_account_id"]),
+            to_account_id=uuid.UUID(payload["to_account_id"]),
+            amount=Decimal(payload["amount"]),
+            currency=payload["currency"],
+            occurred_at=occurred_at,
+        ),
+    )
+    transfer_id = result.transfer.id
+    await db.commit()
+
+    await resolve_from_pending(
+        session=db, pending=pending, resolution="confirmed"
+    )
+    await db.commit()
+
+    await clear_pending(user_id=user.id, redis=redis)
+    await save_last_action(
+        user_id=user.id,
+        action_type="log_transfer",
+        record_id=transfer_id,
+        redis=redis,
+    )
+    return transfer_id
 
 
 async def _commit_goal(
@@ -196,12 +247,28 @@ async def _commit_attach_expense(
     kind = payload["obligation_kind"]
     obligation_id = uuid.UUID(payload["obligation_id"])
     envelope_id = uuid.UUID(payload["envelope_id"])
-    model = RecurringBill if kind == "bill" else Debt
-    row = (
-        await db.execute(
-            select(model).where(model.id == obligation_id, model.user_id == user.id)
-        )
-    ).scalar_one_or_none()
+    if kind == "card":
+        # Phase 7b B5: the candidate id is the credit ACCOUNT id; the terms
+        # row carries the envelope link (its minimum then reserves there).
+        from api.models.credit_card_terms import CreditCardTerms
+
+        row = (
+            await db.execute(
+                select(CreditCardTerms).where(
+                    CreditCardTerms.account_id == obligation_id,
+                    CreditCardTerms.user_id == user.id,
+                )
+            )
+        ).scalar_one_or_none()
+    else:
+        model = RecurringBill if kind == "bill" else Debt
+        row = (
+            await db.execute(
+                select(model).where(
+                    model.id == obligation_id, model.user_id == user.id
+                )
+            )
+        ).scalar_one_or_none()
     if row is None:
         raise ValueError("obligation not found for attach_expense")
     row.envelope_id = envelope_id

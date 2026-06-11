@@ -6,10 +6,11 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.account import Account
+from ..models.credit_card_terms import CreditCardTerms
 from ..models.transaction import Transaction
 from ..models.transfer import Transfer
 from ..schemas.transfers import TransferCreate
@@ -88,6 +89,23 @@ async def create_transfer_with_transactions(
     description = payload.notes or (
         f"Transferencia {from_account.name} -> {to_account.name}"
     )
+
+    # Phase 7b B5: when the destination card is attached to an envelope, stamp
+    # the DEBIT leg with that envelope so the card's reservation swaps to
+    # spend when paid (never both). This deterministic path is the ONLY one
+    # that puts an envelope_id on a transfer leg — PATCH still 409s legs.
+    debit_envelope_id = None
+    if to_account.account_type == "credit":
+        terms_envelope = (
+            await db.execute(
+                select(CreditCardTerms.envelope_id).where(
+                    CreditCardTerms.account_id == to_account.id,
+                    CreditCardTerms.user_id == user_id,
+                )
+            )
+        ).scalar_one_or_none()
+        debit_envelope_id = terms_envelope
+
     debit = Transaction(
         user_id=user_id,
         account_id=from_account.id,
@@ -99,6 +117,7 @@ async def create_transfer_with_transactions(
         category="transferencia",
         transaction_date=occurred_at.date(),
         source="manual",
+        envelope_id=debit_envelope_id,
     )
     credit = Transaction(
         user_id=user_id,
@@ -120,3 +139,28 @@ async def create_transfer_with_transactions(
         debit_transaction_id=debit.id,
         credit_transaction_id=credit.id,
     )
+
+
+async def delete_transfer_with_transactions(
+    db: AsyncSession, *, user_id: uuid.UUID, transfer_id: uuid.UUID
+) -> bool:
+    """Hard-delete a transfer and BOTH its legs — Phase 7b chat undo.
+
+    A mistaken transfer must remove both rows, otherwise one account keeps a
+    phantom movement. Returns False when the transfer doesn't exist or belongs
+    to another user (caller replies 'no encontré la última acción')."""
+    transfer = (
+        await db.execute(
+            select(Transfer).where(
+                Transfer.id == transfer_id, Transfer.user_id == user_id
+            )
+        )
+    ).scalar_one_or_none()
+    if transfer is None:
+        return False
+    await db.execute(
+        delete(Transaction).where(Transaction.transfer_id == transfer.id)
+    )
+    await db.delete(transfer)
+    await db.commit()
+    return True

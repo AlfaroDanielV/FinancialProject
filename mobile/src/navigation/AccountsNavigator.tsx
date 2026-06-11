@@ -3,12 +3,15 @@ import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { AccountsScreen } from "../screens/AccountsScreen";
 import { AccountDetailScreen } from "../screens/AccountDetailScreen";
 import { AccountCreateScreen } from "../screens/AccountCreateScreen";
+import { CardAccountCreateScreen } from "../screens/CardAccountCreateScreen";
+import type { CardPrefill } from "../api/chat";
 import { Colors, FontSize } from "../theme";
 
 export type AccountsStackParamList = {
   AccountsList: undefined;
   AccountDetail: { accountId: string };
   AccountCreate: undefined;
+  CardCreate: { prefill?: CardPrefill } | undefined;
 };
 
 const Stack = createNativeStackNavigator<AccountsStackParamList>();
@@ -42,6 +45,11 @@ export function AccountsNavigator() {
         name="AccountCreate"
         component={AccountCreateScreen}
         options={{ title: "Nueva cuenta", presentation: "modal" }}
+      />
+      <Stack.Screen
+        name="CardCreate"
+        component={CardAccountCreateScreen}
+        options={{ title: "Registrar tarjeta", presentation: "modal" }}
       />
     </Stack.Navigator>
   );

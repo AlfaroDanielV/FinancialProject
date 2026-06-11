@@ -267,6 +267,23 @@ CREATE_DEBT_BASIC = RecordedLLMResponse(
 )
 
 
+# ── Phase 7b. Card payment as a transfer ──────────────────────────────────────
+# Input: "pagué la tarjeta, 80 mil"
+LOG_TRANSFER_CARD = RecordedLLMResponse(
+    tool_input={
+        "intent": "log_transfer",
+        "dispatcher": "write",
+        "amount": 80000,
+        "transfer_from_hint": None,
+        "transfer_to_hint": "tarjeta",
+        "confidence": 0.92,
+    },
+    input_tokens=452,
+    output_tokens=44,
+    cache_read_input_tokens=380,
+)
+
+
 # ── 6. Low-confidence ambiguous input (schema-sharpening case) ────────────────
 # Input: "algo de 1000 por ahí"
 LOW_CONFIDENCE_AMBIGUOUS = RecordedLLMResponse(

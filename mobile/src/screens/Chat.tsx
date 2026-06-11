@@ -25,6 +25,7 @@ import {
   postChatMessage,
   resetChat,
   type AssignEnvelopePrefill,
+  type CardPrefill,
   type ChatButton,
   type ChatUrlButton,
   type DebtPrefill,
@@ -90,6 +91,12 @@ export function ChatScreen() {
     if (screen === "debt_create") {
       nav.navigate("DebtCreate", {
         prefill: data.open_screen!.prefill as DebtPrefill,
+      });
+    }
+    // Phase 7b: credit-card creation follows the same handoff pattern.
+    if (screen === "card_create") {
+      nav.navigate("CardCreate", {
+        prefill: data.open_screen!.prefill as CardPrefill,
       });
     }
   };

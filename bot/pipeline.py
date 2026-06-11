@@ -515,6 +515,26 @@ async def _handle_confirm(
         )
         return reply
 
+    if pending.action_type == "log_transfer":
+        # Phase 7b: a transfer commits two legs through the shared transfers
+        # service. No assign_envelope hint — legs are excluded from envelope
+        # spend math (paying the card is not new consumption).
+        await commit_pending(user=user, pending=pending, db=db, redis=redis)
+        payload = pending.payload
+        amt = format_amount(Decimal(payload["amount"]), payload["currency"])
+        tmpl = (
+            messages_es.CARD_PAYMENT_COMMITTED
+            if payload.get("is_card_payment")
+            else messages_es.TRANSFER_COMMITTED
+        )
+        return BotReply(
+            text=tmpl.format(
+                amount=amt,
+                from_name=payload.get("from_account_name", ""),
+                to_name=payload.get("to_account_name", ""),
+            )
+        )
+
     txn_id = await commit_pending(user=user, pending=pending, db=db, redis=redis)
     amt_decimal = Decimal(pending.payload["amount"])
     currency = pending.payload["currency"]

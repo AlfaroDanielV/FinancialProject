@@ -30,10 +30,12 @@ Reglas duras:
 2. Intents:
    - "log_expense": el usuario registra un gasto ("gasté", "pagué", "compré", "me cobraron").
    - "log_income": el usuario registra un ingreso que YA ocurrió, una sola vez ("me pagaron", "entró", "recibí", "me transfirieron").
+   - "log_transfer": el usuario movió plata ENTRE SUS PROPIAS CUENTAS, incluyendo PAGAR SU TARJETA de crédito ("pagué la tarjeta", "le aboné 80 mil a la tarjeta", "pasé 100 mil de ahorros a la corriente", "transferí de la BAC a la BCR"). Llená transfer_from_hint (cuenta origen) y transfer_to_hint (cuenta destino) con lo que diga; si solo menciona una, dejá la otra en null. OJO: pagar a un COMERCIO o a OTRA persona es log_expense; pagar/abonar a SU tarjeta o mover entre SUS cuentas es log_transfer, NUNCA log_expense.
    - "create_goal": el usuario quiere CREAR una meta de ahorro ("quiero ahorrar X para Y", "creá una meta", "meta de ahorro", "quiero juntar X"). NO es un ingreso ni un gasto — es una intención a futuro.
    - "create_income": el usuario quiere CONFIGURAR un ingreso RECURRENTE ("me pagan X cada quincena", "mi salario es X mensual", "configurá mi salario", "registrá mi ingreso recurrente"). La señal clave es la repetición ("cada", "mensual", "quincenal", "todos los meses"). Un pago único es log_income, NO create_income.
    - "create_bill": el usuario quiere CONFIGURAR un gasto fijo / recibo RECURRENTE ("el recibo de luz de 18 mil cada mes", "pago de internet 25 mil mensual", "configurá el alquiler de 300 mil", "agregá la factura del agua"). La señal clave es la repetición de un cobro. Una compra única es log_expense, NO create_bill.
    - "create_debt": el usuario quiere REGISTRAR un préstamo / deuda / crédito que YA decidió o ya tiene ("tengo un préstamo de 5 millones a 5 años con el BAC", "saqué un crédito de carro", "debo 3 millones al Banco Nacional", "registrá mi hipoteca"). La señal clave es REGISTRAR un saldo prestado ("registrá", "saqué", "tengo", "debo"). Un pago único de una deuda es log_expense, NO create_debt. OJO: si el usuario está EXPLORANDO o preguntando si le conviene financiar ("¿me conviene financiar?", "¿cuánto sería la cuota si lo financio?", "si pido un préstamo a 20 años al 45%", "si doy una prima y financio el resto") eso NO es create_debt — es una consulta de análisis (intent="query"). create_debt es solo cuando ya decidió y pide registrarlo.
+   - "create_card": el usuario quiere REGISTRAR su TARJETA DE CRÉDITO como cuenta ("registrá mi tarjeta del BAC", "tengo una tarjeta de crédito con límite de 2 millones", "agregá mi Visa Promerica"). OJO la diferencia con create_debt: una TARJETA DE CRÉDITO es create_card; un préstamo / crédito de carro / hipoteca / crédito personal es create_debt. Pagar la tarjeta es log_transfer, y una compra CON la tarjeta es log_expense.
    - "attach_expense": el usuario quiere ASIGNAR un gasto fijo / recibo / deuda YA EXISTENTE a un sobre ("poné el recibo del ICE en el sobre Servicios", "asigná la cuota del préstamo al sobre Deudas", "meté la factura de internet en el sobre Casa"). Llená expense_hint con el nombre del gasto o deuda y envelope_hint con el nombre del sobre. NO es create_bill (eso configura uno nuevo) ni log_expense (eso registra una compra única).
    - "query": cualquier pregunta o solicitud de informacion de solo lectura. Incluye análisis de accesibilidad y simulación de financiamiento sin registrar nada ("¿me alcanza para X?", "¿cuánto sería la cuota de un préstamo de X a N años al T%?", "¿me conviene financiar este carro?").
    - "confirm_yes": confirma un paso previo ("sí", "dale", "ok", "correcto", "confirmá").
@@ -49,6 +51,8 @@ Reglas duras:
    - No subclasifiques queries en el intent. Para todas usa intent="query".
    - Si el usuario intenta escribir o registrar algo, usa dispatcher="write".
    - Crear una meta ("create_goal"), un ingreso recurrente ("create_income"), un gasto fijo ("create_bill") o registrar una deuda ("create_debt") también van a dispatcher="write".
+   - Una transferencia entre cuentas propias o un pago de tarjeta ("log_transfer") también va a dispatcher="write".
+   - Registrar una tarjeta de crédito ("create_card") también va a dispatcher="write".
    - Si el usuario da un comando, confirma, cancela, pide ayuda, deshace o el mensaje no tiene sentido,
      usa dispatcher="control".
 
@@ -128,6 +132,20 @@ salud / ocio / vivienda / deudas / otros). Recibos de servicios → "servicios",
    - NO uses amount/merchant para deudas; usá los campos debt_*.
    - IMPORTANTE: aunque NO dé monto ni ningún detalle, si pide REGISTRAR o dice que SACÓ / TIENE / DEBE un préstamo o deuda, ES create_debt con confianza ALTA (≥0.9). No bajés la confianza por falta de datos — la extracción es ligera y el formulario junta el resto. "Saqué un préstamo", "necesito registrar un préstamo", "quiero registrar una deuda" → create_debt con todos los campos debt_* en null.
 
+14. Tarjetas de crédito (solo cuando intent="create_card"):
+   - La extracción es LIGERA — el formulario nativo junta los términos (tasa, mínimo, corte) o los lee del estado de cuenta en PDF.
+   - card_name: nombre corto de la tarjeta si lo da ("Visa BAC", "tarjeta Promerica"). Si no, null.
+   - card_issuer: el banco emisor tal cual ("BAC", "Promerica"). Si no lo dice, null.
+   - card_limit: el límite de crédito como magnitud positiva ("2 millones" → 2000000). Si no lo dice, null.
+   - currency: CRC o USD si lo dice; si no, null.
+   - Aunque NO dé ningún detalle, si pide registrar su tarjeta de crédito ES create_card con confianza alta (≥0.9).
+
+15. Transferencias / pagos de tarjeta (solo cuando intent="log_transfer"):
+   - amount + currency: el monto movido (magnitud positiva; reusá los mismos campos).
+   - transfer_from_hint: la cuenta de DONDE sale la plata, tal cual la diga ("ahorros", "BCR", "la corriente"). Si no la dice, null — el servidor pregunta.
+   - transfer_to_hint: la cuenta a DONDE llega, tal cual ("la tarjeta", "BAC Visa", "ahorros"). "Pagué la tarjeta" → transfer_to_hint="tarjeta".
+   - NO uses account_hint ni merchant para transferencias; usá los campos transfer_*.
+
 Ejemplos:
 - Usuario: "gasté 5000 en el super"
   Tool input: {"intent":"log_expense","dispatcher":"write","amount":5000,"currency":null,"merchant":"super","category_hint":"supermercado","account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.95,"raw_notes":null}
@@ -161,8 +179,22 @@ Ejemplos:
   Tool input: {"intent":"create_debt","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"debt_name":null,"debt_principal":null,"debt_interest_rate":null,"debt_term_months":null,"debt_lender":null,"confidence":0.9,"raw_notes":null}
 - Usuario: "quiero registrar una deuda"
   Tool input: {"intent":"create_debt","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"debt_name":null,"debt_principal":null,"debt_interest_rate":null,"debt_term_months":null,"debt_lender":null,"confidence":0.9,"raw_notes":null}
+- Usuario: "registrá mi tarjeta de crédito del BAC, el límite es 2 millones"
+  Tool input: {"intent":"create_card","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"card_name":null,"card_issuer":"BAC","card_limit":2000000,"confidence":0.92,"raw_notes":null}
+- Usuario: "quiero agregar mi tarjeta de crédito"
+  Tool input: {"intent":"create_card","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"card_name":null,"card_issuer":null,"card_limit":null,"confidence":0.9,"raw_notes":null}
+- Usuario: "pagué la tarjeta, 80 mil"
+  Tool input: {"intent":"log_transfer","dispatcher":"write","amount":80000,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"transfer_from_hint":null,"transfer_to_hint":"tarjeta","occurred_at_hint":null,"query_window":null,"confidence":0.92,"raw_notes":null}
+- Usuario: "pasé 100 mil de ahorros a la corriente"
+  Tool input: {"intent":"log_transfer","dispatcher":"write","amount":100000,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"transfer_from_hint":"ahorros","transfer_to_hint":"corriente","occurred_at_hint":null,"query_window":null,"confidence":0.93,"raw_notes":null}
+- Usuario: "le aboné 50 mil a la Visa desde el BCR ayer"
+  Tool input: {"intent":"log_transfer","dispatcher":"write","amount":50000,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"transfer_from_hint":"BCR","transfer_to_hint":"Visa","occurred_at_hint":"ayer","query_window":null,"confidence":0.92,"raw_notes":null}
+- Usuario: "pagué 12 mil de Netflix" (pago a un comercio, NO transferencia)
+  Tool input: {"intent":"log_expense","dispatcher":"write","amount":12000,"currency":null,"merchant":"Netflix","category_hint":"ocio","account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.93,"raw_notes":null}
 - Usuario: "poné el recibo del ICE en el sobre Servicios"
   Tool input: {"intent":"attach_expense","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"expense_hint":"ICE","envelope_hint":"Servicios","confidence":0.93,"raw_notes":null}
+- Usuario: "meté el pago de la tarjeta en el sobre Deudas"
+  Tool input: {"intent":"attach_expense","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"expense_hint":"tarjeta","envelope_hint":"Deudas","confidence":0.92,"raw_notes":null}
 - Usuario: "si pido un préstamo para la prima y lo financio a 20 años con una tasa del 45%" (está explorando, NO registrando)
   Tool input: {"intent":"query","dispatcher":"query","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.88,"raw_notes":"explora financiar: 20 años al 45%"}
 - Usuario: "cuánto sería la cuota de un préstamo de 50 millones a 20 años al 45%"
@@ -186,10 +218,12 @@ TOOL_DEFINITION = {
                 "enum": [
                     "log_expense",
                     "log_income",
+                    "log_transfer",
                     "create_goal",
                     "create_income",
                     "create_bill",
                     "create_debt",
+                    "create_card",
                     "attach_expense",
                     "query",
                     "confirm_yes",
@@ -233,6 +267,22 @@ TOOL_DEFINITION = {
                 "description": (
                     "Free-form account mention ('BAC', 'efectivo', "
                     "'tarjeta'). Not a DB id."
+                ),
+            },
+            "transfer_from_hint": {
+                "type": ["string", "null"],
+                "maxLength": 100,
+                "description": (
+                    "log_transfer only. Source account as the user said it "
+                    "('ahorros', 'BCR'). Null if not mentioned — the server asks."
+                ),
+            },
+            "transfer_to_hint": {
+                "type": ["string", "null"],
+                "maxLength": 100,
+                "description": (
+                    "log_transfer only. Destination account as the user said it "
+                    "('tarjeta', 'BAC Visa'). 'Pagué la tarjeta' → 'tarjeta'."
                 ),
             },
             "occurred_at_hint": {
@@ -345,6 +395,28 @@ TOOL_DEFINITION = {
                 "description": (
                     "Lender/bank as the user said it ('BAC', 'Banco Nacional'). "
                     "create_debt only."
+                ),
+            },
+            "card_name": {
+                "type": ["string", "null"],
+                "maxLength": 255,
+                "description": (
+                    "Short card name as the user said it ('Visa BAC'). "
+                    "create_card only."
+                ),
+            },
+            "card_issuer": {
+                "type": ["string", "null"],
+                "maxLength": 100,
+                "description": (
+                    "Issuing bank ('BAC', 'Promerica'). create_card only."
+                ),
+            },
+            "card_limit": {
+                "type": ["number", "null"],
+                "description": (
+                    "Positive credit limit ('2 millones' → 2000000). "
+                    "create_card only."
                 ),
             },
             "expense_hint": {

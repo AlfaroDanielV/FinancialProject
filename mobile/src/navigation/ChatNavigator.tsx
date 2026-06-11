@@ -7,13 +7,15 @@
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 
 import { ChatScreen } from "../screens/Chat";
+import { CardAccountCreateScreen } from "../screens/CardAccountCreateScreen";
 import { DebtCreateScreen } from "../screens/DebtCreateScreen";
-import type { DebtPrefill } from "../api/chat";
+import type { CardPrefill, DebtPrefill } from "../api/chat";
 import { Colors, FontSize } from "../theme";
 
 export type ChatStackParamList = {
   Chat: undefined;
   DebtCreate: { prefill?: DebtPrefill } | undefined;
+  CardCreate: { prefill?: CardPrefill } | undefined;
 };
 
 const Stack = createNativeStackNavigator<ChatStackParamList>();
@@ -38,6 +40,11 @@ export function ChatNavigator() {
         name="DebtCreate"
         component={DebtCreateScreen}
         options={{ title: "Registrar préstamo", presentation: "modal" }}
+      />
+      <Stack.Screen
+        name="CardCreate"
+        component={CardAccountCreateScreen}
+        options={{ title: "Registrar tarjeta", presentation: "modal" }}
       />
     </Stack.Navigator>
   );
