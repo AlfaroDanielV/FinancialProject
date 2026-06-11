@@ -39,6 +39,7 @@ async def upcoming_feed(
             category=e.category,
             provider=e.provider,
             recurring_bill_id=e.recurring_bill_id,
+            debt_id=e.debt_id,
             is_overdue=e.is_overdue,
         )
         for e in entries

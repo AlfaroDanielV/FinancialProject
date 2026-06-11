@@ -15,6 +15,7 @@ from api.models.llm_query_dispatch import LLMQueryDispatch
 from api.models.user import User
 from api.redis_client import get_redis
 from api.services.budget import assert_within_budget
+from api.services.envelopes import list_unattached_obligations
 from api.services.insights.extractor import (
     compact_transaction_context_from_tools,
     enqueue_insight_extraction,
@@ -74,6 +75,44 @@ def get_query_llm_client() -> AnthropicQueryClient:
 def set_query_llm_client(client: AnthropicQueryClient | None) -> None:
     global _query_client
     _query_client = client
+
+
+# B4 — deterministic "tenés gastos fijos sin sobre" suggestion. Fired by the
+# dispatcher (NOT the LLM) after a cashflow tool runs and finds obligations with
+# no envelope, rate-limited once per conversation window. The LLM never decides
+# whether to suggest; it only narrates its own answer.
+_CASHFLOW_TOOLS = frozenset({"assess_purchase", "get_savings_capacity", "assess_goal"})
+_ATTACH_SUGGEST_KEY = "chat:fixed_expense_suggested:{user_id}"
+_ATTACH_SUGGEST_TTL_S = 3600  # ~ one conversation window; expires on its own
+
+
+async def _maybe_append_attach_suggestion(
+    text: str, *, db: AsyncSession, user: User, redis, tools_used: list
+) -> str:
+    """Append the canned attach suggestion to the reply when (a) the answer used
+    a cashflow tool, (b) the user has unattached fixed expenses, and (c) we
+    haven't already suggested this conversation. Deterministic + rate-limited.
+
+    ``tools_used`` is the dispatcher's list of per-tool usage dicts (each carries
+    a ``name`` key), not a list of names."""
+    used_names = {
+        (t.get("name") if isinstance(t, dict) else t) for t in (tools_used or [])
+    }
+    if not (used_names & _CASHFLOW_TOOLS):
+        return text
+    key = _ATTACH_SUGGEST_KEY.format(user_id=user.id)
+    if await redis.get(key):
+        return text
+    unattached = await list_unattached_obligations(db, user_id=user.id)
+    if not unattached:
+        return text
+    await redis.setex(key, _ATTACH_SUGGEST_TTL_S, "1")
+    names = ", ".join(name for name, _amount, _src in unattached[:5])
+    return (
+        f"{text}\n\nDe paso: tenés {len(unattached)} gasto(s) fijo(s) sin sobre "
+        f"asignado ({names}). Asignalos a un sobre para que tu presupuesto refleje "
+        "tu situación real."
+    )
 
 
 async def handle(
@@ -229,6 +268,11 @@ async def run_dispatch(
                 ),
                 source_event="post_query",
                 origin_dispatch_id=row.id,
+            )
+            # B4: ephemeral attach nudge — appended to the RETURNED text only,
+            # never persisted to history (so the LLM doesn't echo it next turn).
+            text = await _maybe_append_attach_suggestion(
+                text, db=db, user=user, redis=redis, tools_used=result.tools_used
             )
         return DispatchOutcome(
             text=text,

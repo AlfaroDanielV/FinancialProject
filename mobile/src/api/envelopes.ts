@@ -61,7 +61,11 @@ export interface EnvelopeSummaryItem {
   limit_amount: number;
   spent: number; // rolled-up (this node + descendants) — the bar value
   direct_spent: number; // only what's tagged directly to this node
-  remaining: number;
+  // B2 fixed-expense attachment: `reserved` = attached bills/debts unpaid this
+  // cycle; `available` = limit − reserved − spent (the truly free amount).
+  reserved: number;
+  available: number;
+  remaining: number; // limit − spent (back-compat)
   pct: number; // rolled-up spent / limit; clamp in UI; > 1 = over
   over_limit: boolean;
   // Soft allocation: how this node's budget is split across direct children.
@@ -114,20 +118,37 @@ export const ENVELOPE_CLASS_COLORS: Record<EnvelopeClass, string> = {
 export const ENVELOPE_LOW_THRESHOLD = 0.05;
 
 export interface EnvelopeProgress {
-  remaining: number; // limit − spent, in the envelope's currency (may be < 0)
-  fraction: number; // money left as 0..1 (clamped) — the bar fill width
-  low: boolean; // remaining ≤ 5% of limit → red
+  available: number; // limit − reserved − spent (the truly free money) — bar fill
+  remaining: number; // back-compat alias for `available` (existing callers)
+  reserved: number; // attached fixed expenses, unpaid this cycle
+  spent: number; // actual spend
+  fraction: number; // available / limit as 0..1 (clamped) — the green segment
+  reservedFraction: number; // reserved / limit as 0..1 — the reserved segment
+  spentFraction: number; // spent / limit as 0..1 — the spent segment
+  low: boolean; // available ≤ 5% of limit → red
 }
 
 export function envelopeProgress(
-  item: Pick<EnvelopeSummaryItem, "limit_amount" | "remaining">
+  item: Pick<EnvelopeSummaryItem, "limit_amount" | "remaining"> &
+    Partial<Pick<EnvelopeSummaryItem, "spent" | "reserved" | "available">>
 ): EnvelopeProgress {
   const limit = item.limit_amount;
-  const remaining = item.remaining;
-  const fraction = limit > 0 ? Math.max(0, Math.min(remaining / limit, 1)) : 0;
-  const low =
-    limit > 0 ? remaining <= ENVELOPE_LOW_THRESHOLD * limit : remaining <= 0;
-  return { remaining, fraction, low };
+  const reserved = item.reserved ?? 0;
+  const spent = item.spent ?? 0;
+  // Back-compat: callers that only pass `remaining` (limit − spent) get that as
+  // `available` (no reserved segment) until they pass the full summary item.
+  const available = item.available ?? item.remaining;
+  const clamp = (v: number) => (limit > 0 ? Math.max(0, Math.min(v / limit, 1)) : 0);
+  return {
+    available,
+    remaining: available,
+    reserved,
+    spent,
+    fraction: clamp(available),
+    reservedFraction: clamp(reserved),
+    spentFraction: clamp(spent),
+    low: limit > 0 ? available <= ENVELOPE_LOW_THRESHOLD * limit : available <= 0,
+  };
 }
 
 // ── nesting (Phase 7a) ───────────────────────────────────────────────────────

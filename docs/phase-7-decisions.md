@@ -320,7 +320,9 @@ are unchanged.
 - `under_coverage` → *que tus sobres cubran tus deudas + gastos fijos*
   (`allocations < debt + bills`; committed understates reality → surplus inflated).
   A hard gate — a `max(envelopes, debts+bills)` floor was rejected (over-states in
-  the disjoint case).
+  the disjoint case). **Superseded 2026-06-10**: the aggregate comparison became
+  **per-item** — `under_coverage ⟺ ∃ active bill/debt with `envelope_id IS NULL``,
+  with the copy naming the items. See *Decision - Fixed-Expense Attachment*.
 
 **Sub-decisions (operator, 2026-06-09).**
 - **A — KEEP the 80% margin**, now on `surplus`. Changing the verdict base AND the

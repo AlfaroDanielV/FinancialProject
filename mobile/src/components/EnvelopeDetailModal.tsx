@@ -6,6 +6,10 @@
  * a per-row toggle to assign / unassign the transaction to THIS envelope (a
  * transaction belongs to at most one envelope, so toggling on reassigns from
  * any other). Assignment goes through PATCH /transactions/{id}{envelope_id}.
+ *
+ * Fixed expenses (recurring bills + debts) attach/detach symmetrically:
+ * "Gastos fijos en este sobre" rows offer "Quitar" (PATCH envelope_id: null),
+ * "Gastos fijos sin sobre" rows offer "Asignar aquí" (root only).
  */
 import { useEffect, useState } from "react";
 import {
@@ -30,6 +34,8 @@ import {
   type EnvelopeSummaryItem,
 } from "../api/envelopes";
 import { fetchMonthExpenses, type TransactionResponse } from "../api/transactions";
+import { attachBillToEnvelope, fetchRecurringBills } from "../api/bills";
+import { attachDebtToEnvelope, fetchDebts } from "../api/debts";
 import { formatMoney } from "../lib/format";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
 import { EnvelopeEditModal } from "./EnvelopeEditModal";
@@ -78,6 +84,55 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
     },
   });
 
+  // Fixed expenses (bills + debts) with their envelope link — split in render
+  // into "unattached" (offered for one-tap attachment to THIS envelope) and
+  // "attached here" (offered for detach). The reservation appears live (B2).
+  const obligationsQuery = useQuery({
+    queryKey: ["fixed-expenses"],
+    enabled: visible && item != null,
+    queryFn: async () => {
+      const [bills, debts] = await Promise.all([fetchRecurringBills(), fetchDebts()]);
+      const out: {
+        kind: "bill" | "debt";
+        id: string;
+        name: string;
+        amount: number | null;
+        envelope_id: string | null;
+      }[] = [];
+      for (const b of bills)
+        out.push({
+          kind: "bill",
+          id: b.id,
+          name: b.name,
+          amount: b.amount_expected,
+          envelope_id: b.envelope_id,
+        });
+      for (const d of debts)
+        out.push({
+          kind: "debt",
+          id: d.id,
+          name: d.name,
+          amount: d.minimum_payment,
+          envelope_id: d.envelope_id,
+        });
+      return out;
+    },
+  });
+
+  const attach = useMutation({
+    // `envelopeId: null` detaches (PATCH clears the FK server-side).
+    mutationFn: async ({ kind, id, envelopeId }: { kind: "bill" | "debt"; id: string; envelopeId: string | null }) => {
+      if (kind === "bill") await attachBillToEnvelope(id, envelopeId);
+      else await attachDebtToEnvelope(id, envelopeId);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["envelopes"] });
+      void qc.invalidateQueries({ queryKey: ["fixed-expenses"] });
+      void qc.invalidateQueries({ queryKey: ["bills"] });
+      void qc.invalidateQueries({ queryKey: ["debts"] });
+    },
+  });
+
   if (item == null) return null;
 
   const all = summaryQuery.data?.envelopes ?? [];
@@ -91,6 +146,12 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
   // Money-left bar: starts full, drains with each expense, red in the last 5%.
   const { remaining, fraction, low } = envelopeProgress(active);
   const color = ENVELOPE_CLASS_COLORS[active.envelope_class];
+
+  const obligations = obligationsQuery.data ?? [];
+  const unattached = obligations.filter((o) => o.envelope_id == null);
+  // Attached rows show at ANY depth (chat attach can target a sub-sobre),
+  // so detach is always reachable from the node that holds the reservation.
+  const attachedHere = obligations.filter((o) => o.envelope_id === active.id);
 
   const goBack = () => setStack((s) => s.slice(0, -1));
 
@@ -149,6 +210,68 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
           <Feather name="plus" size={14} color={Colors.accent} />
           <Text style={styles.subBtnText}>Sub-sobre</Text>
         </Pressable>
+      )}
+
+      {attachedHere.length > 0 && (
+        <>
+          <Text style={styles.listTitle}>Gastos fijos en este sobre</Text>
+          {attachedHere.map((o) => (
+            <View key={`${o.kind}-${o.id}`} style={styles.attachRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.attachName} numberOfLines={1}>
+                  {o.name}
+                </Text>
+                <Text style={styles.attachMeta}>
+                  {o.kind === "debt" ? "Cuota" : "Recibo"}
+                  {o.amount != null
+                    ? ` · ${formatMoney(o.amount, active.currency)}`
+                    : ""}
+                </Text>
+              </View>
+              <Pressable
+                onPress={() =>
+                  attach.mutate({ kind: o.kind, id: o.id, envelopeId: null })
+                }
+                disabled={attach.isPending}
+                style={({ pressed }) => [styles.detachBtn, pressed && { opacity: 0.7 }]}
+              >
+                <Feather name="x" size={14} color={Colors.textSecondary} />
+                <Text style={styles.detachBtnText}>Quitar</Text>
+              </Pressable>
+            </View>
+          ))}
+        </>
+      )}
+
+      {atRoot && unattached.length > 0 && (
+        <>
+          <Text style={styles.listTitle}>Gastos fijos sin sobre</Text>
+          {unattached.map((o) => (
+            <View key={`${o.kind}-${o.id}`} style={styles.attachRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.attachName} numberOfLines={1}>
+                  {o.name}
+                </Text>
+                <Text style={styles.attachMeta}>
+                  {o.kind === "debt" ? "Cuota" : "Recibo"}
+                  {o.amount != null
+                    ? ` · ${formatMoney(o.amount, active.currency)}`
+                    : ""}
+                </Text>
+              </View>
+              <Pressable
+                onPress={() =>
+                  attach.mutate({ kind: o.kind, id: o.id, envelopeId: active.id })
+                }
+                disabled={attach.isPending}
+                style={({ pressed }) => [styles.attachBtn, pressed && { opacity: 0.7 }]}
+              >
+                <Feather name="plus" size={14} color={Colors.accent} />
+                <Text style={styles.attachBtnText}>Asignar aquí</Text>
+              </Pressable>
+            </View>
+          ))}
+        </>
       )}
 
       <Text style={styles.listTitle}>Gastos de este mes</Text>
@@ -385,6 +508,37 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   subBtnText: { color: Colors.accent, fontSize: FontSize.sm, fontWeight: "600" },
+  attachRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+  },
+  attachName: { fontSize: FontSize.sm, color: Colors.textPrimary, fontWeight: "500" },
+  attachMeta: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: 2 },
+  attachBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    borderWidth: 1,
+    borderColor: Colors.accent,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+  },
+  attachBtnText: { color: Colors.accent, fontSize: FontSize.xs, fontWeight: "600" },
+  detachBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+  },
+  detachBtnText: { color: Colors.textSecondary, fontSize: FontSize.xs, fontWeight: "600" },
 
   headerBtn: { padding: 6 },
   childRow: {

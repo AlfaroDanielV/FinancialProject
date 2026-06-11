@@ -1140,6 +1140,53 @@ slice); mobile `npx tsc --noEmit` clean. `alembic current → 0024 (head)`.
 
 ---
 
+## Fixed-Expense Attachment (post-7a, 2026-06-10)
+
+A recurring bill / debt attaches to an envelope so its expected amount is
+**reserved** inside the envelope and the `under_coverage` gate becomes per-item.
+Backend + native data-layer **code-complete; on-device sign-off pending**.
+Decision: `~/Finance_project/30_Projects/Finance-Agent/05_Decisions/Decision -
+Fixed-Expense Attachment.md`.
+
+- **Schema (migration `0026`)**: nullable `recurring_bills.envelope_id` +
+  `debts.envelope_id` FK → `envelopes.id` `ON DELETE SET NULL` (deleting an
+  envelope detaches, never deletes the obligation). Migration `0027` adds
+  `notification_events.debt_id` + relaxes the "exactly one target" CHECK.
+- **Attach/detach**: `PATCH /recurring-bills/{id}` + `PATCH /debts/{id}` accept
+  `envelope_id` (validated active/same-user/non-archived via
+  `envelopes.py::is_valid_envelope_target`); chat `Intent.ATTACH_EXPENSE` ("poné
+  el recibo del ICE en el sobre Servicios") proposes → commits. Soft-archiving an
+  envelope detaches its obligations explicitly in `archive_subtree` (the FK only
+  fires on hard delete).
+- **Reservation (compute-live, B2)**: `compute_envelope_summary` adds
+  `reserved` + `available = limit − reserved − spent`. An attached obligation
+  reserves its expected amount while **unpaid this cycle** (bill released when its
+  current-month occurrence is paid; debt released when a `DebtPayment` lands this
+  month; variable bills reserve 0) — once paid, the actual txn counts as spend
+  instead, **never both**. Mark-paid / debt-payment propagate the obligation's
+  `envelope_id` onto the payment transaction. No stored balance.
+- **`committed_outflows` UNCHANGED** — Model A holds; attachment only moves the
+  per-item gate, never the top line. A byte-identical regression locks this.
+- **Per-item gate (B3)**: `under_coverage ⟺ ∃ active bill/debt with envelope_id
+  IS NULL`. `MonthlyCashflow.unattached_obligations` (name/amount/source) drives
+  `gate_reason` + the named copy. The aggregate `allocations < debt + bills`
+  comparison is gone.
+- **Suggestion (B4)**: the query **dispatcher** (not the LLM) appends a
+  once-per-conversation voseo nudge to attach obligations when a cashflow tool
+  finds unattached ones.
+- **Debt projection (B5)**: a debt's cuota surfaces as a fixed expense in
+  `recurrence.get_upcoming_feed` (`item_type="debt"`) + notifications, derived at
+  read time from `payment_due_day` + `minimum_payment` — **no `RecurringBill`
+  row**, so a paid-off / archived debt stops projecting with zero cleanup.
+  `debt_payments` and `recurring_bills` sums stay disjoint.
+
+**Verification:** `tests/test_fixed_expense_attachment.py`,
+`test_envelope_reservations.py`, `test_phase7_per_item_gate.py`,
+`test_phase7_attach_suggestion.py`, `test_phase7_debt_projection.py` + the full
+Phase-7 regression migrated and green; mobile `tsc --noEmit` clean. `alembic
+current → 0027 (head)`. **Remaining polish:** symmetric bills/debts-screen attach
+entry point; "cuota de préstamo" label on debt feed entries.
+
 ## CR Salary Calculator + Ingresos CRUD (post-7a, 2026-06-09)
 
 Deterministic Costa Rican net-pay calculator + full Ingresos CRUD. Backend +

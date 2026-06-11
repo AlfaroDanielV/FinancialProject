@@ -24,7 +24,7 @@ export interface DashboardSummary {
 }
 
 export interface UpcomingFeedItem {
-  item_type: "bill" | "event";
+  item_type: "bill" | "event" | "debt"; // "debt" = projected cuota (B5)
   id: string;
   date: string;
   title: string;
@@ -33,6 +33,7 @@ export interface UpcomingFeedItem {
   status: string | null;
   category: string | null;
   provider: string | null;
+  debt_id: string | null;
   is_overdue: boolean;
 }
 

@@ -18,6 +18,7 @@ export interface RecurringBillResponse {
   lead_time_days: number;
   is_active: boolean;
   notes: string | null;
+  envelope_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -104,6 +105,16 @@ export interface RecurringBillUpdate {
   account_id?: string | null;
   is_active?: boolean;
   notes?: string | null;
+  // Fixed-expense attachment: a UUID attaches to that sobre; null detaches.
+  envelope_id?: string | null;
+}
+
+/** Attach (or, with null, detach) a recurring bill to an envelope. */
+export function attachBillToEnvelope(
+  id: string,
+  envelopeId: string | null
+): Promise<RecurringBillResponse> {
+  return updateRecurringBill(id, { envelope_id: envelopeId });
 }
 
 export function newIdempotencyKey(): string {

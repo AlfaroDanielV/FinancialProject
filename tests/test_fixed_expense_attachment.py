@@ -2,9 +2,11 @@
 
 A recurring bill or debt can be attached to an envelope via a nullable FK; the
 reservation math (B2) and the per-item under_coverage gate (B3) build on this.
-Here we cover the FK round-trip, the attach-target validation, and the
+Here we cover the FK round-trip, the attach-target validation, the
 archive-detach (soft archive must explicitly null the link — the FK SET NULL
-only fires on a real DELETE).
+only fires on a real DELETE), and the explicit PATCH-detach contract
+(`envelope_id: null` clears the link; an unrelated PATCH leaves it intact —
+the `exclude_unset=True` semantics the mobile "Quitar" button relies on).
 """
 from __future__ import annotations
 
@@ -13,8 +15,12 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
+from api.database import get_db
+from api.dependencies import current_user
+from api.main import app
 from api.models.debt import Debt
 from api.models.envelope import Envelope
 from api.models.recurring_bill import RecurringBill
@@ -22,6 +28,26 @@ from api.models.user import User
 from api.services.envelopes import archive_subtree, is_valid_envelope_target
 from api.services.llm_extractor import ExtractionResult, Intent
 from api.services.telegram_dispatcher import AskClarification, ProposeAction, dispatch
+
+
+def _override(session, user_id):
+    class _StubUser:
+        def __init__(self) -> None:
+            self.id = user_id
+            self.status = "active"
+            self.currency = "CRC"
+            self.display_currency = "CRC"
+
+    async def _yield_session():
+        yield session
+
+    app.dependency_overrides[current_user] = lambda: _StubUser()
+    app.dependency_overrides[get_db] = _yield_session
+
+
+def _clear():
+    app.dependency_overrides.pop(current_user, None)
+    app.dependency_overrides.pop(get_db, None)
 
 
 def _attach_extraction(**overrides) -> ExtractionResult:
@@ -131,6 +157,58 @@ async def test_archive_envelope_detaches_obligations(db_with_user):
     assert debt.envelope_id is None
     assert await session.get(RecurringBill, bill.id) is not None
     assert await session.get(Debt, debt.id) is not None
+
+
+# ── PATCH detach (explicit envelope_id: null clears the link) ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_patch_detach_clears_link_and_unset_preserves_it(db_with_user):
+    session, user_id = db_with_user
+    env = _envelope(user_id)
+    session.add(env)
+    await session.flush()
+    bill = _bill(user_id, envelope_id=env.id)
+    debt = _debt(user_id, envelope_id=env.id)
+    session.add_all([bill, debt])
+    await session.commit()
+
+    _override(session, user_id)
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            # A PATCH that does NOT mention envelope_id must leave the
+            # attachment intact (exclude_unset contract).
+            untouched = await ac.patch(
+                f"/api/v1/recurring-bills/{bill.id}", json={"notes": "sin tocar"}
+            )
+            assert untouched.status_code == 200, untouched.text
+            await session.refresh(bill)
+            assert bill.envelope_id == env.id
+
+            # Explicit null detaches the bill…
+            detached = await ac.patch(
+                f"/api/v1/recurring-bills/{bill.id}", json={"envelope_id": None}
+            )
+            assert detached.status_code == 200, detached.text
+            assert detached.json()["envelope_id"] is None
+            await session.refresh(bill)
+            assert bill.envelope_id is None
+
+            # …and the debt.
+            detached_debt = await ac.patch(
+                f"/api/v1/debts/{debt.id}", json={"envelope_id": None}
+            )
+            assert detached_debt.status_code == 200, detached_debt.text
+            assert detached_debt.json()["envelope_id"] is None
+            await session.refresh(debt)
+            assert debt.envelope_id is None
+
+            # Detached, NOT deleted — both obligations survive.
+            assert await session.get(RecurringBill, bill.id) is not None
+            assert await session.get(Debt, debt.id) is not None
+    finally:
+        _clear()
 
 
 # ── chat ATTACH_EXPENSE dispatch (resolve by name → propose) ──────────────────

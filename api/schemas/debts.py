@@ -152,6 +152,7 @@ class DebtSummary(BaseModel):
     payment_due_day: int
     is_active: bool
     archived: bool = False
+    envelope_id: Optional[uuid.UUID] = None
 
     model_config = {"from_attributes": True}
 

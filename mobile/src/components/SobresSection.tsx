@@ -155,8 +155,9 @@ function EnvelopeRow({
   color: string;
   onPress: () => void;
 }) {
-  // Money-left bar: starts full, drains with each expense, red in the last 5%.
-  const { remaining, fraction, low } = envelopeProgress(item);
+  // Money-left bar: starts full, drains with each expense + each reservation,
+  // red in the last 5%. `remaining` is the free amount (limit − reserved − spent).
+  const { remaining, fraction, low, reserved } = envelopeProgress(item);
   // Sub-sobres indent under their parent; a parent (allocated > 0) shows how
   // much of its budget is still unsplit.
   const indent = (item.depth - 1) * 14;
@@ -190,6 +191,11 @@ function EnvelopeRow({
           ]}
         />
       </View>
+      {reserved > 0 && (
+        <Text style={styles.reservedNote}>
+          {formatMoney(reserved, currency)} reservado para gastos fijos
+        </Text>
+      )}
       {item.over_limit && (
         <Text style={styles.overText}>
           Te pasaste por {formatMoney(item.spent - item.limit_amount, currency)}
@@ -309,6 +315,11 @@ const styles = StyleSheet.create({
   allocNote: {
     fontSize: FontSize.xs,
     color: Colors.textMuted,
+  },
+  reservedNote: {
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    fontStyle: "italic",
   },
   incomeNote: {
     fontSize: FontSize.xs,

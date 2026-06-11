@@ -10,12 +10,14 @@ export interface DebtSummary {
   payment_due_day: number;
   is_active: boolean;
   archived: boolean;
+  envelope_id: string | null;
 }
 
 export interface DebtResponse {
   id: string;
   user_id: string;
   account_id: string | null;
+  envelope_id: string | null;
   name: string;
   debt_type: string;
   lender: string | null;
@@ -121,6 +123,16 @@ export interface DebtUpdate {
   minimum_payment?: number;
   is_active?: boolean;
   archived?: boolean;
+  // Fixed-expense attachment: a UUID attaches to that sobre; null detaches.
+  envelope_id?: string | null;
+}
+
+/** Attach (or, with null, detach) a debt's cuota to an envelope. */
+export function attachDebtToEnvelope(
+  id: string,
+  envelopeId: string | null
+): Promise<DebtResponse> {
+  return updateDebt(id, { envelope_id: envelopeId });
 }
 
 export const DEBT_TYPE_LABELS: Record<string, string> = {
