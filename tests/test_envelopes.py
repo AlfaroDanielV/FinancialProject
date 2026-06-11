@@ -302,6 +302,12 @@ async def test_summary_spend_math_and_exclusions(db_with_user):
             assert [c["envelope_class"] for c in body["by_class"]] == ["needs", "wants"]
 
             assert body["total_limit"] == 120000
+            # Grand totals (home-screen headline): derived from the same
+            # figures as the bars — 30000 needs + 25000 wants spent, nothing
+            # reserved, so available = 120000 − 55000.
+            assert body["total_spent"] == 55000
+            assert body["total_reserved"] == 0
+            assert body["total_available"] == 65000
             assert body["period"] == date.today().strftime("%Y-%m")
     finally:
         _clear()

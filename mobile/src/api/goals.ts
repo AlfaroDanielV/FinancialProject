@@ -72,11 +72,11 @@ export const STATUS_LABELS: Record<string, string> = {
 };
 
 export const STATUS_COLORS: Record<string, string> = {
-  active: "#4A6741",
-  paused: "#7A6228",
-  achieved: "#3D5C35",
-  abandoned: "#9C8B74",
-  completed: "#3D5C35",
+  active: "#3E7A57",
+  paused: "#8A6A1F",
+  achieved: "#2E7D54",
+  abandoned: "#8B8B83",
+  completed: "#2E7D54",
 };
 
 export async function fetchGoals(status?: string): Promise<GoalResponse[]> {

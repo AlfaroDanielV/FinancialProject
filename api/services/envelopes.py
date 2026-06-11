@@ -619,11 +619,24 @@ async def compute_envelope_summary(
     # comparable to monthly_income; summing item.limit_amount would mix CRC+USD
     # AND double-count children.
     total_limit = sum(sub.limit_total for sub in by_class)
+    # Grand totals for the home-screen headline, derived from the same figures
+    # the bars use (roots only, summary currency). Spend per class already counts
+    # every node's own spend once, so the class sum equals the root roll-ups.
+    # Reservations roll up the tree, so summing roots counts each one once.
+    total_spent = sum(sub.spent_total for sub in by_class)
+    total_reserved = sum(
+        float(convert(rolled_reserved.get(env.id, Decimal("0")), env.currency, currency))
+        for env in envelopes
+        if env.parent_id is None
+    )
     return EnvelopeSummaryResponse(
         period=period,
         currency=currency,
         envelopes=items,
         by_class=by_class,
         total_limit=round(total_limit, 2),
+        total_spent=round(total_spent, 2),
+        total_reserved=round(total_reserved, 2),
+        total_available=round(total_limit - total_reserved - total_spent, 2),
         monthly_income=float(income) if income is not None else None,
     )

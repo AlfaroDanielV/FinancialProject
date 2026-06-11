@@ -38,12 +38,12 @@ export const KIND_LABELS: Record<CategoryKind, string> = {
 };
 
 export const PRESET_COLORS = [
-  "#8B3A2A", // expense red
-  "#3D5C35", // income green
-  "#4A6741", // forest accent
-  "#7A6228", // ochre
-  "#6B5A3E", // warm brown
-  "#4A5A8A", // slate blue
+  "#B3402E", // brick red
+  "#2E7D54", // green
+  "#3E7A57", // sage
+  "#A8763B", // amber
+  "#33708A", // steel teal
+  "#6E5A93", // muted violet
 ];
 
 export async function fetchCategories(

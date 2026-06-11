@@ -1261,6 +1261,48 @@ Cascade`, `Decision - Credit Card Terms As Account Parameters (Not A Debt)`.
 la tarjeta") is `log_transfer`, never `log_expense`. The LLM never calculates
 card interest — `app/domain/credit` does.
 
+## Phase 7c (active) — UI 2.0: Neutral Theme + Money Clarity
+
+Operator ask 2026-06-11 ("too hard to understand my money; make the UI
+extremely professional/modern, German form-follows-function, subtle icons,
+minimal"). **Code-complete on branch `phase-7c-ui` — operator on-device
+sign-off pending.** Canonical: `docs/phase-7c-decisions.md`; vault
+`Decision - UI 2.0 - Neutral Theme & Money Clarity`.
+
+- **Theme v2 (token swap, no key renames):** `mobile/src/theme.ts` moves from
+  warm parchment to a neutral Rams palette — off-white `#F7F7F4` canvas, white
+  cards, graphite ink `#191917` text **and accent** (primary actions are ink,
+  not a brand hue). Color = meaning only: income green, expense/overdue brick
+  red (rule unchanged), ochre caution, class hues on envelope bars. Propagates
+  to every screen via tokens.
+- **Inter (scoped):** static TTFs vendored in `mobile/assets/fonts/`, loaded
+  via the existing `expo-font` dep in `App.tsx` (proceeds on system font if
+  loading fails). `theme.ts` exports `Fonts`; rule — set `fontFamily` from
+  `Fonts`, never also `fontWeight` (static weights; iOS would fake-bold).
+  Inicio + nav chrome use Inter now; other screens adopt it as touched
+  (RN has no global font override; a 60-file sweep was rejected — no native
+  CI to catch regressions).
+- **Inicio restructure:** hero **"Te queda este mes"** =
+  `total_available` from `/envelopes/summary` (never derived client-side) with
+  a draining bar (red last 5% / over budget) + "quedan N días"; **Próximos
+  pagos always visible** (overdue first, 3 + expand) now including projected
+  debt cuotas **and card minimums** — the mobile feed type was missing
+  `"card_payment"` since 7b B5, so they never showed on Inicio (fixed in
+  `api/dashboard.ts`); then Sobres; then Resumen (period picker scoped HERE —
+  hero/pagos/sobres are always "now"; categorías on demand; saldo total as a
+  quiet footer row). Still no chart lib.
+- **Backend (additive, no migration):** `EnvelopeSummaryResponse` gains
+  `total_spent` / `total_reserved` / `total_available` (roots only, summary
+  currency — same no-double-count rule as `total_limit`), computed in
+  `compute_envelope_summary` next to the bars so the headline can't drift.
+  `committed_outflows` untouched (byte-locked regression green).
+- **Verification (2026-06-11):** `scripts/test_phase_7b.sh` green on the
+  branch (mobile `tsc --noEmit`; 48 focused + 136 regression); envelope
+  suites with new totals assertions 14 passed; envelope-adjacent slice 36
+  passed; `alembic current` still `0029 (head)`.
+- **Deferred:** full Inter body migration; per-screen layout polish beyond
+  Inicio; any trend chart.
+
 ## CR Salary Calculator + Ingresos CRUD (post-7a, 2026-06-09)
 
 Deterministic Costa Rican net-pay calculator + full Ingresos CRUD. Backend +

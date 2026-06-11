@@ -6,7 +6,7 @@ import { DashboardScreen } from "../screens/Dashboard";
 import { AccountsNavigator } from "./AccountsNavigator";
 import { TransactionsNavigator } from "./TransactionsNavigator";
 import { MasNavigator } from "./MasNavigator";
-import { Colors, FontSize } from "../theme";
+import { Colors, Fonts, FontSize } from "../theme";
 
 type RootTabParamList = {
   Inicio: undefined;
@@ -47,19 +47,19 @@ export function AppNavigator() {
         headerTitleStyle: {
           color: Colors.textPrimary,
           fontSize: FontSize.md,
-          fontWeight: "600",
+          fontFamily: Fonts.semibold,
         },
         headerTintColor: Colors.textPrimary,
         tabBarStyle: {
           backgroundColor: Colors.bgCard,
-          borderTopColor: Colors.border,
+          borderTopColor: Colors.borderLight,
           borderTopWidth: 1,
         },
         tabBarActiveTintColor: Colors.accent,
         tabBarInactiveTintColor: Colors.textMuted,
         tabBarLabelStyle: {
           fontSize: FontSize.xs,
-          fontWeight: "500",
+          fontFamily: Fonts.medium,
           marginBottom: 2,
         },
       })}

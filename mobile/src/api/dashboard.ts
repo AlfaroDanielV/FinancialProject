@@ -24,7 +24,8 @@ export interface DashboardSummary {
 }
 
 export interface UpcomingFeedItem {
-  item_type: "bill" | "event" | "debt"; // "debt" = projected cuota (B5)
+  // "debt" = projected loan cuota; "card_payment" = card minimum (7b B5).
+  item_type: "bill" | "event" | "debt" | "card_payment";
   id: string;
   date: string;
   title: string;

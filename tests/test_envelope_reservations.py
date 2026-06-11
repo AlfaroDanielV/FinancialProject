@@ -73,6 +73,11 @@ async def test_unpaid_attached_bill_reserves_amount(db_with_user):
     assert item.available == 170000.0  # 200k − 30k reserved − 0 spent
     assert item.spent == 0.0
 
+    # Grand totals (home-screen headline) include the reservation once.
+    summary = await compute_envelope_summary(session, user=user)
+    assert summary.total_reserved == 30000.0
+    assert summary.total_available == 170000.0
+
 
 @pytest.mark.asyncio
 async def test_variable_bill_reserves_zero(db_with_user):

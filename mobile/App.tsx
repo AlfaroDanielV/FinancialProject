@@ -1,5 +1,6 @@
 import { NavigationContainer } from "@react-navigation/native";
 import { QueryClientProvider } from "@tanstack/react-query";
+import { useFonts } from "expo-font";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
@@ -33,14 +34,24 @@ function AuthGate() {
 }
 
 export default function App() {
+  // Phase 7c UI 2.0 — Inter for display/money text. If loading fails (e.g. a
+  // stripped asset in Expo Go) the app proceeds on system San Francisco; the
+  // splash only waits, it never blocks.
+  const [fontsLoaded, fontError] = useFonts({
+    "Inter-Regular": require("./assets/fonts/Inter-Regular.ttf"),
+    "Inter-Medium": require("./assets/fonts/Inter-Medium.ttf"),
+    "Inter-SemiBold": require("./assets/fonts/Inter-SemiBold.ttf"),
+    "Inter-Bold": require("./assets/fonts/Inter-Bold.ttf"),
+  });
+
   return (
     <ErrorBoundary>
       <SafeAreaProvider>
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
             <NavigationContainer>
-              <StatusBar style="light" />
-              <AuthGate />
+              <StatusBar style="dark" />
+              {!fontsLoaded && !fontError ? <SplashScreen /> : <AuthGate />}
             </NavigationContainer>
           </AuthProvider>
         </QueryClientProvider>

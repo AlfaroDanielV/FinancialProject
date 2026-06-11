@@ -105,4 +105,11 @@ class EnvelopeSummaryResponse(BaseModel):
     envelopes: list[EnvelopeSummaryItem] = Field(default_factory=list)
     by_class: list[EnvelopeClassSubtotal] = Field(default_factory=list)
     total_limit: float
+    # Grand totals across all envelopes in the summary currency (roots only,
+    # like total_limit, so subtrees aren't double-counted). They power the
+    # native home-screen "Te queda este mes" headline; total_available may be
+    # negative when the overall budget is blown.
+    total_spent: float = 0.0
+    total_reserved: float = 0.0
+    total_available: float = 0.0
     monthly_income: Optional[float] = None  # for the "split income" sanity line

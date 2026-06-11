@@ -87,10 +87,15 @@ export interface EnvelopeSummaryResponse {
   envelopes: EnvelopeSummaryItem[];
   by_class: EnvelopeClassSubtotal[];
   total_limit: number;
+  // Phase 7c: grand totals (roots only, summary currency) — the home-screen
+  // "Te queda este mes" headline. total_available can be negative.
+  total_spent: number;
+  total_reserved: number;
+  total_available: number;
   monthly_income: number | null;
 }
 
-// ── display metadata (CR Spanish, earth-tone palette per theme.ts) ──────────
+// ── display metadata (CR Spanish, neutral palette per theme.ts v2) ──────────
 
 export const ENVELOPE_CLASS_ORDER: EnvelopeClass[] = [
   "needs",
@@ -107,10 +112,10 @@ export const ENVELOPE_CLASS_LABELS: Record<EnvelopeClass, string> = {
 };
 
 export const ENVELOPE_CLASS_COLORS: Record<EnvelopeClass, string> = {
-  needs: "#4A6741", // sage green
-  wants: "#7A6228", // ochre
-  savings: "#3B6B7A", // teal
-  investing: "#6B4A7A", // plum
+  needs: "#3E7A57", // green
+  wants: "#A8763B", // amber
+  savings: "#33708A", // steel teal
+  investing: "#6E5A93", // muted violet
 };
 
 // The bar shows money LEFT: it starts full (100%) and drains with each expense.
