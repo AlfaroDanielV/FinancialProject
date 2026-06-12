@@ -27,6 +27,7 @@ import {
   STATUS_LABELS,
   type GoalResponse,
 } from "../api/goals";
+import { GoalFormModal } from "../components/GoalFormModal";
 import { CardShadow, Colors, FontSize, Radius, Spacing } from "../theme";
 import type { MasStackParamList } from "../navigation/MasNavigator";
 
@@ -139,6 +140,7 @@ type Props = {
 export function GoalsScreen({ navigation }: Props) {
   const [statusFilter, setStatusFilter] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const [createVisible, setCreateVisible] = useState(false);
 
   const goalsQuery = useQuery({
     queryKey: ["goals", statusFilter],
@@ -157,8 +159,16 @@ export function GoalsScreen({ navigation }: Props) {
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Metas financieras</Text>
-        <Text style={styles.headerSub}>Ahorros y seguimiento</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.headerTitle}>Metas financieras</Text>
+          <Text style={styles.headerSub}>Ahorros y seguimiento</Text>
+        </View>
+        <Pressable
+          onPress={() => setCreateVisible(true)}
+          style={({ pressed }) => [styles.addBtn, pressed && { opacity: 0.8 }]}
+        >
+          <Feather name="plus" size={18} color={Colors.textOnDark} />
+        </Pressable>
       </View>
 
       {/* filter pills */}
@@ -209,7 +219,7 @@ export function GoalsScreen({ navigation }: Props) {
               <Feather name="target" size={32} color={Colors.accentSoft} />
               <Text style={styles.emptyTitle}>Sin metas registradas</Text>
               <Text style={styles.emptySub}>
-                Registra tus metas de ahorro desde el chat o la incorporación.
+                Creá tu primera meta con el botón + o contámela en el chat.
               </Text>
             </View>
           }
@@ -223,6 +233,16 @@ export function GoalsScreen({ navigation }: Props) {
           )}
         />
       )}
+
+      <GoalFormModal
+        visible={createVisible}
+        onClose={() => setCreateVisible(false)}
+        onSaved={(saved) => {
+          setCreateVisible(false);
+          void goalsQuery.refetch();
+          navigation.navigate("GoalDetail", { goalId: saved.id });
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -231,7 +251,18 @@ export function GoalsScreen({ navigation }: Props) {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
+  addBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.accent,
+    justifyContent: "center",
+    alignItems: "center",
+  },
   header: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
     paddingHorizontal: Spacing.md,
     paddingTop: Spacing.md,
     paddingBottom: Spacing.sm,

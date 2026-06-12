@@ -155,6 +155,8 @@ async def _category_breakdown(
             Transaction.transaction_date < window.end_exclusive,
             Transaction.status == "confirmed",
             Transaction.transfer_id.is_(None),
+            # Phase 7d: goal aportes/refunds are savings flows, not spending.
+            Transaction.goal_id.is_(None),
             Transaction.archived.is_(False),
         )
         .group_by(category_label)
@@ -205,16 +207,16 @@ async def get_dashboard_summary(
     window = _period_window(period)
     balance_total = await _balance_total(db, user.id)
 
+    # Phase 7d: goal aportes/refunds join transfer legs as "moves money but
+    # is neither income nor expense" — _not_flow below excludes both.
+    _is_flow = Transaction.transfer_id.is_(None) & Transaction.goal_id.is_(None)
     result = await db.execute(
         select(
             func.coalesce(
                 func.sum(
                     case(
                         (
-                            (
-                                Transaction.transfer_id.is_(None)
-                                & (Transaction.amount > 0)
-                            ),
+                            (_is_flow & (Transaction.amount > 0)),
                             Transaction.amount,
                         ),
                         else_=0,
@@ -226,10 +228,7 @@ async def get_dashboard_summary(
                 func.sum(
                     case(
                         (
-                            (
-                                Transaction.transfer_id.is_(None)
-                                & (Transaction.amount < 0)
-                            ),
+                            (_is_flow & (Transaction.amount < 0)),
                             func.abs(Transaction.amount),
                         ),
                         else_=0,
@@ -237,8 +236,11 @@ async def get_dashboard_summary(
                 ),
                 0,
             ),
-            func.count(Transaction.id).filter(Transaction.transfer_id.is_(None)),
-            func.count(Transaction.id).filter(Transaction.transfer_id.is_not(None)),
+            func.count(Transaction.id).filter(_is_flow),
+            func.count(Transaction.id).filter(
+                Transaction.transfer_id.is_not(None)
+                | Transaction.goal_id.is_not(None)
+            ),
         ).where(
             Transaction.user_id == user.id,
             Transaction.transaction_date >= window.start,
@@ -343,6 +345,8 @@ async def get_cash_flow(
             Transaction.transaction_date < end_exclusive,
             Transaction.status == "confirmed",
             Transaction.transfer_id.is_(None),
+            # Phase 7d: goal flows are savings movements, not cashflow.
+            Transaction.goal_id.is_(None),
         )
         .group_by(month_expr)
         .order_by(month_expr)
@@ -409,6 +413,8 @@ async def get_daily_cash_flow(
             Transaction.transaction_date <= to_date,
             Transaction.status == "confirmed",
             Transaction.transfer_id.is_(None),
+            # Phase 7d: goal flows are savings movements, not cashflow.
+            Transaction.goal_id.is_(None),
         )
         .group_by(Transaction.transaction_date)
         .order_by(Transaction.transaction_date)

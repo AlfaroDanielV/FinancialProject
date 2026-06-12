@@ -65,15 +65,23 @@ class GoalResponse(BaseModel):
 
 
 class GoalContributionCreate(BaseModel):
+    """Phase 7d — an aporte is a real money movement: it REQUIRES a source
+    account (same currency as the goal, fund accounts only), is validated
+    against the account's live balance, and creates a goal-marked negative
+    transaction. The old optional `transaction_id` input was dropped (no
+    caller ever used it)."""
+
     amount: Decimal = Field(..., gt=0)
+    account_id: uuid.UUID
     occurred_at: Optional[datetime] = None
-    transaction_id: Optional[uuid.UUID] = None
 
 
 class GoalContributionResponse(BaseModel):
     id: uuid.UUID
     goal_id: uuid.UUID
     transaction_id: Optional[uuid.UUID]
+    source_account_id: Optional[uuid.UUID] = None
+    refund_transaction_id: Optional[uuid.UUID] = None
     amount: Decimal
     occurred_at: datetime
     created_at: datetime
@@ -84,6 +92,38 @@ class GoalContributionResponse(BaseModel):
 class GoalContributionResult(BaseModel):
     goal: GoalResponse
     contribution: GoalContributionResponse
+
+
+# ── Phase 7d: cancel with refunds ─────────────────────────────────────────────
+
+
+class GoalRefundItem(BaseModel):
+    """One per source account: what a cancel returns (or returned) there."""
+
+    account_id: Optional[uuid.UUID]
+    account_name: Optional[str]
+    account_archived: bool = False
+    amount: Decimal
+    contribution_count: int
+
+
+class GoalCancelPreview(BaseModel):
+    """Shown BEFORE confirming a cancel (auditability): per-account refunds +
+    the unrefundable bucket (historical sourceless aportes, or aportes whose
+    source account was hard-deleted)."""
+
+    goal_id: uuid.UUID
+    currency: str
+    refundable_total: Decimal
+    unrefundable_total: Decimal
+    refunds: list[GoalRefundItem]
+
+
+class GoalCancelResult(BaseModel):
+    goal: GoalResponse
+    refunded_total: Decimal
+    unrefundable_total: Decimal
+    refunds: list[GoalRefundItem]
 
 
 class GoalProgress(BaseModel):

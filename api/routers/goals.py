@@ -12,10 +12,11 @@ from ..dependencies import current_user
 from ..models.account import Account
 from ..models.goal import Goal
 from ..models.goal_contribution import GoalContribution
-from ..models.transaction import Transaction
 from ..models.user import User
 from ..schemas.goals import (
     ContributeRequest,
+    GoalCancelPreview,
+    GoalCancelResult,
     GoalContributionCreate,
     GoalContributionResponse,
     GoalContributionResult,
@@ -24,6 +25,12 @@ from ..schemas.goals import (
     GoalResponse,
     GoalCreate,
     GoalUpdate,
+)
+from ..services.goals import (
+    cancel_goal_with_refunds,
+    compute_cancel_preview,
+    create_funded_contribution,
+    has_unrefunded_sourced_contributions,
 )
 
 router = APIRouter(prefix="/api/v1/goals", tags=["goals"])
@@ -83,8 +90,8 @@ async def create_goal(
         monthly_contribution=payload.monthly_contribution,
         linked_account_id=payload.linked_account_id,
     )
-    if Decimal(goal.current_amount) >= Decimal(goal.target_amount):
-        goal.status = "achieved"
+    # Phase 7d: NO auto-achieve — with refunds at stake, "cumplida" is always
+    # an explicit, confirmed user action (the app prompts at 100%).
     db.add(goal)
     await db.commit()
     await db.refresh(goal)
@@ -184,6 +191,16 @@ async def update_goal(
     update_data.pop("deadline", None)
     if "status" in update_data:
         update_data["status"] = _stored_status(update_data["status"])
+        # Phase 7d: abandoning via PATCH would skip the refund — close the
+        # side door and point at the cancel endpoint.
+        if update_data["status"] == "abandoned":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Para cancelar la meta usá «Cancelar meta», así te "
+                    "devolvemos los aportes a tus cuentas."
+                ),
+            )
     if "linked_account_id" in update_data:
         await _validate_linked_account(
             db, user_id=user.id, account_id=update_data["linked_account_id"]
@@ -203,35 +220,17 @@ async def _create_goal_contribution(
     db: AsyncSession,
     user: User,
 ) -> GoalContribution:
+    """Phase 7d — funded contribution: requires a source account, validates
+    live funds, creates a goal-marked negative transaction. No auto-achieve
+    (cumplida is always explicit; refunds are at stake)."""
     if goal.status in ("abandoned", "achieved"):
         raise HTTPException(
             status_code=400,
             detail="Esta meta no acepta más contribuciones.",
         )
-    if payload.transaction_id is not None:
-        result = await db.execute(
-            select(Transaction.id).where(
-                Transaction.id == payload.transaction_id,
-                Transaction.user_id == user.id,
-            )
-        )
-        if result.scalar_one_or_none() is None:
-            raise HTTPException(
-                status_code=400,
-                detail="La transacción vinculada no existe para este usuario.",
-            )
-
-    contribution = GoalContribution(
-        goal_id=goal.id,
-        transaction_id=payload.transaction_id,
-        amount=payload.amount,
-        occurred_at=payload.occurred_at or datetime.now(timezone.utc),
+    contribution, _txn = await create_funded_contribution(
+        db, user_id=user.id, goal=goal, payload=payload
     )
-    db.add(contribution)
-    goal.current_amount = Decimal(goal.current_amount or 0) + payload.amount
-    if Decimal(goal.current_amount) >= Decimal(goal.target_amount):
-        goal.status = "achieved"
-    await db.flush()
     return contribution
 
 
@@ -264,17 +263,66 @@ async def contribute_to_goal(
     return goal
 
 
-@router.delete("/{goal_id}", response_model=GoalResponse)
+@router.get("/{goal_id}/cancel-preview", response_model=GoalCancelPreview)
+async def goal_cancel_preview(
+    goal_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """Phase 7d — what a cancel would refund, per source account, plus the
+    unrefundable bucket. Shown in the app BEFORE confirming (auditability)."""
+    goal = await _get_goal(db, user_id=user.id, goal_id=goal_id)
+    return await compute_cancel_preview(db, user_id=user.id, goal=goal)
+
+
+@router.post("/{goal_id}/cancel", response_model=GoalCancelResult)
+async def cancel_goal(
+    goal_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """Phase 7d — cancel the goal and refund the money to the accounts it
+    came from. Idempotent. An achieved goal never refunds (in either
+    direction) — 400."""
+    goal = await _get_goal(db, user_id=user.id, goal_id=goal_id)
+    if goal.status == "achieved":
+        raise HTTPException(
+            status_code=400,
+            detail="Esta meta ya está cumplida — los aportes no se devuelven.",
+        )
+    refunds, unrefundable = await cancel_goal_with_refunds(
+        db, user_id=user.id, goal=goal
+    )
+    await db.commit()
+    await db.refresh(goal)
+    return GoalCancelResult(
+        goal=goal,
+        refunded_total=sum((r.amount for r in refunds), Decimal("0")),
+        unrefundable_total=unrefundable,
+        refunds=refunds,
+    )
+
+
+@router.delete("/{goal_id}", status_code=204)
 async def delete_goal(
     goal_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(current_user),
 ):
+    """Phase 7d — TRUE delete. Blocked while the goal still holds money a
+    cancel would return; afterwards the goal + its contribution history go,
+    but the account movements survive (transactions.goal_id SET NULL)."""
     goal = await _get_goal(db, user_id=user.id, goal_id=goal_id)
-    goal.status = "abandoned"
+    if await has_unrefunded_sourced_contributions(db, goal_id=goal.id):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Esta meta tiene aportes sin devolver. Cancelá la meta "
+                "primero para recuperar la plata."
+            ),
+        )
+    await db.delete(goal)
     await db.commit()
-    await db.refresh(goal)
-    return goal
 
 
 @router.get(

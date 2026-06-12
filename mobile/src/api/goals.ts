@@ -26,6 +26,9 @@ export interface GoalContributionResponse {
   id: string;
   goal_id: string;
   transaction_id: string | null;
+  source_account_id: string | null;
+  /** Set once the contribution was returned by a goal cancel (Phase 7d). */
+  refund_transaction_id: string | null;
   amount: number;
   occurred_at: string;
   created_at: string;
@@ -58,9 +61,45 @@ export interface GoalUpdate {
   status?: GoalStatus;
 }
 
+export interface GoalCreate {
+  name: string;
+  target_amount: number;
+  target_currency: "CRC" | "USD";
+  target_date?: string | null;
+  priority?: number;
+  monthly_contribution?: number | null;
+}
+
 export interface GoalContributionCreate {
   amount: number;
+  /** Phase 7d: every aporte names the account the money comes from. */
+  account_id: string;
   occurred_at?: string;
+}
+
+// ── Phase 7d: cancel with refunds ────────────────────────────────────────────
+
+export interface GoalRefundItem {
+  account_id: string | null;
+  account_name: string | null;
+  account_archived: boolean;
+  amount: number;
+  contribution_count: number;
+}
+
+export interface GoalCancelPreview {
+  goal_id: string;
+  currency: string;
+  refundable_total: number;
+  unrefundable_total: number;
+  refunds: GoalRefundItem[];
+}
+
+export interface GoalCancelResult {
+  goal: GoalResponse;
+  refunded_total: number;
+  unrefundable_total: number;
+  refunds: GoalRefundItem[];
 }
 
 export const STATUS_LABELS: Record<string, string> = {
@@ -138,7 +177,26 @@ export async function markGoalAchieved(id: string): Promise<GoalResponse> {
   return updateGoal(id, { status: "completed" });
 }
 
-export async function abandonGoal(id: string): Promise<GoalResponse> {
-  const res = await api.delete<GoalResponse>(`/goals/${id}`);
+export async function createGoal(payload: GoalCreate): Promise<GoalResponse> {
+  const res = await api.post<GoalResponse>("/goals", payload);
   return res.data;
+}
+
+/** Phase 7d — what a cancel would refund, per account (shown BEFORE confirming). */
+export async function fetchGoalCancelPreview(
+  id: string
+): Promise<GoalCancelPreview> {
+  const res = await api.get<GoalCancelPreview>(`/goals/${id}/cancel-preview`);
+  return res.data;
+}
+
+/** Phase 7d — cancel the goal: the money goes back to the source accounts. */
+export async function cancelGoal(id: string): Promise<GoalCancelResult> {
+  const res = await api.post<GoalCancelResult>(`/goals/${id}/cancel`);
+  return res.data;
+}
+
+/** Phase 7d — TRUE delete (409 while the goal still holds refundable money). */
+export async function deleteGoal(id: string): Promise<void> {
+  await api.delete(`/goals/${id}`);
 }

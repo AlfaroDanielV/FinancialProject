@@ -187,9 +187,13 @@ def _build_filters(
         filters.append(Transaction.transaction_date <= to_date)
     if kind == "income":
         filters.append(Transaction.transfer_id.is_(None))
+        # Phase 7d: goal refunds are not income.
+        filters.append(Transaction.goal_id.is_(None))
         filters.append(Transaction.amount > 0)
     elif kind == "expense":
         filters.append(Transaction.transfer_id.is_(None))
+        # Phase 7d: goal aportes are savings, not spending.
+        filters.append(Transaction.goal_id.is_(None))
         filters.append(Transaction.amount < 0)
     elif kind == "transfer":
         filters.append(Transaction.transfer_id.is_not(None))
@@ -482,7 +486,9 @@ def _enforce_bulk_eligible(
     bad = [
         str(t.id)
         for t in txns
-        if t.status != "confirmed" or t.transfer_id is not None
+        if t.status != "confirmed"
+        or t.transfer_id is not None
+        or t.goal_id is not None
     ]
     if bad:
         raise HTTPException(
@@ -492,7 +498,7 @@ def _enforce_bulk_eligible(
                 "ids": bad,
                 "message": (
                     "No se pueden modificar en bulk: filas pendientes de "
-                    "aprobar o partes de una transferencia."
+                    "aprobar, partes de una transferencia o aportes de metas."
                 ),
             },
         )
@@ -632,6 +638,16 @@ async def update_transaction(
         raise HTTPException(
             status_code=409,
             detail="Editá la transferencia, no sus movimientos individuales.",
+        )
+    if txn.goal_id is not None:
+        # Phase 7d: aportes/devoluciones are machine-managed — also keeps
+        # envelope_id off goal flows (savings sobres stay allocation-only).
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Este movimiento pertenece a una meta de ahorro. "
+                "Gestionalo desde la meta."
+            ),
         )
     if txn.archived:
         raise HTTPException(

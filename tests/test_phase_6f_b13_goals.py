@@ -9,8 +9,11 @@ Covers:
 6. PATCH /goals/{id} updates name and priority.
 7. PATCH /goals/{id} status=paused pauses the goal.
 8. PATCH /goals/{id} status=active resumes a paused goal.
-9. DELETE /goals/{id} marks the goal as abandoned.
-10. Contribution that meets target auto-marks goal as achieved.
+9. DELETE /goals/{id} hard-deletes a goal with nothing left to refund (7d).
+10. Contribution that meets target does NOT auto-achieve (7d: cumplida is
+    always an explicit, confirmed action — refunds are at stake).
+
+Phase 7d: contributions are funded — every aporte names a source account.
 """
 from __future__ import annotations
 
@@ -23,6 +26,22 @@ from httpx import ASGITransport, AsyncClient
 from api.database import get_db
 from api.dependencies import current_user
 from api.main import app
+
+
+async def _create_funded_account(
+    ac: AsyncClient, *, balance: str = "5000000"
+) -> dict:
+    resp = await ac.post(
+        "/api/v1/accounts",
+        json={
+            "name": f"Fondos {balance}",
+            "account_type": "checking",
+            "currency": "CRC",
+            "initial_balance": balance,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
 
 
 def _override(session, user_id):
@@ -129,10 +148,11 @@ async def test_add_contribution_updates_amount(db_with_user):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             goal = await _create_goal(ac, name="Meta aporte", current_amount=0.0)
+            account = await _create_funded_account(ac)
 
             resp = await ac.post(
                 f"/api/v1/goals/{goal['id']}/contributions",
-                json={"amount": 100_000.0},
+                json={"amount": 100_000.0, "account_id": account["id"]},
             )
             assert resp.status_code == 200, resp.text
             body = resp.json()
@@ -153,14 +173,15 @@ async def test_contributions_sorted_desc(db_with_user):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             goal = await _create_goal(ac, name="Meta historial")
+            account = await _create_funded_account(ac)
 
             await ac.post(
                 f"/api/v1/goals/{goal['id']}/contributions",
-                json={"amount": 50_000.0},
+                json={"amount": 50_000.0, "account_id": account["id"]},
             )
             await ac.post(
                 f"/api/v1/goals/{goal['id']}/contributions",
-                json={"amount": 75_000.0},
+                json={"amount": 75_000.0, "account_id": account["id"]},
             )
 
             resp = await ac.get(f"/api/v1/goals/{goal['id']}/contributions")
@@ -263,30 +284,34 @@ async def test_patch_goal_resume(db_with_user):
         _clear()
 
 
-# ── 9. DELETE marks goal as abandoned ────────────────────────────────────────
+# ── 9. DELETE hard-deletes a goal with nothing to refund (Phase 7d) ──────────
 
 
 @pytest.mark.asyncio
-async def test_delete_goal_abandons(db_with_user):
+async def test_delete_goal_hard_deletes(db_with_user):
     session, user_id = db_with_user
     _override(session, user_id)
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            goal = await _create_goal(ac, name="Meta a abandonar")
+            goal = await _create_goal(ac, name="Meta a borrar")
 
             resp = await ac.delete(f"/api/v1/goals/{goal['id']}")
-            assert resp.status_code == 200, resp.text
-            assert resp.json()["status"] == "abandoned"
+            assert resp.status_code == 204, resp.text
+            gone = await ac.get(f"/api/v1/goals/{goal['id']}")
+            assert gone.status_code == 404
     finally:
         _clear()
 
 
-# ── 10. Contribution that meets target auto-achieves ─────────────────────────
+# ── 10. Reaching the target does NOT auto-achieve (Phase 7d) ──────────────────
 
 
 @pytest.mark.asyncio
-async def test_contribution_meeting_target_achieves_goal(db_with_user):
+async def test_contribution_meeting_target_does_not_auto_achieve(db_with_user):
+    """Cumplida is always an explicit, confirmed user action — once a goal is
+    achieved its money never refunds, so the flip can't happen silently. The
+    app prompts "¿La cumpliste?" at 100% instead."""
     session, user_id = db_with_user
     _override(session, user_id)
     try:
@@ -295,13 +320,15 @@ async def test_contribution_meeting_target_achieves_goal(db_with_user):
             goal = await _create_goal(
                 ac, name="Meta completar", target_amount=200_000.0, current_amount=0.0
             )
+            account = await _create_funded_account(ac)
 
             resp = await ac.post(
                 f"/api/v1/goals/{goal['id']}/contributions",
-                json={"amount": 200_000.0},
+                json={"amount": 200_000.0, "account_id": account["id"]},
             )
             assert resp.status_code == 200, resp.text
             body = resp.json()
-            assert body["goal"]["status"] == "achieved"
+            assert body["goal"]["status"] == "active"
+            assert float(body["goal"]["current_amount"]) == 200_000.0
     finally:
         _clear()

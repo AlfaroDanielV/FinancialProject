@@ -40,6 +40,15 @@ class Transaction(Base):
         ForeignKey("envelopes.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Phase 7d goal funding — marks a goal aporte (negative) / refund
+    # (positive). Mirror of transfer_id: counts in balances, EXCLUDED from
+    # income/expense analytics, machine-managed (PATCH/bulk 409). SET NULL —
+    # deleting the goal keeps the account history.
+    goal_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("goals.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     # negative = expense, positive = income
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(10), nullable=False, default="CRC")

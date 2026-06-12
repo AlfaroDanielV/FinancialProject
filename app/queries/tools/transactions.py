@@ -294,9 +294,17 @@ def _transaction_filters(
         filters.append(_fuzzy_any(Transaction.category, categories))
     if merchants:
         filters.append(_fuzzy_any(Transaction.merchant, merchants))
+    # Phase 7d: when asked about expenses/income, transfer legs and goal
+    # aportes/refunds are neither — they move money without spending/earning
+    # it. (The transfer exclusion was missing here; the dashboard always had
+    # it.) `transaction_type="all"` keeps showing every row.
     if transaction_type == "expense":
+        filters.append(Transaction.transfer_id.is_(None))
+        filters.append(Transaction.goal_id.is_(None))
         filters.append(Transaction.amount < 0)
     elif transaction_type == "income":
+        filters.append(Transaction.transfer_id.is_(None))
+        filters.append(Transaction.goal_id.is_(None))
         filters.append(Transaction.amount > 0)
     if min_amount is not None:
         filters.append(_abs_amount_expr() >= min_amount)

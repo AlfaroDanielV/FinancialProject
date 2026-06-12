@@ -49,7 +49,9 @@ async def test_goals_crud_and_contribution_endpoint(db_with_user):
                     "name": "Ahorro metas",
                     "account_type": "savings",
                     "currency": "CRC",
-                    "initial_balance": "0",
+                    # Phase 7d: contributions are funded — the account must
+                    # hold the money the aporte moves.
+                    "initial_balance": "100000",
                 },
             )
             assert account.status_code == 201, account.text
@@ -85,16 +87,27 @@ async def test_goals_crud_and_contribution_endpoint(db_with_user):
 
             contribution = await ac.post(
                 f"/api/v1/goals/{goal['id']}/contributions",
-                json={"amount": "25000"},
+                json={"amount": "25000", "account_id": account_id},
             )
             assert contribution.status_code == 200, contribution.text
             body = contribution.json()
             assert Decimal(str(body["goal"]["current_amount"])) == Decimal("25000")
             assert Decimal(str(body["contribution"]["amount"])) == Decimal("25000")
 
+            # Phase 7d: a goal holding money can't be deleted — cancel first
+            # (the refund goes back to the source account), then delete.
+            blocked = await ac.delete(f"/api/v1/goals/{goal['id']}")
+            assert blocked.status_code == 409, blocked.text
+
+            cancelled = await ac.post(f"/api/v1/goals/{goal['id']}/cancel")
+            assert cancelled.status_code == 200, cancelled.text
+            assert cancelled.json()["goal"]["status"] == "abandoned"
+            assert Decimal(
+                str(cancelled.json()["refunded_total"])
+            ) == Decimal("25000")
+
             deleted = await ac.delete(f"/api/v1/goals/{goal['id']}")
-            assert deleted.status_code == 200, deleted.text
-            assert deleted.json()["status"] == "abandoned"
+            assert deleted.status_code == 204, deleted.text
     finally:
         _clear()
 

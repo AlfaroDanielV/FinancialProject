@@ -34,9 +34,11 @@ import {
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 
 import {
-  abandonGoal,
   addGoalContribution,
+  cancelGoal,
+  deleteGoal,
   fetchGoal,
+  fetchGoalCancelPreview,
   fetchGoalContributions,
   fetchGoalForecast,
   markGoalAchieved,
@@ -46,6 +48,8 @@ import {
   STATUS_LABELS,
   type GoalResponse,
 } from "../api/goals";
+import { fetchAccounts, type AccountResponse } from "../api/accounts";
+import { GoalFormModal } from "../components/GoalFormModal";
 import { CardShadow, Colors, FontSize, Radius, Spacing } from "../theme";
 import type { MasStackParamList } from "../navigation/MasNavigator";
 
@@ -131,12 +135,30 @@ function AddContributionForm({
   onDone: () => void;
 }) {
   const [amount, setAmount] = useState("");
+  const [accountId, setAccountId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const queryClient = useQueryClient();
 
+  // Phase 7d: the aporte comes FROM an account — same currency as the goal,
+  // fund accounts only (no credit cards), shown with their live balance.
+  const accountsQuery = useQuery({
+    queryKey: ["accounts", { archived: false }],
+    queryFn: () => fetchAccounts(false),
+  });
+  const eligible: AccountResponse[] = (accountsQuery.data ?? []).filter(
+    (a) =>
+      !a.archived && a.currency === currency && a.account_type !== "credit",
+  );
+  const selected = eligible.find((a) => a.id === accountId) ?? null;
+  const selectedBalance =
+    selected != null ? parseFloat(selected.current_balance ?? "0") : null;
+
   const mutation = useMutation({
     mutationFn: () =>
-      addGoalContribution(goalId, { amount: parseFloat(amount) }),
+      addGoalContribution(goalId, {
+        amount: parseFloat(amount.replace(",", ".")),
+        account_id: accountId!,
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["goal", goalId] });
       queryClient.invalidateQueries({
@@ -144,17 +166,39 @@ function AddContributionForm({
       });
       queryClient.invalidateQueries({ queryKey: ["goal-forecast", goalId] });
       queryClient.invalidateQueries({ queryKey: ["goals"] });
+      queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       setAmount("");
       setError("");
       onDone();
     },
-    onError: () => setError("No se pudo registrar el aporte."),
+    onError: (err) => {
+      const detail = (
+        err as { response?: { data?: { detail?: unknown } } }
+      )?.response?.data?.detail;
+      setError(
+        typeof detail === "string" ? detail : "No se pudo registrar el aporte.",
+      );
+    },
   });
 
   function submit() {
-    const parsed = parseFloat(amount);
+    const parsed = parseFloat(amount.replace(",", "."));
     if (isNaN(parsed) || parsed <= 0) {
       setError("Ingresa un monto válido mayor a 0.");
+      return;
+    }
+    if (accountId == null) {
+      setError("Elegí la cuenta de donde sale la plata.");
+      return;
+    }
+    if (selectedBalance != null && parsed > selectedBalance) {
+      setError(
+        `Fondos insuficientes: «${selected?.name}» tiene ${fmtAmount(
+          selectedBalance,
+          currency,
+        )} disponibles.`,
+      );
       return;
     }
     setError("");
@@ -164,6 +208,38 @@ function AddContributionForm({
   return (
     <View style={styles.addForm}>
       <Text style={styles.addFormTitle}>Registrar aporte</Text>
+      <Text style={styles.addFormHint}>¿De cuál cuenta sale la plata?</Text>
+      {eligible.length === 0 ? (
+        <Text style={styles.addFormError}>
+          No tenés cuentas de fondos en {currency}. Creá una desde la pestaña
+          Cuentas.
+        </Text>
+      ) : (
+        eligible.map((a) => (
+          <Pressable
+            key={a.id}
+            onPress={() => setAccountId(a.id)}
+            style={({ pressed }) => [
+              styles.accountOption,
+              accountId === a.id && styles.accountOptionActive,
+              pressed && { opacity: 0.75 },
+            ]}
+          >
+            <Text
+              style={[
+                styles.accountOptionName,
+                accountId === a.id && { color: Colors.accent },
+              ]}
+              numberOfLines={1}
+            >
+              {a.name}
+            </Text>
+            <Text style={styles.accountOptionBalance}>
+              {fmtAmount(parseFloat(a.current_balance ?? "0"), a.currency)}
+            </Text>
+          </Pressable>
+        ))
+      )}
       <View style={styles.addFormRow}>
         <Text style={styles.addFormSymbol}>
           {currency === "CRC" ? "₡" : currency}
@@ -205,6 +281,7 @@ export function GoalDetailScreen({ route, navigation }: Props) {
   const { goalId } = route.params;
   const queryClient = useQueryClient();
   const [showAddForm, setShowAddForm] = useState(false);
+  const [editVisible, setEditVisible] = useState(false);
 
   const goalQuery = useQuery({
     queryKey: ["goal", goalId],
@@ -234,18 +311,112 @@ export function GoalDetailScreen({ route, navigation }: Props) {
     statusMutation.mutate(fn);
   }
 
-  function confirmAbandon() {
+  const cancelMutation = useMutation({
+    mutationFn: () => cancelGoal(goalId),
+    onSuccess: (result) => {
+      queryClient.setQueryData(["goal", goalId], result.goal);
+      queryClient.invalidateQueries({ queryKey: ["goals"] });
+      queryClient.invalidateQueries({
+        queryKey: ["goal-contributions", goalId],
+      });
+      queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      if (Number(result.refunded_total) > 0) {
+        Alert.alert(
+          "Meta cancelada",
+          `Te devolvimos ${fmtAmount(
+            Number(result.refunded_total),
+            result.goal.target_currency,
+          )} a tus cuentas.`,
+        );
+      }
+    },
+    onError: () => Alert.alert("Error", "No se pudo cancelar la meta."),
+  });
+
+  // Phase 7d: cancel shows the refund breakdown BEFORE confirming — the
+  // money goes back to the accounts it came from.
+  async function confirmCancel(currency: string) {
+    let body: string;
+    try {
+      const preview = await fetchGoalCancelPreview(goalId);
+      const lines = preview.refunds.map(
+        (r) =>
+          `• ${r.account_name ?? "—"}${r.account_archived ? " (archivada)" : ""}: ${fmtAmount(Number(r.amount), preview.currency)}`,
+      );
+      body =
+        Number(preview.refundable_total) > 0
+          ? `Te devolvemos ${fmtAmount(
+              Number(preview.refundable_total),
+              preview.currency,
+            )} así:\n${lines.join("\n")}`
+          : "Esta meta no tiene aportes por devolver.";
+      if (Number(preview.unrefundable_total) > 0) {
+        body += `\n\n${fmtAmount(
+          Number(preview.unrefundable_total),
+          preview.currency,
+        )} no se puede devolver (aportes sin cuenta de origen).`;
+      }
+    } catch {
+      body = "La meta quedará cancelada.";
+    }
+    Alert.alert("Cancelar meta", body, [
+      { text: "Volver", style: "cancel" },
+      {
+        text: "Cancelar meta",
+        style: "destructive",
+        onPress: () => cancelMutation.mutate(),
+      },
+    ]);
+  }
+
+  // Phase 7d: cumplida is explicit and never refunds — make the difference
+  // with cancel impossible to miss.
+  function confirmAchieve() {
     Alert.alert(
-      "Abandonar meta",
-      "Esta acción es permanente. La meta quedará como abandonada.",
+      "¿Marcar como cumplida?",
+      "La plata aportada NO vuelve a tus cuentas; la meta queda como " +
+        "lograda. Si querés recuperar los aportes, usá «Cancelar meta».",
       [
-        { text: "Cancelar", style: "cancel" },
+        { text: "Volver", style: "cancel" },
         {
-          text: "Abandonar",
-          style: "destructive",
-          onPress: () => runStatus(() => abandonGoal(goalId)),
+          text: "Sí, la cumplí",
+          onPress: () => runStatus(() => markGoalAchieved(goalId)),
         },
-      ]
+      ],
+    );
+  }
+
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteGoal(goalId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["goals"] });
+      navigation.goBack();
+    },
+    onError: (err) => {
+      const detail = (
+        err as { response?: { data?: { detail?: unknown } } }
+      )?.response?.data?.detail;
+      Alert.alert(
+        "No se pudo eliminar",
+        typeof detail === "string" ? detail : "Intentá de nuevo.",
+      );
+    },
+  });
+
+  function confirmDelete() {
+    Alert.alert(
+      "Eliminar meta",
+      "Se borra la meta y su historial de aportes. Los movimientos en tus " +
+        "cuentas se conservan.",
+      [
+        { text: "Volver", style: "cancel" },
+        {
+          text: "Eliminar",
+          style: "destructive",
+          onPress: () => deleteMutation.mutate(),
+        },
+      ],
     );
   }
 
@@ -280,6 +451,15 @@ export function GoalDetailScreen({ route, navigation }: Props) {
         <View style={styles.heroCard}>
           <View style={styles.heroTop}>
             <Text style={styles.heroName}>{goal.name}</Text>
+            {!terminal && (
+              <Pressable
+                onPress={() => setEditVisible(true)}
+                style={({ pressed }) => [pressed && { opacity: 0.6 }]}
+                hitSlop={8}
+              >
+                <Feather name="edit-2" size={15} color={Colors.textMuted} />
+              </Pressable>
+            )}
             <View style={[styles.statusBadge, { borderColor: statusColor }]}>
               <Text style={[styles.statusText, { color: statusColor }]}>
                 {STATUS_LABELS[goal.status] ?? goal.status}
@@ -318,6 +498,24 @@ export function GoalDetailScreen({ route, navigation }: Props) {
               </Text>
             </View>
           </View>
+
+          {/* Phase 7d: reaching the target no longer auto-achieves — the
+              flip is always explicit because the money never comes back. */}
+          {goal.status === "active" &&
+            Number(goal.current_amount) >= Number(goal.target_amount) && (
+              <Pressable
+                onPress={confirmAchieve}
+                style={({ pressed }) => [
+                  styles.achieveBanner,
+                  pressed && { opacity: 0.85 },
+                ]}
+              >
+                <Feather name="award" size={16} color={Colors.income} />
+                <Text style={styles.achieveBannerText}>
+                  Llegaste al objetivo. ¿La cumpliste?
+                </Text>
+              </Pressable>
+            )}
         </View>
 
         {/* ── info section ── */}
@@ -422,9 +620,24 @@ export function GoalDetailScreen({ route, navigation }: Props) {
                 <Text style={styles.contribDate}>
                   {fmtDateTime(c.occurred_at)}
                 </Text>
-                <Text style={styles.contribAmount}>
-                  +{fmtAmount(Number(c.amount), goal.target_currency)}
-                </Text>
+                <View style={styles.contribRight}>
+                  {c.refund_transaction_id != null && (
+                    <View style={styles.refundTag}>
+                      <Text style={styles.refundTagText}>Devuelto</Text>
+                    </View>
+                  )}
+                  <Text
+                    style={[
+                      styles.contribAmount,
+                      c.refund_transaction_id != null && {
+                        color: Colors.textMuted,
+                        textDecorationLine: "line-through",
+                      },
+                    ]}
+                  >
+                    +{fmtAmount(Number(c.amount), goal.target_currency)}
+                  </Text>
+                </View>
               </View>
             ))
           )}
@@ -469,7 +682,7 @@ export function GoalDetailScreen({ route, navigation }: Props) {
               {goal.status === "active" ? (
                 <Pressable
                   style={[styles.actionBtn, styles.actionPrimary]}
-                  onPress={() => runStatus(() => markGoalAchieved(goalId))}
+                  onPress={confirmAchieve}
                 >
                   <Feather name="check-circle" size={14} color={Colors.textOnDark} />
                   <Text style={[styles.actionText, { color: Colors.textOnDark }]}>
@@ -478,16 +691,47 @@ export function GoalDetailScreen({ route, navigation }: Props) {
                 </Pressable>
               ) : null}
 
-              <Pressable style={styles.actionBtn} onPress={confirmAbandon}>
-                <Feather name="x-circle" size={14} color={Colors.textMuted} />
-                <Text style={[styles.actionText, { color: Colors.textMuted }]}>
-                  Abandonar
+              <Pressable
+                style={styles.actionBtn}
+                onPress={() => confirmCancel(goal.target_currency)}
+              >
+                <Feather name="x-circle" size={14} color={Colors.expense} />
+                <Text style={[styles.actionText, { color: Colors.expense }]}>
+                  Cancelar meta
                 </Text>
               </Pressable>
             </>
           )}
         </View>
       )}
+
+      {/* Phase 7d: terminal goals can be truly deleted (history goes with
+          the goal; account movements survive). */}
+      {terminal && (
+        <View style={styles.actionsBar}>
+          {deleteMutation.isPending ? (
+            <ActivityIndicator color={Colors.accent} />
+          ) : (
+            <Pressable style={styles.actionBtn} onPress={confirmDelete}>
+              <Feather name="trash-2" size={14} color={Colors.expense} />
+              <Text style={[styles.actionText, { color: Colors.expense }]}>
+                Eliminar meta
+              </Text>
+            </Pressable>
+          )}
+        </View>
+      )}
+
+      <GoalFormModal
+        visible={editVisible}
+        goal={goal}
+        onClose={() => setEditVisible(false)}
+        onSaved={(saved) => {
+          setEditVisible(false);
+          queryClient.setQueryData(["goal", goalId], saved);
+          queryClient.invalidateQueries({ queryKey: ["goals"] });
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -615,7 +859,63 @@ const styles = StyleSheet.create({
     borderBottomColor: Colors.borderLight,
   },
   contribDate: { fontSize: FontSize.sm, color: Colors.textSecondary },
+  contribRight: { flexDirection: "row", alignItems: "center", gap: 6 },
   contribAmount: { fontSize: FontSize.sm, fontWeight: "700", color: Colors.income },
+  refundTag: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.sm,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  refundTagText: { fontSize: FontSize.xs, color: Colors.textMuted },
+
+  // achieve banner (Phase 7d)
+  achieveBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.xs,
+    backgroundColor: Colors.bgElevated,
+    borderRadius: Radius.md,
+    padding: Spacing.sm,
+    marginTop: Spacing.xs,
+  },
+  achieveBannerText: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    fontWeight: "600",
+    color: Colors.income,
+  },
+
+  // account picker (Phase 7d funded aportes)
+  addFormHint: { fontSize: FontSize.xs, color: Colors.textMuted },
+  accountOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: Spacing.sm,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 7,
+    backgroundColor: Colors.bgCard,
+  },
+  accountOptionActive: {
+    borderColor: Colors.accent,
+    backgroundColor: Colors.accentBg,
+  },
+  accountOptionName: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    fontWeight: "600",
+    color: Colors.textPrimary,
+  },
+  accountOptionBalance: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    fontVariant: ["tabular-nums"],
+  },
 
   // add contribution
   addBtn: {

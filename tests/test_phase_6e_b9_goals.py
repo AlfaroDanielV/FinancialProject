@@ -10,7 +10,9 @@ Covers:
 - Forecast edge case: already-achieved goal returns months_to_target=0
   and remaining=0.
 - PATCH status round-trip (active → paused → active) works.
-- Contribution with a foreign user's transaction_id is rejected.
+
+Phase 7d: contributions are funded — every aporte names a source account with
+enough balance, so the helpers create a funded checking account first.
 """
 from __future__ import annotations
 
@@ -23,6 +25,22 @@ from httpx import ASGITransport, AsyncClient
 from api.database import get_db
 from api.dependencies import current_user
 from api.main import app
+
+
+async def _create_funded_account(
+    ac: AsyncClient, *, balance: str = "5000000"
+) -> dict:
+    resp = await ac.post(
+        "/api/v1/accounts",
+        json={
+            "name": f"Fondos {balance}",
+            "account_type": "checking",
+            "currency": "CRC",
+            "initial_balance": balance,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
 
 
 def _override(session, user_id):
@@ -85,12 +103,14 @@ async def test_list_contributions_returns_user_rows_desc(db_with_user):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             goal = await _create_goal(ac)
+            account = await _create_funded_account(ac)
 
             for index, amount in enumerate(("10000", "20000", "30000")):
                 resp = await ac.post(
                     f"/api/v1/goals/{goal['id']}/contributions",
                     json={
                         "amount": amount,
+                        "account_id": account["id"],
                         "occurred_at": _months_ago_utc(2 - index),
                     },
                 )
@@ -122,6 +142,7 @@ async def test_forecast_with_contributions_returns_months_to_target(
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             # Target = 600k, current=0 after contribs in window.
             goal = await _create_goal(ac, target_amount="600000")
+            account = await _create_funded_account(ac)
 
             # Three contributions of 50k each in the last 3 complete months
             # → avg = 50k/month → remaining=450k → 9 months.
@@ -130,6 +151,7 @@ async def test_forecast_with_contributions_returns_months_to_target(
                     f"/api/v1/goals/{goal['id']}/contributions",
                     json={
                         "amount": "50000",
+                        "account_id": account["id"],
                         "occurred_at": _months_ago_utc(offset),
                     },
                 )
@@ -181,9 +203,10 @@ async def test_forecast_already_achieved_returns_zero(db_with_user):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             goal = await _create_goal(ac, target_amount="100000")
+            account = await _create_funded_account(ac)
             done = await ac.post(
                 f"/api/v1/goals/{goal['id']}/contributions",
-                json={"amount": "100000"},
+                json={"amount": "100000", "account_id": account["id"]},
             )
             assert done.status_code == 200
 

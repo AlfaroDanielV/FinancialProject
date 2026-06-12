@@ -124,10 +124,13 @@ finance-agent/
 │   ├── dispatcher.py
 │   ├── tools/                  # get_user_context, compare_periods, etc.
 │   └── history.py              # query_history Redis
+├── app/domain/                 # Pure rules layers (no LLM/DB/network)
+│   ├── payroll/                # CR gross→net salary calculator
+│   └── credit/                 # Phase 7b revolving-credit projections
 ├── workers/                    # gmail_daily.py, insights_nightly.py, insights_lifecycle.py
 │                               # (web/ Phase 6d/6e SPA — DELETED at 6f B16, 2026-06-01)
 ├── mobile/                     # Phase 6f native iOS app (Expo, React Native) — created at 6f B1
-├── migrations/versions/        # Hand-written Alembic (0001 → 0029)
+├── migrations/versions/        # Hand-written Alembic (0001 → 0030)
 ├── tests/                      # pytest suite
 ├── scripts/                    # Phase smoke scripts (phase5a/5b/6b/6c/etc.)
 ├── docs/phase-*/               # Per-phase operational docs (privacy, deployment, etc.)
@@ -153,6 +156,9 @@ All tables use UUID primary keys via `gen_random_uuid()`. Timestamps are `TIMEST
 - **Phase 6c tables** — `user_insights`, `user_insights_audit` (migrations 0013, 0014)
 - **Phase 6d tables** — `magic_link_tokens`, `recurring_incomes`, `lazy_detection_events` (migration 0016)
 - **Phase 6e tables/views** — `goal_contributions`, `transfers`, `user_categories`, `currency_rates`, `transactions.transfer_id`, `transactions.category_id`, `users.display_currency`, `accounts.archived`, `magic_link_tokens.target_path`, `mv_monthly_summary_by_user`, `mv_yearly_summary_by_user` (migration 0017); `transactions.archived` + partial index `ix_transactions_user_date_active` (migration 0018); `debts.archived` (migration 0019); `recurring_incomes.archived` (migration 0020)
+- **Phase 6f/7/7a tables** — `users.expo_push_token` (0021), `envelopes` + `transactions.envelope_id` (0022), `nudge_type` CHECK widened (0023), `envelopes.parent_id`+`depth` (0024), `recurring_incomes.gross_monthly` (0025), `recurring_bills.envelope_id` + `debts.envelope_id` (0026), `notification_events.debt_id` (0027)
+- **Phase 7b tables** — `debt_payments.transaction_id` + `bill_occurrences.transaction_id` FKs aligned to `ON DELETE SET NULL` (migration 0028); `credit_card_terms` 1:1 on the credit account — APRs as 0–1 fractions, mínimo = max(pct × saldo, piso), `credit_limit`, `statement_day`, `payment_due_day`, `envelope_id`; deliberately NO balance column (migration 0029)
+- **Phase 7d columns** — `transactions.goal_id` (FK goals SET NULL — marks goal aportes/refunds, excluded from income/expense math like transfer legs), `goal_contributions.source_account_id` (FK accounts SET NULL) + `goal_contributions.refund_transaction_id` (FK transactions SET NULL — refund idempotency stamp) (migration 0030)
 
 ### Phase 4 tables (recurring bills + calendar alerts)
 
@@ -174,7 +180,7 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 
 ## Implementation Roadmap
 
-### Current Status: Phase 6f — Native iOS App (Expo) active. Phase 6e SPA closed at B13.
+### Current Status: Phases 7/7a/7b/7c/7d code-complete (operator on-device sign-off pending). Phase 6f B0–B16 implemented; SPA retired 2026-06-01; native-only daily use ongoing.
 
 | Phase | Focus | Done When |
 |---|---|---|
@@ -193,7 +199,11 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 | **6d** ✅ | Onboarding & self-registration | Closed in B13; see "Phase 6d (closed)" below |
 | **6e** ✅ | Centro Financiero SPA | Closed at B13; **retired at 6f B16 (`web/` deleted 2026-06-01)**. B14/B15 dropped; privacy export/delete absorbed into Phase 6f B14. |
 | **6f** 🚧 | Native iOS app (Expo) | B0–B16 implemented. Replaces SPA (B16 retired `web/` + SWA workflow + cookie auth path on 2026-06-01, operator override of the 4-week-dogfood-first gate). In-app chat (reuses `bot/pipeline.py::process_message()`), receipt photo upload (B6), conversational creation (goals/income/bills/debt), device-code `/login` auth (B3). See `docs/phase-6f-decisions.md`. Remaining: operator daily native-only use. |
-| **P7** | Affordability / pushback engine | Deterministic affordability checks + LLM explanation wrapper |
+| **P7** 🚧 | Affordability / pushback engine + Unified Monthly Cashflow | Code-complete; operator on-device sign-off pending |
+| **P7a** 🚧 | Nested envelopes + context-aware pushback | Code-complete; operator on-device sign-off pending |
+| **P7b** 🚧 | Accounts CRUD + hard delete, transfers, credit-card clarity | Code-complete 2026-06-11; operator on-device sign-off pending |
+| **P7c** 🚧 | UI 2.0: neutral theme + money clarity | Code-complete 2026-06-11; operator on-device sign-off pending |
+| **P7d** 🚧 | Goal funding from accounts + goals full CRUD | Code-complete 2026-06-11; operator on-device sign-off pending |
 | **P8** | Beta users | Onboard a second person via Telegram with accurate reports within a week |
 | **P9** | SaaS hardening | Multi-tenant auth, billing, compliance, observability |
 
@@ -1302,6 +1312,54 @@ sign-off pending.** Canonical: `docs/phase-7c-decisions.md`; vault
   passed; `alembic current` still `0029 (head)`.
 - **Deferred:** full Inter body migration; per-screen layout polish beyond
   Inicio; any trend chart.
+
+## Phase 7d (active) — Goal Funding From Accounts + Goals Full CRUD
+
+Operator asks 2026-06-11: full goal CRUD in the app + **real money semantics
+for goals**. **Code-complete 2026-06-11 — operator on-device sign-off
+pending.** Verification: `scripts/test_phase_7d.sh` green (mobile `tsc
+--noEmit`; 29 focused + 122 regression incl. the byte-locked unified-cashflow
+regression); `scripts/test_phase_7b.sh` cross-check green; `alembic current →
+0030 (head)`. Canonical: `docs/phase-7d-decisions.md`; vault `Decision - Goal
+Funding From Accounts`.
+
+- **An aporte is a real account movement.** New contributions REQUIRE a
+  source account (same currency as the goal; fund accounts only — credit
+  cards rejected), validate live funds via `compute_account_balances` (400
+  "Fondos insuficientes…" naming the available balance), and create a
+  negative transaction marked with `transactions.goal_id` (migration `0030`)
+  + `goal_contributions.source_account_id`/`transaction_id`. Historical
+  (pre-7d) sourceless contributions stay tracking-only and are NOT
+  refundable (the cancel preview names that bucket).
+- **Goal flows are not income/expense.** `goal_id`-marked rows are excluded
+  from income/expense/category analytics exactly like transfer legs (dashboard
+  summary, transactions `kind` filters, chat transaction tools — where the
+  chat tools also gained the missing transfer exclusion). Balances include
+  them: the dashboard saldo dips on aporte and recovers on refund, by design.
+  Goal txns are machine-managed: PATCH + bulk 409; they can never carry an
+  `envelope_id` (savings sobres stay allocation-only for goal money).
+- **Cancel refunds; cumplida never does.** `POST /goals/{id}/cancel` groups
+  un-refunded sourced contributions by account, writes ONE positive refund
+  transaction per account (archived accounts still receive — money goes
+  home), stamps `goal_contributions.refund_transaction_id` (idempotent),
+  clamps `current_amount`, abandons. `GET /goals/{id}/cancel-preview` shows
+  the per-account breakdown + unrefundable bucket BEFORE confirming.
+  **Achieving is always explicit**: the auto-achieve-at-target flips were
+  REMOVED; the app shows a "Llegaste al objetivo — ¿la cumpliste?" banner and
+  a double-confirm Alert («la plata NO vuelve; si querés recuperarla usá
+  Cancelar meta»). Side doors closed: `PATCH status=abandoned` → 400 (use
+  cancel); cancel on an achieved goal → 400.
+- **True goal delete**: `DELETE /goals/{id}` 409s while un-refunded sourced
+  aportes exist ("Cancelá la meta primero…"), else hard-deletes goal +
+  contribution history (account movements survive via `goal_id` SET NULL),
+  204.
+- **Mobile full CRUD**: `GoalFormModal` (create "+ Nueva meta" + edit —
+  structured-form exception precedent: Incomes/Bills; chat-first stays the
+  default), funded-contribution picker with live balances, cancel-with-
+  preview flow, "Devuelto" tag on refunded aportes.
+- Tech debt logged: `mv_*_summary_by_user` + `insights/computed.py` don't
+  exclude goal flows (same family as their transfer/archived gaps); chat
+  transaction tools still missing `status`/`archived` filters.
 
 ## CR Salary Calculator + Ingresos CRUD (post-7a, 2026-06-09)
 
