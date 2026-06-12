@@ -19,8 +19,27 @@ from ..services import recurrence
 from ..services.nudges.delivery import deliver_all as deliver_all_nudges
 from ..services.nudges.orchestrator import evaluate_all as evaluate_all_nudges
 from ..services.nudges.phrasing import AnthropicPhrasingClient
+from ..services.snapshots import capture_user_snapshots
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
+
+
+@router.post("/capture-snapshots", response_model=JobRunResult)
+async def job_capture_snapshots(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user_via_token),
+):
+    """Phase 7e — upsert this period's envelope + cashflow snapshots (and
+    recapture the just-closed period during the first days of a month).
+    Idempotent; also runs inside the nightly insights job."""
+    result = await capture_user_snapshots(db, user=user)
+    await db.commit()
+    rows = (
+        int(result.get("envelope_rows", 0))
+        + int(result.get("prev_envelope_rows", 0))
+        + int(result.get("cashflow_rows", 0))
+    )
+    return JobRunResult(job="capture_snapshots", processed=rows, created=rows)
 
 
 @router.post("/generate-occurrences", response_model=JobRunResult)

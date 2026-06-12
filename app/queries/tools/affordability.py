@@ -19,6 +19,7 @@ from sqlalchemy import select
 
 from api.models.debt import Debt
 from api.models.user import User
+from api.services.advice_trace import record_advice_event, verdict_from
 from api.services.finance.affordability import (
     FinancialContext,
     assess_for_user,
@@ -122,7 +123,7 @@ async def assess_purchase(
             db, user=user, horizon_days=min(max(60, months * 30), 365)
         )
 
-    return {
+    payload = {
         "currency": result.currency,
         "desired_amount": _money(result.desired_amount),
         "timeline_months": result.timeline_months,
@@ -146,6 +147,18 @@ async def assess_purchase(
         "notes": list(result.notes),
         "context": _serialize_context(context),
     }
+    # Phase 7e advice trace — best-effort, never alters the answer.
+    await record_advice_event(
+        user_id=user_id,
+        kind="assess_purchase",
+        verdict=verdict_from(
+            feasible=result.feasible, gate_reason=result.gate_reason
+        ),
+        inputs={"amount": amount, "timeline_months": timeline_months},
+        result=payload,
+        surface="query_tool",
+    )
+    return payload
 
 
 GET_SAVINGS_CAPACITY_DESCRIPTION = (
@@ -202,7 +215,7 @@ async def get_savings_capacity(*, user_id: uuid.UUID) -> dict[str, Any]:
                 }
             )
 
-    return {
+    payload = {
         "currency": currency,
         "monthly_income": _money(result.monthly_income),
         "monthly_fixed_expenses": _money(result.monthly_fixed_expenses),
@@ -217,6 +230,18 @@ async def get_savings_capacity(*, user_id: uuid.UUID) -> dict[str, Any]:
         "debts": debts,
         "notes": list(result.notes),
     }
+    # Phase 7e advice trace — informational verdict unless gated.
+    await record_advice_event(
+        user_id=user_id,
+        kind="savings_capacity",
+        verdict=(
+            f"gated:{result.gate_reason}" if result.gate_reason else "info"
+        ),
+        inputs={},
+        result=payload,
+        surface="query_tool",
+    )
+    return payload
 
 
 def register_affordability_tools() -> None:

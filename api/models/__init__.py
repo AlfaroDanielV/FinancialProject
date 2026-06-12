@@ -30,6 +30,9 @@ from .magic_link_token import MagicLinkToken
 from .lazy_detection_event import LazyDetectionEvent
 from .envelope import Envelope
 from .credit_card_terms import CreditCardTerms
+from .advice_event import AdviceEvent
+from .snapshot import CashflowSnapshot, EnvelopeSnapshot
+from .consent import UserConsent
 
 __all__ = [
     "User",
@@ -67,4 +70,8 @@ __all__ = [
     "LazyDetectionEvent",
     "Envelope",
     "CreditCardTerms",
+    "AdviceEvent",
+    "EnvelopeSnapshot",
+    "CashflowSnapshot",
+    "UserConsent",
 ]

@@ -20,6 +20,7 @@ from .routers import (
     calendar,
     categories,
     chat,
+    consents,
     custom_events,
     dashboard,
     debts,
@@ -115,6 +116,7 @@ app.include_router(telegram.telegram_router)
 app.include_router(gmail.router)
 app.include_router(privacy_insights.router)
 app.include_router(admin_insights.router)
+app.include_router(consents.router)
 app.include_router(recurring_incomes.router)
 app.include_router(onboarding.router)
 app.include_router(payroll.router)

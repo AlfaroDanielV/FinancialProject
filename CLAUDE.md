@@ -1313,6 +1313,62 @@ sign-off pending.** Canonical: `docs/phase-7c-decisions.md`; vault
 - **Deferred:** full Inter body migration; per-screen layout polish beyond
   Inicio; any trend chart.
 
+## Phase 7e (active) — Data Foundation: Advice Trace, Snapshots, Consent
+
+Strategic data substrate for the long-term counsel/underwriting vision
+(vault: `Long-Term Strategy - Financial Institution`). **Code-complete
+2026-06-11 on branch `phase-7e-data`.** No product behavior changes —
+everything accretes passively. Canonical: `docs/phase-7e-decisions.md`;
+vault `Decision - Data Foundation (Advice Trace, Snapshots, Consent)`.
+
+- **`advice_events` (migration `0031`)** — append-only trace of every
+  deterministic verdict surfaced to the user, with FULL `inputs`+`result`
+  JSONB (the reproducibility rule extended from calculations to decisions).
+  Wired surfaces (5): `assess_purchase`, `get_savings_capacity`,
+  `get_card_analysis` (query tools — telemetry-class write like
+  `llm_query_dispatches`; the read-only rule = no financial-state mutation),
+  the conversational goal feasibility gate (write dispatcher), and
+  `over_commitment` (recorded at the orchestrator's post-dedup INSERT — one
+  trace per fired nudge). Recorder `api/services/advice_trace.py`: **own
+  session via the `app/queries/session` settable proxy, swallow-on-fail with
+  loud logging** — can never break an advice path. New kinds go in
+  `KNOWN_KINDS`. `outcome_*` columns reserved for a future labeling worker
+  (advice → action → outcome).
+- **`envelope_snapshots` + `cashflow_snapshots` (migration `0031`)** —
+  frozen per-period copies of the envelope summary figures + the
+  MonthlyCashflow picture, so "¿respeté mi presupuesto en marzo?" survives
+  limit edits and hard deletes (identity denormalized; `envelope_id` FK
+  `SET NULL`). `api/services/snapshots.py::capture_user_snapshots` upserts
+  idempotently (partial UNIQUE `(envelope_id, period)`;
+  `UNIQUE(user_id, period)` for cashflow); on day ≤ 3 of a month it
+  recaptures the just-closed period via the new optional `today` override on
+  `compute_envelope_summary` (limits/reservations still read current rows —
+  accepted imprecision, documented). Runs in the nightly insights worker
+  (own session + own try/except) and via `POST /api/v1/jobs/capture-snapshots`.
+- **`user_consents` (migration `0031`)** — append-only, versioned consent
+  ledger; purposes CHECK-constrained (`core_service`, `behavioral_insights`,
+  `product_research`, `aggregated_datasets`; widen by migration). Current
+  state = latest row per (user, purpose). `GET/POST /api/v1/users/me/consents`
+  (POST appends grant/revoke; unknown purpose → 422). Consent UX is P8
+  onboarding work; the ledger lands first because consent can't be
+  retro-fitted.
+- **Verification:** `scripts/test_phase_7e.sh` — focused
+  `tests/test_phase_7e_data_foundation.py` (7) + wired-surface regression
+  (107) green; `scripts/test_phase_7b.sh` cross-check green (48 + 136,
+  byte-locked cashflow intact). `alembic current → 0031 (head)` (sits on top of the parallel Phase 7d goal-funding migration `0030`).
+- **Ops incident (preserved):** this block was first numbered 0030/"Phase
+  7d" and collided with the operator's PARALLEL, uncommitted Phase 7d
+  goal-funding work whose migration `0030` was already applied to the shared
+  dev DB — so the first `upgrade head` silently no-opped (version said 0030,
+  tables missing). Resolution: renamed to Phase 7e / migration `0031`
+  (`down_revision=0030`), version table corrected. Lessons: migration
+  numbers + phase letters must be claimed against BOTH committed history and
+  in-flight working trees; if a fresh migration "applies" without a "Running
+  upgrade" log line, compare `alembic_version` against physical tables.
+- **Deferred:** outcome-labeling worker (definitions of "followed" needed);
+  consent onboarding UX + `core_service` auto-seed at register (P8);
+  snapshot read API; `assess_financing` trace kind.
+
 ## Phase 7d (active) — Goal Funding From Accounts + Goals Full CRUD
 
 Operator asks 2026-06-11: full goal CRUD in the app + **real money semantics

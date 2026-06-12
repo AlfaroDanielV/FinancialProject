@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from rapidfuzz import fuzz, utils
 
+from api.services.advice_trace import record_advice_event
 from api.services.credit_cards import (
     build_card_analysis,
     list_active_cards_with_terms,
@@ -91,6 +92,17 @@ async def get_card_analysis(
     analysis = build_card_analysis(card=card)
     payload = analysis.model_dump(mode="json")
     payload["card_name"] = card.account.name
+    # Phase 7e advice trace — never-payoff is the verdict that matters here.
+    await record_advice_event(
+        user_id=user_id,
+        kind="card_analysis",
+        verdict="never_payoff" if analysis.never_pays_off else "info",
+        inputs={"card_hint": card_hint},
+        result=payload,
+        surface="query_tool",
+        subject_type="account",
+        subject_id=card.account.id,
+    )
     return payload
 
 

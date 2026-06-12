@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.user import User
 from ..schemas.recurring_bills import VALID_RECURRING_BILL_CATEGORIES
+from .advice_trace import record_advice_event, verdict_from
 from .dispatch.lazy_detection import classify_hint_type, match_account_hint
 from .accounts import resolve_account, list_active
 from .amortization import compute_french_payment
@@ -826,6 +827,11 @@ def _build_goal_summary(
     return lead + " ¿Confirmo?"
 
 
+def _opt_str(value: object) -> Optional[str]:
+    """JSON-safe str() that preserves None (for trace payloads)."""
+    return str(value) if value is not None else None
+
+
 async def _dispatch_create_goal(
     *,
     extraction: ExtractionResult,
@@ -871,6 +877,38 @@ async def _dispatch_create_goal(
             db, user=user, today=today, horizon_days=min(max(60, months * 30), 365)
         )
         context_note = _goal_context_note(context)
+        # Phase 7e advice trace — own session, never touches `db`'s
+        # transaction (the propose path doesn't commit).
+        await record_advice_event(
+            user_id=user.id,
+            kind="goal_feasibility",
+            verdict=verdict_from(
+                feasible=assessment.feasible,
+                gate_reason=assessment.gate_reason,
+            ),
+            inputs={
+                "goal_name": extraction.goal_name,
+                "target_amount": str(target),
+                "currency": currency,
+                "target_date": target_date.isoformat(),
+                "timeline_months": months,
+            },
+            result={
+                "feasible": assessment.feasible,
+                "gate_reason": assessment.gate_reason,
+                "monthly_needed": _opt_str(assessment.monthly_needed),
+                "surplus": _opt_str(assessment.surplus),
+                "safe_surplus": _opt_str(assessment.safe_surplus),
+                "shortfall": _opt_str(assessment.shortfall),
+                "min_timeline_months_feasible": assessment.min_timeline_months_feasible,
+                "max_amount_feasible_in_timeline": _opt_str(
+                    assessment.max_amount_feasible_in_timeline
+                ),
+                "currency": assessment.currency,
+                "notes": list(assessment.notes),
+            },
+            surface="write_dispatcher",
+        )
 
     payload = {
         "action_type": "create_goal",

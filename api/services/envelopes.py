@@ -336,9 +336,13 @@ async def set_class_subtree(
 
 
 async def compute_envelope_summary(
-    db: AsyncSession, *, user: User
+    db: AsyncSession, *, user: User, today: Optional[date] = None
 ) -> EnvelopeSummaryResponse:
-    today = _user_today(user)
+    # `today` override (Phase 7d): lets the snapshot job recapture a just-
+    # closed month over its full window (limits/reservations are still read
+    # from the CURRENT rows — snapshots exist precisely to freeze them going
+    # forward). Default = live "now" in the user's timezone.
+    today = today or _user_today(user)
     start = date(today.year, today.month, 1)
     end = _next_month_start(start)
     period = f"{today.year:04d}-{today.month:02d}"
