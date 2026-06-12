@@ -1369,53 +1369,40 @@ vault `Decision - Data Foundation (Advice Trace, Snapshots, Consent)`.
   consent onboarding UX + `core_service` auto-seed at register (P8);
   snapshot read API; `assess_financing` trace kind.
 
-## Phase 7d (active) — Goal Funding From Accounts + Goals Full CRUD
+## Phase 8 (started) — B1: Telegram cold-start registration (2026-06-12)
 
-Operator asks 2026-06-11: full goal CRUD in the app + **real money semantics
-for goals**. **Code-complete 2026-06-11 — operator on-device sign-off
-pending.** Verification: `scripts/test_phase_7d.sh` green (mobile `tsc
---noEmit`; 29 focused + 122 regression incl. the byte-locked unified-cashflow
-regression); `scripts/test_phase_7b.sh` cross-check green; `alembic current →
-0030 (head)`. Canonical: `docs/phase-7d-decisions.md`; vault `Decision - Goal
-Funding From Accounts`.
+A stranger can now onboard with zero curl. Background: the operator hit the
+dead-end himself post-reset — unpaired `/start` pointed at an authenticated
+pairing endpoint. Key insight: **pairing codes are only needed API→Telegram**
+(prove ownership of an existing user row); in the inverse direction Telegram
+already authenticates `telegram_user_id`, so the bot creates + binds in one
+step. Canonical: `docs/phase-8-decisions.md`; vault `Decision - Telegram
+Cold-Start Registration`.
 
-- **An aporte is a real account movement.** New contributions REQUIRE a
-  source account (same currency as the goal; fund accounts only — credit
-  cards rejected), validate live funds via `compute_account_balances` (400
-  "Fondos insuficientes…" naming the available balance), and create a
-  negative transaction marked with `transactions.goal_id` (migration `0030`)
-  + `goal_contributions.source_account_id`/`transaction_id`. Historical
-  (pre-7d) sourceless contributions stay tracking-only and are NOT
-  refundable (the cancel preview names that bucket).
-- **Goal flows are not income/expense.** `goal_id`-marked rows are excluded
-  from income/expense/category analytics exactly like transfer legs (dashboard
-  summary, transactions `kind` filters, chat transaction tools — where the
-  chat tools also gained the missing transfer exclusion). Balances include
-  them: the dashboard saldo dips on aporte and recovers on refund, by design.
-  Goal txns are machine-managed: PATCH + bulk 409; they can never carry an
-  `envelope_id` (savings sobres stay allocation-only for goal money).
-- **Cancel refunds; cumplida never does.** `POST /goals/{id}/cancel` groups
-  un-refunded sourced contributions by account, writes ONE positive refund
-  transaction per account (archived accounts still receive — money goes
-  home), stamps `goal_contributions.refund_transaction_id` (idempotent),
-  clamps `current_amount`, abandons. `GET /goals/{id}/cancel-preview` shows
-  the per-account breakdown + unrefundable bucket BEFORE confirming.
-  **Achieving is always explicit**: the auto-achieve-at-target flips were
-  REMOVED; the app shows a "Llegaste al objetivo — ¿la cumpliste?" banner and
-  a double-confirm Alert («la plata NO vuelve; si querés recuperarla usá
-  Cancelar meta»). Side doors closed: `PATCH status=abandoned` → 400 (use
-  cancel); cancel on an achieved goal → 400.
-- **True goal delete**: `DELETE /goals/{id}` 409s while un-refunded sourced
-  aportes exist ("Cancelá la meta primero…"), else hard-deletes goal +
-  contribution history (account movements survive via `goal_id` SET NULL),
-  204.
-- **Mobile full CRUD**: `GoalFormModal` (create "+ Nueva meta" + edit —
-  structured-form exception precedent: Incomes/Bills; chat-first stays the
-  default), funded-contribution picker with live balances, cancel-with-
-  preview flow, "Devuelto" tag on refunded aportes.
-- Tech debt logged: `mv_*_summary_by_user` + `insights/computed.py` don't
-  exclude goal flows (same family as their transfer/archived gaps); chat
-  transaction tools still missing `status`/`archived` filters.
+- **Flow** (deterministic, zero LLM, mirrors 6d B9): unknown tg id sends
+  `/start` → `bot/registration.py` Redis mini-flow
+  (`telegram:registration:{tg_id}`, TTL 15 min, keyed by TELEGRAM id — no
+  user row exists yet): email (uniqueness-checked; taken → pairing-path copy
+  without burning the flow) → nombre → confirmación con ToS → user created
+  with `telegram_user_id` bound in the same INSERT → `shortcut_token`
+  delivered in-chat (<code>, rotate-able; same exposure class as `/login`
+  codes) → `/setup` (6d onboarding takes over). `/cancel` aborts;
+  `begin_registration` is re-entrant; defaults CR/CRC/es-CR not asked.
+- **Shared creation path**: `api/services/users.py::create_user_with_defaults`
+  extracted from the register router — REST register + bot flow mint the
+  token and seed the default notification rule + categories in ONE place.
+- **First real Phase 7e consent use**: confirming the summary IS the
+  `core_service` grant (`record_consent(..., version=registration.
+  TERMS_VERSION, source="telegram")`, same transaction as the user row).
+  Bump `TERMS_VERSION` when the confirm copy changes.
+- `PAIR_PROMPT` rewritten: unknown users → `/start` first; the authenticated
+  pairing-code path stays for linking existing users.
+- **Verification:** `tests/test_phase_8_registration.py` (6) + handler/
+  welcome/endpoints/dispatcher regression (58) + 7e/goal/magic-link slice
+  (27) green. No migration (`0031` head).
+- **Deferred:** currency/timezone prompts (defaults CR), registration rate
+  limiting per tg id (beta scale doesn't need it), self-serve account
+  delete, formal ToS document.
 
 ## CR Salary Calculator + Ingresos CRUD (post-7a, 2026-06-09)
 

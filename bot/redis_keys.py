@@ -31,6 +31,16 @@ def pairing_key(code: str) -> str:
     return f"telegram:pairing:{code}"
 
 
+# Phase 8 B1: Telegram cold-start registration. Keyed by telegram_user_id
+# (NOT user_id — the user row doesn't exist yet). 15 min gives room to type
+# an email + name without feeling rushed.
+REGISTRATION_TTL_S = 15 * 60
+
+
+def registration_key(telegram_user_id: int | str) -> str:
+    return f"telegram:registration:{telegram_user_id}"
+
+
 # Phase 6f B3: device-login codes minted by /login in the Telegram bot,
 # consumed by the native app via POST /api/v1/auth/device-code/exchange.
 # Different namespace from `telegram:pairing:*` because pairing binds a

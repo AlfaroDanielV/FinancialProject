@@ -9,11 +9,52 @@ from __future__ import annotations
 # ── pairing ───────────────────────────────────────────────────────────────────
 
 PAIR_PROMPT = (
-    "¡Hola! Para usar este bot, pedí tu código de emparejamiento en la API:\n\n"
-    "POST /api/v1/users/me/telegram/pairing-code\n\n"
-    "Después mandame: /start <code>código</code>"
+    "Todavía no conozco esta cuenta de Telegram.\n\n"
+    "• Si sos nuevo: mandá /start y te creo la cuenta acá mismo.\n"
+    "• Si ya tenés cuenta: pedí tu código en la API "
+    "(POST /api/v1/users/me/telegram/pairing-code) y mandame "
+    "/start <code>código</code>"
 )
 PAIR_SUCCESS = "Listo, {name}. Ya podés registrar gastos e ingresos por acá."
+
+# ── Phase 8 B1 — cold-start registration ─────────────────────────────────────
+
+REGISTER_START = (
+    "¡Hola! Soy tu asistente de finanzas personales. 🇨🇷\n\n"
+    "Te creo la cuenta en un minuto. Primero: ¿cuál es tu <b>email</b>?\n\n"
+    "(Si ya tenés cuenta, mandá /start <code>código</code> en su lugar. "
+    "Podés salir con /cancel.)"
+)
+REGISTER_EMAIL_INVALID = (
+    "Ese email no se ve válido. Probá de nuevo (ej: maria@ejemplo.com)."
+)
+REGISTER_EMAIL_TAKEN = (
+    "Ese email ya tiene una cuenta. Si es tuya, vinculala con un código: "
+    "pedilo en la API (POST /api/v1/users/me/telegram/pairing-code) y "
+    "mandame /start <code>código</code>.\n\n"
+    "¿Querés usar otro email? Mandámelo. O salí con /cancel."
+)
+REGISTER_ASK_NAME = "¿Cómo te llamás? (nombre y apellido)"
+REGISTER_NAME_INVALID = "Necesito un nombre de 2 a 120 caracteres. Probá de nuevo."
+REGISTER_CONFIRM = (
+    "Listo, esto es lo que voy a crear:\n\n"
+    "👤 {name}\n"
+    "📧 {email}\n"
+    "💰 Moneda: CRC · Zona horaria: Costa Rica\n\n"
+    "Al confirmar aceptás los Términos del servicio y que use tus datos "
+    "para operar tu cuenta (podés revisar y revocar consentimientos cuando "
+    "querás).\n\n"
+    "¿Confirmo? (sí / no)"
+)
+REGISTER_CONFIRM_HINT = 'Respondé "sí" para crear la cuenta o "no" para cancelar.'
+REGISTER_CANCELLED = "Listo, no creé nada. Mandá /start cuando querás empezar."
+REGISTER_DONE = (
+    "¡Cuenta creada, {name}! 🎉 Ya quedaste vinculado a este Telegram.\n\n"
+    "Tu token para el iPhone Shortcut (guardalo, no se vuelve a mostrar):\n"
+    "<code>{token}</code>\n\n"
+    "Siguiente paso: mandá /setup para configurar tus cuentas, ingresos y "
+    "gastos fijos."
+)
 PAIR_BAD_CODE = (
     "Ese código no es válido o ya expiró. Pedí uno nuevo en la API y volvé a probar."
 )

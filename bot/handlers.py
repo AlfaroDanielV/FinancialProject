@@ -41,6 +41,12 @@ from .app import get_bot, get_llm_client
 from .delivery_send import send_chunked
 from .onboarding_welcome import build_onboarding_reply
 from .pairing import consume_pairing_code, resolve_pairing_code
+from .registration import (
+    begin_registration,
+    clear_registration,
+    handle_registration_text,
+    load_registration,
+)
 from .clarification import clear_clarification
 from .pending import clear_pending, load_pending
 from .pending_db import resolve_from_pending
@@ -181,7 +187,15 @@ async def on_start(message: Message, command: CommandObject) -> None:
             return
 
         if not command.args:
-            await message.answer(messages_es.PAIR_PROMPT)
+            # Phase 8 B1 — unknown Telegram account + bare /start: cold-start
+            # registration right here (Telegram already authenticates the
+            # telegram_user_id; pairing codes are only for linking a
+            # pre-existing user row).
+            await message.answer(
+                await begin_registration(
+                    telegram_user_id=tg_id, redis=get_redis()
+                )
+            )
             return
 
         code = command.args.strip().upper()
@@ -273,7 +287,14 @@ async def on_cancel(message: Message) -> None:
             telegram_user_id=message.from_user.id, db=db
         )
         if user is None:
-            await message.answer(messages_es.PAIR_PROMPT)
+            # Phase 8 B1 — /cancel aborts an in-flight registration.
+            redis = get_redis()
+            tg_id = message.from_user.id
+            if await load_registration(telegram_user_id=tg_id, redis=redis):
+                await clear_registration(telegram_user_id=tg_id, redis=redis)
+                await message.answer(messages_es.REGISTER_CANCELLED)
+            else:
+                await message.answer(messages_es.PAIR_PROMPT)
             return
         redis = get_redis()
         # Phase 5d: close the DB audit row before we drop the Redis key.
@@ -368,7 +389,15 @@ async def on_text(message: Message) -> None:
                 telegram_user_id=message.from_user.id, db=db
             )
             if user is None:
-                await message.answer(messages_es.PAIR_PROMPT)
+                # Phase 8 B1 — an in-flight registration consumes the text
+                # (email / nombre / confirmación) before the pair fallback.
+                reg_reply = await handle_registration_text(
+                    telegram_user_id=message.from_user.id,
+                    text=message.text,
+                    db=db,
+                    redis=get_redis(),
+                )
+                await message.answer(reg_reply or messages_es.PAIR_PROMPT)
                 return
             reply = await process_message(
                 user=user,
