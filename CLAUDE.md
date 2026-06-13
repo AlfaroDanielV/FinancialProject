@@ -159,6 +159,8 @@ All tables use UUID primary keys via `gen_random_uuid()`. Timestamps are `TIMEST
 - **Phase 6f/7/7a tables** — `users.expo_push_token` (0021), `envelopes` + `transactions.envelope_id` (0022), `nudge_type` CHECK widened (0023), `envelopes.parent_id`+`depth` (0024), `recurring_incomes.gross_monthly` (0025), `recurring_bills.envelope_id` + `debts.envelope_id` (0026), `notification_events.debt_id` (0027)
 - **Phase 7b tables** — `debt_payments.transaction_id` + `bill_occurrences.transaction_id` FKs aligned to `ON DELETE SET NULL` (migration 0028); `credit_card_terms` 1:1 on the credit account — APRs as 0–1 fractions, mínimo = max(pct × saldo, piso), `credit_limit`, `statement_day`, `payment_due_day`, `envelope_id`; deliberately NO balance column (migration 0029)
 - **Phase 7d columns** — `transactions.goal_id` (FK goals SET NULL — marks goal aportes/refunds, excluded from income/expense math like transfer legs), `goal_contributions.source_account_id` (FK accounts SET NULL) + `goal_contributions.refund_transaction_id` (FK transactions SET NULL — refund idempotency stamp) (migration 0030)
+- **Phase 7e tables** — `advice_events`, `envelope_snapshots`, `cashflow_snapshots`, `user_consents` (migration 0031)
+- **Phase 7g columns** — `recurring_incomes.hire_date` (DATE NULL — fecha de incorporación; prorates CR aguinaldo + salario escolar) (migration 0032)
 
 ### Phase 4 tables (recurring bills + calendar alerts)
 
@@ -1421,6 +1423,41 @@ regression); `scripts/test_phase_7b.sh` + `test_phase_6f.sh` +
   DebtCreateScreen, CardAccountCreateScreen, AccountCreateScreen,
   SalaryCalculator, GoalDetail contribution form. Percent/day/term inputs
   stay plain. Category stays free text (6e B11 decision holds).
+
+## Phase 7g (active) — Income Model Rework (2026-06-13)
+
+Two income correctness bugs, **code-complete 2026-06-13 — operator on-device
+sign-off pending**. Migration `0032`. Canonical: `docs/phase-7g-decisions.md`;
+vault `Decision - Income Model Rework`. Gate: `scripts/test_phase_7f.sh` +
+7d/7b/6f cross-checks green; mobile `tsc` clean.
+
+- **Frequency division.** A salary is entered MONTHLY (gross→net); the row now
+  stores the **per-payment** amount (`monthly_net ÷ payments-per-month`) so the
+  shared normalizer multiplies it back — a quincenal salary stores `net/2`, no
+  longer inflated ~2.17×. Single factor source `api/services/income_frequency.py`
+  (`PAYMENTS_PER_MONTH`, **CR quincenal = 2/month**, not 26/12);
+  `envelopes._FREQ_TO_MONTHLY` aliases it and `affordability._BILL_FREQ_TO_MONTHLY`
+  sets biweekly=2 to match (incomes + bills). `_dispatch_create_income` divides
+  the CRC-salary net; USD/freelance ("cada pago") stay per-payment. Mobile mirror
+  `mobile/src/lib/incomeFrequency.ts` + `IncomeFormModal` divides on save,
+  reconstructs monthly on edit, shows a per-paycheck preview. Round-trip locked
+  by `test_quincenal_per_payment_roundtrips_to_monthly_net`.
+- **CR aguinaldo + salario escolar.** New pure module
+  `app/domain/payroll/cr_cycles.py` (`compute_aguinaldo`,
+  `compute_salario_escolar`): aguinaldo = **gross** × days worked in Dec1–Nov30
+  ÷ window days; salario escolar = **8.33% × annual gross earned**, day-prorated
+  over the calendar year. `api/services/finance/incomes.py::derive_amount_for`
+  rewired to `(monthly_gross, hire_date, as_of_year)`. New
+  `recurring_incomes.hire_date` (migration `0032`); `derive-cycles` accepts +
+  persists a `hire_date` body, uses `gross_monthly` (or `amount × cadence`
+  fallback), and recomputes existing rows on re-derive. Mobile "Derivar" prompts
+  the fecha de incorporación (`DateField`, prefilled) with an "Año completo"
+  escape. Cycles stay `frequency="annual"`, excluded from `_monthly_income`.
+- **Existing data:** migration doesn't rewrite amounts; opt-in
+  `scripts/backfill_income_per_payment.py` (dry-run default) divides pre-change
+  non-monthly salary rows. Operator's 1–2 incomes: re-enter.
+- **Hard rule reaffirmed:** the LLM never computes a cycle/salary figure — the
+  pure `app/domain/payroll` rules layer does; the dispatcher only routes.
 
 ## Phase 8 (started) — B1: Telegram cold-start registration (2026-06-12)
 

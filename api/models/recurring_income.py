@@ -70,6 +70,9 @@ class RecurringIncome(Base):
         ForeignKey("recurring_incomes.id", ondelete="CASCADE"),
         nullable=True,
     )
+    # Employee hire date (fecha de incorporación) on a salary row — drives the
+    # aguinaldo / salario escolar proration. NULL → full window assumed.
+    hire_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )

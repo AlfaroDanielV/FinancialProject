@@ -29,17 +29,14 @@ from ..schemas.envelopes import (
     EnvelopeSummaryResponse,
 )
 from .fx import convert
+from .income_frequency import PAYMENTS_PER_MONTH
 
 _CLASS_ORDER = ["needs", "wants", "savings", "investing"]
 
-# Normalize a recurring-income cadence to a monthly figure for the
-# "total limits vs income" sanity line. Approximate by design.
-_FREQ_TO_MONTHLY = {
-    "weekly": Decimal("52") / Decimal("12"),
-    "biweekly": Decimal("26") / Decimal("12"),
-    "monthly": Decimal("1"),
-    "annual": Decimal("1") / Decimal("12"),
-}
+# Normalize a recurring-income cadence to a monthly figure. A row stores the
+# per-payment amount, so monthly = per_payment × payments-per-month. Single
+# source: api/services/income_frequency.py (CR quincenal = 2/month).
+_FREQ_TO_MONTHLY = PAYMENTS_PER_MONTH
 
 
 def _user_today(user: User) -> date:

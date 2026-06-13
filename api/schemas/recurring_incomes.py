@@ -33,6 +33,9 @@ class RecurringIncomeCreate(BaseModel):
     frequency: IncomeFrequencyEnum
     next_payment_date: date
     base_salary_link_id: Optional[uuid.UUID] = None
+    # Employee hire date (fecha de incorporación) — used to prorate aguinaldo
+    # and salario escolar. Optional; unknown → full window assumed.
+    hire_date: Optional[date] = None
     notes: Optional[str] = None
 
     @model_validator(mode="after")
@@ -68,6 +71,7 @@ class RecurringIncomeUpdate(BaseModel):
     )
     frequency: Optional[IncomeFrequencyEnum] = None
     next_payment_date: Optional[date] = None
+    hire_date: Optional[date] = None
     is_active: Optional[bool] = None
     archived: Optional[bool] = None
     notes: Optional[str] = None
@@ -84,6 +88,7 @@ class RecurringIncomeResponse(BaseModel):
     frequency: str
     next_payment_date: date
     base_salary_link_id: Optional[uuid.UUID]
+    hire_date: Optional[date] = None
     is_active: bool
     archived: bool = False
     notes: Optional[str]
@@ -91,6 +96,17 @@ class RecurringIncomeResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class CRCycleDeriveRequest(BaseModel):
+    """Optional hire date (fecha de incorporación) for proration. When
+    provided it is persisted on the base salary so a re-derive doesn't re-ask;
+    when omitted, the salary's stored hire_date (if any) is used, else the
+    full window is assumed."""
+
+    model_config = {"extra": "forbid"}
+
+    hire_date: Optional[date] = None
 
 
 class CRCycleDeriveResponse(BaseModel):

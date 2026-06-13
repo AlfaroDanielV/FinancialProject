@@ -115,9 +115,10 @@ async def test_create_income_full_flow_commits_income(db_with_user):
         ).scalars().all()
         assert len(rows) == 1
         assert rows[0].income_type == "salary"
-        # 800,000 CRC gross → net 713,360 (CCSS 86,640, ISR 0). The actual
-        # take-home is stored as the amount; the gross is kept for re-edit.
-        assert rows[0].amount == Decimal("713360.00")
+        # 800,000 CRC gross → net 713,360 (CCSS 86,640, ISR 0). Quincenal, so
+        # the PER-PAYMENT amount is stored (713,360 / 2 = 356,680); the gross
+        # is kept for re-edit. The monthly normalizer multiplies it back.
+        assert rows[0].amount == Decimal("356680.00")
         assert rows[0].gross_monthly == Decimal("800000.00")
         assert rows[0].frequency == "biweekly"
     finally:
@@ -230,11 +231,56 @@ async def test_crc_salary_dispatch_computes_net_keeps_gross(db_with_user):
         db=session,
     )
     assert isinstance(decision, ProposeAction)
-    # 1,500,000 gross → 1,271,700 net; gross persisted for re-edit.
-    assert decision.payload["amount"] == "1271700"
+    # 1,500,000 gross → 1,271,700 net monthly. Quincenal → the stored amount is
+    # the per-payment figure (1,271,700 / 2 = 635,850); gross kept for re-edit.
+    assert decision.payload["amount"] == "635850.00"
     assert decision.payload["gross_monthly"] == "1500000"
     summary = decision.summary_es.lower()
     assert "bruto" in summary and "neto" in summary
+
+
+@pytest.mark.asyncio
+async def test_monthly_salary_stores_full_net_no_division(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    decision = await dispatch(
+        extraction=_income_extraction(
+            amount=Decimal("1500000"),
+            income_type="salary",
+            income_frequency="monthly",
+        ),
+        user=user,
+        today=date(2026, 6, 9),
+        db=session,
+    )
+    assert isinstance(decision, ProposeAction)
+    # Monthly cadence → no division; the full monthly net is the per-payment.
+    assert Decimal(decision.payload["amount"]) == Decimal("1271700")
+
+
+@pytest.mark.asyncio
+async def test_quincenal_per_payment_roundtrips_to_monthly_net(db_with_user):
+    """The stored per-payment amount, normalized back, equals the monthly net —
+    no inflation. This is the bug the division fixes."""
+    from api.services.envelopes import _monthly_income
+
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    session.add(
+        RecurringIncome(
+            user_id=user_id,
+            name="Salario",
+            income_type="salary",
+            amount=Decimal("635850.00"),  # 1,271,700 monthly net / 2
+            gross_monthly=Decimal("1500000"),
+            currency="CRC",
+            frequency="biweekly",
+            next_payment_date=date(2026, 6, 15),
+        )
+    )
+    await session.commit()
+    monthly = await _monthly_income(session, user=user)
+    assert monthly == Decimal("1271700.00")
 
 
 @pytest.mark.asyncio

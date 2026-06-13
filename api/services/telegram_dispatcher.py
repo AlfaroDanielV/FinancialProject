@@ -27,6 +27,7 @@ from .dispatch.lazy_detection import classify_hint_type, match_account_hint
 from .accounts import resolve_account, list_active
 from .amortization import compute_french_payment
 from .envelopes import match_envelopes_by_name, match_obligations_by_name
+from .income_frequency import per_payment_from_monthly
 from .finance.affordability import (
     SAFETY_MARGIN,
     AffordabilityResult,
@@ -1033,18 +1034,30 @@ def _build_income_summary(
     next_date: date,
     income_type: str,
     gross_amount: Optional[Decimal] = None,
+    monthly_net: Optional[Decimal] = None,
 ) -> str:
+    """`amount` is the per-payment amount that gets stored. For a salary,
+    `gross_amount` (monthly gross) and `monthly_net` (monthly take-home) are
+    shown too so the user sees the deductions and how the month is split into
+    paychecks."""
     amt = _format_amount(amount, currency)
     freq = _FREQUENCY_LABELS_ES.get(frequency, frequency)
-    if gross_amount is not None:
-        # Salary captured as gross: show bruto → neto so the user sees the
-        # deductions the deterministic calculator applied.
+    if gross_amount is not None and monthly_net is not None:
+        # Salary captured as gross: bruto mensual → neto mensual → por período.
         gamt = _format_amount(gross_amount, currency)
-        lead = (
-            f"Ingreso recurrente: {name} — salario bruto {gamt} → neto {amt} "
-            f"(después de CCSS e impuesto de renta) ({freq}), "
-            f"próximo pago {next_date.isoformat()}."
-        )
+        namt = _format_amount(monthly_net, currency)
+        if frequency == "monthly":
+            lead = (
+                f"Ingreso recurrente: {name} — salario bruto mensual {gamt} → "
+                f"neto {namt} (después de CCSS e impuesto de renta) ({freq}), "
+                f"próximo pago {next_date.isoformat()}."
+            )
+        else:
+            lead = (
+                f"Ingreso recurrente: {name} — salario bruto mensual {gamt} → "
+                f"neto mensual {namt} (después de CCSS e impuesto de renta), "
+                f"por {freq.lower()} {amt}, próximo pago {next_date.isoformat()}."
+            )
     else:
         lead = (
             f"Ingreso recurrente: {name} — {amt} ({freq}), "
@@ -1118,15 +1131,21 @@ def _dispatch_create_income(
 
     name = _DEFAULT_INCOME_NAME.get(income_type, "Ingreso")
 
-    # For a CR salary, treat the entered amount as GROSS and store the NET as
-    # the income amount (the actual take-home), keeping the gross for re-edit.
+    # For a CR salary the entered amount is the MONTHLY gross. Compute the
+    # monthly net, then split it into the per-payment amount that actually
+    # gets stored (so the shared normalizer multiplies it back to the monthly
+    # net — a quincenal salary stores monthly_net / 2, not the whole month).
+    # USD salaries and non-salary income are asked "cada pago", so their
+    # entered amount is already per-payment — no division.
     gross_amount: Optional[Decimal] = None
+    monthly_net: Optional[Decimal] = None
     amount: Decimal = extraction.amount
     if is_cr_salary:
         net = _net_from_gross_salary(extraction.amount)
         if net is not None:
-            gross_amount = extraction.amount
-            amount = net
+            gross_amount = extraction.amount  # monthly gross
+            monthly_net = net  # monthly take-home
+            amount = per_payment_from_monthly(net, extraction.income_frequency)
 
     payload = {
         "action_type": "create_income",
@@ -1149,6 +1168,7 @@ def _dispatch_create_income(
         next_date=next_date,
         income_type=income_type,
         gross_amount=gross_amount,
+        monthly_net=monthly_net,
     )
     return ProposeAction(
         action_type="create_income", payload=payload, summary_es=summary

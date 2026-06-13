@@ -51,7 +51,7 @@ _ZERO = Decimal("0")
 # excluded and surfaced as a caveat instead of being guessed.
 _BILL_FREQ_TO_MONTHLY = {
     "weekly": Decimal("52") / Decimal("12"),
-    "biweekly": Decimal("26") / Decimal("12"),
+    "biweekly": Decimal("2"),  # CR quincenal = semi-monthly (matches PAYMENTS_PER_MONTH)
     "monthly": Decimal("1"),
     "bimonthly": Decimal("1") / Decimal("2"),
     "quarterly": Decimal("1") / Decimal("3"),

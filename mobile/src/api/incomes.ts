@@ -22,6 +22,8 @@ export interface RecurringIncomeResponse {
   frequency: IncomeFrequency;
   next_payment_date: string;
   base_salary_link_id: string | null;
+  // Hire date (fecha de incorporación) on a salary — drives CR cycle proration.
+  hire_date: string | null;
   is_active: boolean;
   archived: boolean;
   notes: string | null;
@@ -37,6 +39,7 @@ export interface RecurringIncomeCreate {
   currency: "CRC" | "USD";
   frequency: IncomeFrequency;
   next_payment_date: string;
+  hire_date?: string | null;
   notes?: string | null;
 }
 
@@ -46,6 +49,7 @@ export interface RecurringIncomeUpdate {
   gross_monthly?: number | null;
   frequency?: IncomeFrequency;
   next_payment_date?: string;
+  hire_date?: string | null;
   is_active?: boolean;
   archived?: boolean;
   notes?: string | null;
@@ -146,10 +150,12 @@ export async function restoreRecurringIncome(
 }
 
 export async function deriveIncomeCycles(
-  salaryId: string
+  salaryId: string,
+  hireDate?: string | null,
 ): Promise<DeriveCyclesResponse> {
   const res = await api.post<DeriveCyclesResponse>(
-    `/recurring-incomes/${salaryId}/derive-cycles`
+    `/recurring-incomes/${salaryId}/derive-cycles`,
+    hireDate ? { hire_date: hireDate } : {},
   );
   return res.data;
 }

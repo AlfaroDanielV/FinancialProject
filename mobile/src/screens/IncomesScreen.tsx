@@ -43,6 +43,7 @@ import {
 } from "../api/incomes";
 import { IncomeFormModal } from "../components/IncomeFormModal";
 import { SalaryCalculator } from "../components/SalaryCalculator";
+import { DateField } from "../components/fields/DateField";
 import { CardShadow, Colors, FontSize, Radius, Spacing } from "../theme";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -267,15 +268,30 @@ export function IncomesScreen() {
     return salaries.find((s) => !hasDerivedForSalary(incomes, s.id)) ?? null;
   }, [incomes]);
 
+  // Hire-date prompt for CR-cycle derivation (aguinaldo/salario escolar are
+  // prorated by the fecha de incorporación). Captured here, persisted on the
+  // salary by the backend so a re-derive prefills it.
+  const [deriveTarget, setDeriveTarget] = useState<
+    { id: string; name: string } | null
+  >(null);
+  const [deriveHireDate, setDeriveHireDate] = useState("");
+
   const deriveMutation = useMutation({
-    mutationFn: deriveIncomeCycles,
+    mutationFn: ({ salaryId, hireDate }: { salaryId: string; hireDate?: string | null }) =>
+      deriveIncomeCycles(salaryId, hireDate),
     onSuccess: () => {
+      setDeriveTarget(null);
       queryClient.invalidateQueries({ queryKey: ["recurring-incomes"] });
     },
     onError: () => {
       Alert.alert("Error", "No se pudieron crear los ciclos CR. Intenta de nuevo.");
     },
   });
+
+  function openDerive(salary: RecurringIncomeResponse) {
+    setDeriveHireDate(salary.hire_date ?? "");
+    setDeriveTarget({ id: salary.id, name: salary.name });
+  }
 
   async function handlePause(id: string) {
     setPendingId(id);
@@ -438,7 +454,7 @@ export function IncomesScreen() {
                 <NudgeBanner
                   salaryId={nudgeSalary.id}
                   salaryName={nudgeSalary.name}
-                  onDerive={(id) => deriveMutation.mutate(id)}
+                  onDerive={() => openDerive(nudgeSalary)}
                   isPending={deriveMutation.isPending}
                 />
               ) : null}
@@ -511,6 +527,66 @@ export function IncomesScreen() {
             </ScrollView>
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+      {/* ── CR-cycle hire-date prompt ── */}
+      <Modal
+        visible={deriveTarget != null}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setDeriveTarget(null)}
+      >
+        <Pressable style={styles.calcBackdrop} onPress={() => setDeriveTarget(null)} />
+        <View style={styles.deriveWrap} pointerEvents="box-none">
+          <View style={styles.deriveSheet}>
+            <Text style={styles.deriveTitle}>Fecha de incorporación</Text>
+            <Text style={styles.deriveSub}>
+              ¿Cuándo empezaste en la empresa? El aguinaldo y el salario escolar
+              se calculan proporcional al tiempo trabajado. Si ya tenés más de un
+              año, dejalo en "Año completo".
+            </Text>
+            <DateField
+              value={deriveHireDate}
+              onChange={setDeriveHireDate}
+              placeholder="Elegí la fecha"
+              style={styles.deriveInput}
+              maximumDate={new Date()}
+            />
+            <View style={styles.deriveActions}>
+              <Pressable
+                style={({ pressed }) => [styles.deriveGhost, pressed && { opacity: 0.7 }]}
+                disabled={deriveMutation.isPending}
+                onPress={() =>
+                  deriveTarget &&
+                  deriveMutation.mutate({ salaryId: deriveTarget.id, hireDate: null })
+                }
+              >
+                <Text style={styles.deriveGhostText}>Año completo</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.deriveBtn,
+                  (deriveMutation.isPending || !deriveHireDate) && { opacity: 0.5 },
+                  pressed && { opacity: 0.85 },
+                ]}
+                disabled={deriveMutation.isPending || !deriveHireDate}
+                onPress={() =>
+                  deriveTarget &&
+                  deriveMutation.mutate({
+                    salaryId: deriveTarget.id,
+                    hireDate: deriveHireDate,
+                  })
+                }
+              >
+                {deriveMutation.isPending ? (
+                  <ActivityIndicator size="small" color={Colors.bgCard} />
+                ) : (
+                  <Text style={styles.deriveBtnText}>Derivar</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -778,6 +854,60 @@ const styles = StyleSheet.create({
   // standalone calculator modal
   calcOverlay: { flex: 1, justifyContent: "flex-end" },
   calcBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.35)" },
+  deriveWrap: {
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: Spacing.lg,
+  },
+  deriveSheet: {
+    backgroundColor: Colors.bgCard,
+    borderRadius: Radius.lg,
+    padding: Spacing.lg,
+    gap: Spacing.sm,
+  },
+  deriveTitle: {
+    fontSize: FontSize.lg,
+    fontWeight: "700",
+    color: Colors.textPrimary,
+  },
+  deriveSub: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    lineHeight: 19,
+  },
+  deriveInput: {
+    backgroundColor: Colors.bg,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm + 2,
+    marginTop: Spacing.xs,
+  },
+  deriveActions: {
+    flexDirection: "row",
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
+  deriveGhost: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.sm + 2,
+  },
+  deriveGhostText: { color: Colors.textSecondary, fontSize: FontSize.sm, fontWeight: "600" },
+  deriveBtn: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: Colors.accent,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.sm + 2,
+  },
+  deriveBtnText: { color: Colors.bgCard, fontSize: FontSize.sm, fontWeight: "700" },
   calcSheet: {
     backgroundColor: Colors.bg,
     borderTopLeftRadius: Radius.lg,

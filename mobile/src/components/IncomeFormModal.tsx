@@ -7,9 +7,13 @@
  * → net calculator. Chat creation stays the default; this is the manual path +
  * the calculator's home.
  *
- * `amount` is the NET (the stored take-home). For a CRC salary the calculator
- * fills it from the gross and we keep the gross alongside. income_type and
- * currency are immutable post-create (backend B8 whitelist), so edit shows them
+ * For a CRC salary the `amount` field holds the MONTHLY net (the calculator
+ * fills it from the gross and we keep the gross alongside). On save it is
+ * divided by the cadence factor into the per-payment amount the backend stores
+ * (so a quincenal salary stores monthly_net / 2, and the normalizer multiplies
+ * it back). On edit the stored per-payment is reconstructed to monthly for the
+ * field. Non-salary income is per-payment as entered. income_type and currency
+ * are immutable post-create (backend B8 whitelist), so edit shows them
  * read-only.
  */
 import { useEffect, useState } from "react";
@@ -41,6 +45,11 @@ import { SalaryCalculator } from "./SalaryCalculator";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
 import { AmountInput } from "./fields/AmountInput";
 import { DateField } from "./fields/DateField";
+import {
+  monthlyFromPerPayment,
+  perPaymentFromMonthly,
+} from "../lib/incomeFrequency";
+import { formatMoney } from "../lib/format";
 
 interface Props {
   visible: boolean;
@@ -76,10 +85,20 @@ export function IncomeFormModal({ visible, mode, income, onClose, onSaved }: Pro
 
   useEffect(() => {
     const it = income?.income_type ?? "salary";
+    const cur = (income?.currency as "CRC" | "USD") ?? "CRC";
     setIncomeType(it);
-    setCurrency((income?.currency as "CRC" | "USD") ?? "CRC");
+    setCurrency(cur);
     setName(income?.name ?? "");
-    setAmount(income?.amount != null ? String(income.amount) : "");
+    // The stored amount is per-payment. For a CRC salary the field shows the
+    // MONTHLY net, so reconstruct it from the stored per-payment + cadence.
+    let initialAmount = "";
+    if (income?.amount != null) {
+      const isEditCrcSalary = it === "salary" && cur === "CRC";
+      initialAmount = isEditCrcSalary
+        ? String(monthlyFromPerPayment(income.amount, income.frequency))
+        : String(income.amount);
+    }
+    setAmount(initialAmount);
     setGrossAmount(income?.gross_monthly ?? null);
     setFrequency(income?.frequency ?? "monthly");
     setNextDate(income?.next_payment_date ?? "");
@@ -92,12 +111,16 @@ export function IncomeFormModal({ visible, mode, income, onClose, onSaved }: Pro
   const mutation = useMutation({
     mutationFn: async () => {
       const amountNum = Number(amount.replace(",", "."));
+      // For a CRC salary the field is the MONTHLY net → store per-payment.
+      const storedAmount = isSalaryCRC
+        ? perPaymentFromMonthly(amountNum, frequency)
+        : amountNum;
       const effectiveName = name.trim() || DEFAULT_NAME[incomeType] || "Ingreso";
       if (mode === "create") {
         return createRecurringIncome({
           name: effectiveName,
           income_type: incomeType,
-          amount: amountNum,
+          amount: storedAmount,
           gross_monthly: isSalaryCRC && grossAmount ? grossAmount : undefined,
           currency,
           frequency,
@@ -107,7 +130,7 @@ export function IncomeFormModal({ visible, mode, income, onClose, onSaved }: Pro
       }
       return updateRecurringIncome(income!.id, {
         name: effectiveName,
-        amount: amountNum,
+        amount: storedAmount,
         gross_monthly: isSalaryCRC ? grossAmount : undefined,
         frequency,
         next_payment_date: nextDate,
@@ -199,7 +222,7 @@ export function IncomeFormModal({ visible, mode, income, onClose, onSaved }: Pro
               />
             </Field>
 
-            <Field label={isSalaryCRC ? "Monto neto" : "Monto"}>
+            <Field label={isSalaryCRC ? "Monto neto mensual" : "Monto"}>
               <AmountInput
                 value={amount}
                 onChangeValue={setAmount}
@@ -237,6 +260,23 @@ export function IncomeFormModal({ visible, mode, income, onClose, onSaved }: Pro
                 )}
               </>
             )}
+
+            {isSalaryCRC &&
+              frequency !== "monthly" &&
+              Number.isFinite(Number(amount.replace(",", "."))) &&
+              Number(amount.replace(",", ".")) > 0 && (
+                <Text style={styles.paycheckHint}>
+                  Por {FREQUENCY_LABELS[frequency].toLowerCase()} recibís{" "}
+                  {formatMoney(
+                    perPaymentFromMonthly(
+                      Number(amount.replace(",", ".")),
+                      frequency,
+                    ),
+                    currency,
+                  )}
+                  . El neto mensual queda igual.
+                </Text>
+              )}
 
             <Field label="Frecuencia">
               <Segmented
@@ -430,6 +470,13 @@ const styles = StyleSheet.create({
     marginTop: -Spacing.xs,
   },
   calcToggleText: { fontSize: FontSize.sm, color: Colors.accent, fontWeight: "600" },
+  paycheckHint: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    marginTop: -Spacing.xs,
+    marginBottom: Spacing.md,
+    lineHeight: 17,
+  },
   error: { color: Colors.expense, fontSize: FontSize.sm, marginBottom: Spacing.sm },
   actions: { flexDirection: "row", gap: Spacing.sm, marginTop: Spacing.sm },
   btn: {
