@@ -31,6 +31,7 @@ import {
 } from "../api/debts";
 import { formatMoney } from "../lib/format";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
+import { AmountInput } from "./fields/AmountInput";
 
 interface Props {
   visible: boolean;
@@ -166,12 +167,11 @@ export function DebtEditModal({ visible, debt, onClose, onSaved }: Props) {
               />
             </Field>
             <Field label={`Cuota mensual (${debt.currency})`}>
-              <TextInput
+              <AmountInput
                 value={minPayment}
-                onChangeText={setMinPayment}
-                keyboardType="decimal-pad"
+                onChangeValue={setMinPayment}
                 style={styles.input}
-                placeholder="126000"
+                placeholder="126 000"
                 placeholderTextColor={Colors.textMuted}
               />
             </Field>

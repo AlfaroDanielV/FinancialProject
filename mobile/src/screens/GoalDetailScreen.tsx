@@ -50,6 +50,7 @@ import {
 } from "../api/goals";
 import { fetchAccounts, type AccountResponse } from "../api/accounts";
 import { GoalFormModal } from "../components/GoalFormModal";
+import { AmountInput } from "../components/fields/AmountInput";
 import { CardShadow, Colors, FontSize, Radius, Spacing } from "../theme";
 import type { MasStackParamList } from "../navigation/MasNavigator";
 
@@ -244,11 +245,10 @@ function AddContributionForm({
         <Text style={styles.addFormSymbol}>
           {currency === "CRC" ? "₡" : currency}
         </Text>
-        <TextInput
+        <AmountInput
           style={styles.addFormInput}
           value={amount}
-          onChangeText={setAmount}
-          keyboardType="numeric"
+          onChangeValue={setAmount}
           placeholder="0"
           placeholderTextColor={Colors.textMuted}
           returnKeyType="done"

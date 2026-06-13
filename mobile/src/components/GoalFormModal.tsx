@@ -29,6 +29,8 @@ import {
   type GoalResponse,
 } from "../api/goals";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
+import { AmountInput } from "./fields/AmountInput";
+import { DateField } from "./fields/DateField";
 
 interface Props {
   visible: boolean;
@@ -155,12 +157,11 @@ export function GoalFormModal({ visible, goal, onClose, onSaved }: Props) {
               />
             </Field>
             <Field label={`Monto objetivo (${currency})`}>
-              <TextInput
+              <AmountInput
                 value={targetAmount}
-                onChangeText={setTargetAmount}
-                keyboardType="decimal-pad"
+                onChangeValue={setTargetAmount}
                 style={styles.input}
-                placeholder="500000"
+                placeholder="500 000"
                 placeholderTextColor={Colors.textMuted}
               />
             </Field>
@@ -190,14 +191,13 @@ export function GoalFormModal({ visible, goal, onClose, onSaved }: Props) {
                 </View>
               </Field>
             )}
-            <Field label="Fecha objetivo (AAAA-MM-DD, opcional)">
-              <TextInput
+            <Field label="Fecha objetivo (opcional)">
+              <DateField
                 value={targetDate}
-                onChangeText={setTargetDate}
+                onChange={setTargetDate}
                 style={styles.input}
-                autoCapitalize="none"
-                placeholder="2026-12-31"
-                placeholderTextColor={Colors.textMuted}
+                placeholder="Sin fecha"
+                minimumDate={new Date()}
               />
             </Field>
             <Field label="Prioridad (1 = más alta)">
@@ -226,12 +226,11 @@ export function GoalFormModal({ visible, goal, onClose, onSaved }: Props) {
               </View>
             </Field>
             <Field label="Aporte mensual planeado (opcional)">
-              <TextInput
+              <AmountInput
                 value={monthly}
-                onChangeText={setMonthly}
-                keyboardType="decimal-pad"
+                onChangeValue={setMonthly}
                 style={styles.input}
-                placeholder="50000"
+                placeholder="50 000"
                 placeholderTextColor={Colors.textMuted}
               />
             </Field>

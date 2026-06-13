@@ -24,6 +24,7 @@ import {
   upsertCardTerms,
   type CardTermsResponse,
 } from "../api/cardTerms";
+import { AmountInput } from "./fields/AmountInput";
 import { EnvelopePickerModal } from "./EnvelopePickerModal";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
 
@@ -195,22 +196,20 @@ export function CardTermsEditModal({
               />
             </Field>
             <Field label="Pago mínimo base (₡, opcional)">
-              <TextInput
+              <AmountInput
                 value={minFloor}
-                onChangeText={setMinFloor}
-                keyboardType="decimal-pad"
+                onChangeValue={setMinFloor}
                 style={styles.input}
-                placeholder="5000"
+                placeholder="5 000"
                 placeholderTextColor={Colors.textMuted}
               />
             </Field>
             <Field label="Límite de crédito (opcional)">
-              <TextInput
+              <AmountInput
                 value={creditLimit}
-                onChangeText={setCreditLimit}
-                keyboardType="decimal-pad"
+                onChangeValue={setCreditLimit}
                 style={styles.input}
-                placeholder="2000000"
+                placeholder="2 000 000"
                 placeholderTextColor={Colors.textMuted}
               />
             </Field>

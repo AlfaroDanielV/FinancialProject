@@ -37,6 +37,8 @@ import {
   type RecurringBillResponse,
 } from "../api/bills";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
+import { AmountInput } from "./fields/AmountInput";
+import { DateField } from "./fields/DateField";
 
 interface Props {
   visible: boolean;
@@ -206,12 +208,11 @@ export function BillFormModal({ visible, mode, bill, onClose, onSaved }: Props) 
 
             {!isVariable && (
               <Field label={`Monto (${currency})`}>
-                <TextInput
+                <AmountInput
                   value={amount}
-                  onChangeText={setAmount}
-                  keyboardType="decimal-pad"
+                  onChangeValue={setAmount}
                   style={styles.input}
-                  placeholder="18000"
+                  placeholder="18 000"
                   placeholderTextColor={Colors.textMuted}
                 />
               </Field>
@@ -252,14 +253,11 @@ export function BillFormModal({ visible, mode, bill, onClose, onSaved }: Props) 
               />
             </Field>
 
-            <Field label="Inicio (AAAA-MM-DD)">
-              <TextInput
+            <Field label="Inicio">
+              <DateField
                 value={startDate}
-                onChangeText={setStartDate}
+                onChange={setStartDate}
                 style={styles.input}
-                placeholder="2026-06-01"
-                placeholderTextColor={Colors.textMuted}
-                autoCapitalize="none"
               />
             </Field>
 

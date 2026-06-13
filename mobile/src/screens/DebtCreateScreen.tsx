@@ -40,6 +40,7 @@ import {
   type DebtType,
 } from "../api/debts";
 import { computeMonthlyPaymentPreview } from "../lib/amortization";
+import { AmountInput } from "../components/fields/AmountInput";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
 import type { ChatStackParamList } from "../navigation/ChatNavigator";
 
@@ -344,24 +345,22 @@ export function DebtCreateScreen() {
 
         {/* ── Amounts ──────────────────────────────────────────────────────── */}
         <Field label="Monto original">
-          <TextInput
+          <AmountInput
             style={styles.input}
             value={originalAmount}
-            onChangeText={setOriginalAmount}
-            placeholder="5000000"
+            onChangeValue={setOriginalAmount}
+            placeholder="5 000 000"
             placeholderTextColor={Colors.textMuted}
-            keyboardType="decimal-pad"
           />
         </Field>
 
         <Field label="Saldo actual" hint="Para un préstamo nuevo, igual al monto original.">
-          <TextInput
+          <AmountInput
             style={[styles.input, balanceError != null && styles.inputError]}
             value={currentBalance}
-            onChangeText={setCurrentBalance}
-            placeholder="5000000"
+            onChangeValue={setCurrentBalance}
+            placeholder="5 000 000"
             placeholderTextColor={Colors.textMuted}
-            keyboardType="decimal-pad"
           />
         </Field>
         {balanceError != null && <Text style={styles.fieldError}>{balanceError}</Text>}
@@ -411,13 +410,12 @@ export function DebtCreateScreen() {
 
         {/* ── Minimum payment ──────────────────────────────────────────────── */}
         <Field label="Cuota mensual">
-          <TextInput
+          <AmountInput
             style={[styles.input, paymentError != null && styles.inputError]}
             value={minimumPayment}
-            onChangeText={setMinimumPayment}
-            placeholder="126000"
+            onChangeValue={setMinimumPayment}
+            placeholder="126 000"
             placeholderTextColor={Colors.textMuted}
-            keyboardType="decimal-pad"
           />
         </Field>
         {paymentError != null && <Text style={styles.fieldError}>{paymentError}</Text>}

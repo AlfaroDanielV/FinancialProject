@@ -19,6 +19,7 @@ import json
 import re
 import uuid
 from dataclasses import asdict, dataclass
+from dataclasses import field as dataclass_field
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
@@ -37,11 +38,18 @@ class ClarificationState:
     `partial` is the full serialized ExtractionResult (model_dump(mode="json"))
     from that dispatch. `question_es` is re-sent verbatim when the user's
     reply can't be interpreted.
+
+    Phase 7f: `options` are tappable answers (account names) rendered as
+    buttons on both channels; `nonce` rejects stale Telegram taps
+    (`clarify:{nonce}:{idx}`). Both default empty so pre-7f states and
+    questions without options keep working.
     """
 
     partial: dict[str, Any]
     awaiting_field: str
     question_es: str
+    options: list[str] = dataclass_field(default_factory=list)
+    nonce: str = ""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))

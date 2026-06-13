@@ -132,7 +132,8 @@ async def test_transfer_clarifies_source_then_merges_reply(db_with_user):
     )
     assert isinstance(decision, AskClarification), decision
     assert decision.awaiting_field == "transfer_from"
-    assert "Ahorros BN" in decision.question_es
+    # Phase 7f: account names ride as tappable options, not in the question.
+    assert "Ahorros BN" in decision.options
 
     state = ClarificationState(
         partial=decision.partial,

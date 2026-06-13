@@ -78,6 +78,10 @@ class AskClarification:
     awaiting_field: str  # "amount" | "account" | "intent" | "currency"
     partial: dict[str, Any] = field(default_factory=dict)
     telemetry_events: list[LazyDetectionTelemetry] = field(default_factory=list)
+    # Phase 7f: tappable answers (account names). Rendered as buttons on both
+    # channels; a tap posts the label back through the same merge path a typed
+    # reply takes. Empty = free-text question, no buttons.
+    options: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -165,6 +169,16 @@ CONFIDENCE_FLOOR = 0.6
 
 # Default number of recent transactions shown for "últimas" queries.
 DEFAULT_RECENT_LIMIT = 5
+
+# Phase 7f: cap on tappable account-name options attached to a clarification.
+# Defensive — personal accounts rarely exceed a handful; past the cap the user
+# can still type the name (the question copy always invites it).
+MAX_ACCOUNT_OPTIONS = 8
+
+
+def _account_options(accounts: list[Any]) -> list[str]:
+    """Active account names rendered as clarification buttons, capped."""
+    return [a.name for a in accounts[:MAX_ACCOUNT_OPTIONS]]
 
 
 # ── Spanish relative-date resolver ────────────────────────────────────────────
@@ -334,12 +348,14 @@ async def _dispatch_log(
         if match.status == "matched":
             account = match.account
         elif match.status == "ambiguous":
-            names = ", ".join(a.name for a in accounts)
             return AskClarification(
-                question_es=(f"¿De qué cuenta? Opciones: {names}."),
+                question_es=(
+                    "¿De qué cuenta? Tocá una opción o escribime el nombre."
+                ),
                 awaiting_field="account",
                 partial=extraction.model_dump(mode="json"),
                 telemetry_events=telemetry_events,
+                options=_account_options(accounts),
             )
         else:
             return LazyDetectionPrompt(
@@ -357,13 +373,13 @@ async def _dispatch_log(
 
     account_required_but_not_chosen = len(accounts) > 1 and account is None
     if account_required_but_not_chosen:
-        names = ", ".join(a.name for a in accounts)
         return AskClarification(
             question_es=(
-                f"¿De qué cuenta? Opciones: {names}."
+                "¿De qué cuenta? Tocá una opción o escribime el nombre."
             ),
             awaiting_field="account",
             partial=extraction.model_dump(mode="json"),
+            options=_account_options(accounts),
         )
 
     # 4. Occurred-at resolution.
@@ -513,7 +529,7 @@ async def _dispatch_log_transfer(
                 "o usá la pestaña Cuentas)."
             ),
         )
-    names = ", ".join(a.name for a in accounts)
+    account_options = _account_options(accounts)
 
     to_account = None
     if extraction.transfer_to_hint:
@@ -523,10 +539,12 @@ async def _dispatch_log_transfer(
         if status != "matched":
             return AskClarification(
                 question_es=(
-                    f"¿A cuál cuenta va la plata? Opciones: {names}."
+                    "¿A cuál cuenta va la plata? "
+                    "Tocá una opción o escribime el nombre."
                 ),
                 awaiting_field="transfer_to",
                 partial=extraction.model_dump(mode="json"),
+                options=account_options,
             )
 
     from_account = None
@@ -537,10 +555,12 @@ async def _dispatch_log_transfer(
         if status != "matched":
             return AskClarification(
                 question_es=(
-                    f"¿Desde cuál cuenta salió la plata? Opciones: {names}."
+                    "¿Desde cuál cuenta salió la plata? "
+                    "Tocá una opción o escribime el nombre."
                 ),
                 awaiting_field="transfer_from",
                 partial=extraction.model_dump(mode="json"),
+                options=account_options,
             )
 
     # With exactly two active accounts, one resolved side determines the
@@ -555,26 +575,34 @@ async def _dispatch_log_transfer(
 
     if to_account is None:
         return AskClarification(
-            question_es=f"¿A cuál cuenta va la plata? Opciones: {names}.",
+            question_es=(
+                "¿A cuál cuenta va la plata? "
+                "Tocá una opción o escribime el nombre."
+            ),
             awaiting_field="transfer_to",
             partial=extraction.model_dump(mode="json"),
+            options=account_options,
         )
     if from_account is None:
         return AskClarification(
             question_es=(
-                f"¿Desde cuál cuenta salió la plata? Opciones: {names}."
+                "¿Desde cuál cuenta salió la plata? "
+                "Tocá una opción o escribime el nombre."
             ),
             awaiting_field="transfer_from",
             partial=extraction.model_dump(mode="json"),
+            options=account_options,
         )
     if from_account.id == to_account.id:
         return AskClarification(
             question_es=(
                 "La cuenta origen y destino no pueden ser la misma. "
-                f"¿Desde cuál cuenta salió la plata? Opciones: {names}."
+                "¿Desde cuál cuenta salió la plata? "
+                "Tocá una opción o escribime el nombre."
             ),
             awaiting_field="transfer_from",
             partial=extraction.model_dump(mode="json"),
+            options=account_options,
         )
 
     if from_account.currency != to_account.currency:

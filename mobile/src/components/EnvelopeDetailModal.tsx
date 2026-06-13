@@ -50,15 +50,22 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
   const qc = useQueryClient();
   const [editOpen, setEditOpen] = useState(false);
   const [subOpen, setSubOpen] = useState(false);
+  // Phase 7f: expenses already assigned to ANOTHER envelope live in a
+  // separate collapsed section so they can't be mistaken for assignable rows.
+  const [othersOpen, setOthersOpen] = useState(false);
   // Drill-down stack of envelope ids opened beneath `item` (so a parent can
   // navigate into its sub-sobres and back).
   const [stack, setStack] = useState<string[]>([]);
 
   useEffect(() => {
-    if (!visible) setStack([]);
+    if (!visible) {
+      setStack([]);
+      setOthersOpen(false);
+    }
   }, [visible]);
   useEffect(() => {
     setStack([]);
+    setOthersOpen(false);
   }, [item?.id]);
 
   // The whole tree is read live from the summary so the bars + children stay
@@ -152,6 +159,18 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
   // Attached rows show at ANY depth (chat attach can target a sub-sobre),
   // so detach is always reachable from the node that holds the reservation.
   const attachedHere = obligations.filter((o) => o.envelope_id === active.id);
+
+  // Phase 7f: the assignable list only shows unassigned rows + rows already
+  // in THIS envelope. Expenses living in another envelope move to their own
+  // collapsed section with a named pill + explicit "Mover aquí" action.
+  const expenses = expensesQuery.data ?? [];
+  const assignable = expenses.filter(
+    (tx) => tx.envelope_id == null || tx.envelope_id === active.id,
+  );
+  const inOthers = expenses.filter(
+    (tx) => tx.envelope_id != null && tx.envelope_id !== active.id,
+  );
+  const envelopeById = new Map(all.map((e) => [e.id, e]));
 
   const goBack = () => setStack((s) => s.slice(0, -1));
 
@@ -313,13 +332,67 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
         </View>
 
         <FlatList
-          data={expensesQuery.data ?? []}
+          data={assignable}
           keyExtractor={(t) => t.id}
           ListHeaderComponent={Header}
           contentContainerStyle={styles.listContent}
           ListEmptyComponent={
             !expensesQuery.isLoading && !expensesQuery.isError ? (
-              <Text style={styles.muted}>Sin gastos este mes.</Text>
+              <Text style={styles.muted}>
+                {inOthers.length > 0
+                  ? "Sin gastos disponibles — los demás ya están en otros sobres."
+                  : "Sin gastos este mes."}
+              </Text>
+            ) : null
+          }
+          ListFooterComponent={
+            inOthers.length > 0 ? (
+              <View style={styles.othersSection}>
+                <Pressable
+                  onPress={() => setOthersOpen((v) => !v)}
+                  style={({ pressed }) => [
+                    styles.othersToggle,
+                    pressed && { opacity: 0.7 },
+                  ]}
+                >
+                  <Text style={styles.othersToggleText}>
+                    En otros sobres ({inOthers.length})
+                  </Text>
+                  <Feather
+                    name={othersOpen ? "chevron-up" : "chevron-down"}
+                    size={16}
+                    color={Colors.textSecondary}
+                  />
+                </Pressable>
+                {othersOpen && (
+                  <Text style={styles.othersHint}>
+                    Estos gastos ya pertenecen a otro sobre. «Mover aquí» los
+                    pasa a {active.name}.
+                  </Text>
+                )}
+                {othersOpen &&
+                  inOthers.map((tx) => {
+                    const other = tx.envelope_id
+                      ? envelopeById.get(tx.envelope_id)
+                      : undefined;
+                    return (
+                      <OtherEnvelopeRow
+                        key={tx.id}
+                        tx={tx}
+                        envelopeName={other?.name ?? "otro sobre"}
+                        envelopeColor={
+                          other
+                            ? ENVELOPE_CLASS_COLORS[other.envelope_class]
+                            : Colors.textMuted
+                        }
+                        onMove={() =>
+                          toggle.mutate({ txId: tx.id, envelopeId: active.id })
+                        }
+                        pending={toggle.isPending}
+                      />
+                    );
+                  })}
+              </View>
             ) : null
           }
           renderItem={({ item: tx }) => (
@@ -410,8 +483,9 @@ function ExpenseRow({
   onToggle: (assigned: boolean) => void;
   pending: boolean;
 }) {
+  // Rows assigned to ANOTHER envelope never reach this component (Phase 7f
+  // moved them to the "En otros sobres" section below the list).
   const assignedHere = tx.envelope_id === envelopeId;
-  const inOther = tx.envelope_id != null && tx.envelope_id !== envelopeId;
   const title = tx.merchant || tx.category || "Gasto";
   return (
     <Pressable
@@ -427,15 +501,63 @@ function ExpenseRow({
         <Text style={styles.rowTitle} numberOfLines={1}>
           {title}
         </Text>
-        <Text style={styles.rowSub}>
-          {formatDate(tx.transaction_date)}
-          {inOther ? " · en otro sobre" : ""}
-        </Text>
+        <Text style={styles.rowSub}>{formatDate(tx.transaction_date)}</Text>
       </View>
       <Text style={styles.rowAmount}>
         {formatMoney(Math.abs(tx.amount), tx.currency)}
       </Text>
     </Pressable>
+  );
+}
+
+function OtherEnvelopeRow({
+  tx,
+  envelopeName,
+  envelopeColor,
+  onMove,
+  pending,
+}: {
+  tx: TransactionResponse;
+  envelopeName: string;
+  envelopeColor: string;
+  onMove: () => void;
+  pending: boolean;
+}) {
+  const title = tx.merchant || tx.category || "Gasto";
+  return (
+    <View style={styles.row}>
+      <View style={styles.rowMeta}>
+        <Text style={styles.rowTitle} numberOfLines={1}>
+          {title}
+        </Text>
+        <View style={styles.otherPillLine}>
+          <View
+            style={[styles.otherPill, { backgroundColor: envelopeColor + "22" }]}
+          >
+            <Feather name="inbox" size={10} color={envelopeColor} />
+            <Text
+              style={[styles.otherPillText, { color: envelopeColor }]}
+              numberOfLines={1}
+            >
+              {envelopeName}
+            </Text>
+          </View>
+          <Text style={styles.rowSub}>{formatDate(tx.transaction_date)}</Text>
+        </View>
+      </View>
+      <View style={styles.otherRight}>
+        <Text style={styles.rowAmount}>
+          {formatMoney(Math.abs(tx.amount), tx.currency)}
+        </Text>
+        <Pressable
+          onPress={() => !pending && onMove()}
+          disabled={pending}
+          style={({ pressed }) => [styles.moveBtn, pressed && { opacity: 0.7 }]}
+        >
+          <Text style={styles.moveBtnText}>Mover aquí</Text>
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
@@ -597,5 +719,61 @@ const styles = StyleSheet.create({
     color: Colors.expense,
     fontWeight: "500",
     fontVariant: ["tabular-nums"],
+  },
+
+  // Phase 7f — "En otros sobres" section.
+  othersSection: { marginTop: Spacing.lg },
+  othersToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: Spacing.xs,
+  },
+  othersToggleText: {
+    fontSize: FontSize.xs,
+    fontWeight: "700",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+    color: Colors.textSecondary,
+  },
+  othersHint: {
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    marginBottom: Spacing.xs,
+  },
+  otherPillLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.xs,
+    marginTop: 3,
+  },
+  otherPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    borderRadius: Radius.sm,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    maxWidth: 160,
+  },
+  otherPillText: {
+    fontSize: FontSize.xs,
+    fontWeight: "700",
+  },
+  otherRight: {
+    alignItems: "flex-end",
+    gap: 4,
+  },
+  moveBtn: {
+    borderWidth: 1,
+    borderColor: Colors.accent,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 3,
+  },
+  moveBtnText: {
+    color: Colors.accent,
+    fontSize: FontSize.xs,
+    fontWeight: "600",
   },
 });

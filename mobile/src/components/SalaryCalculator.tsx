@@ -22,6 +22,7 @@ import { Feather } from "@expo/vector-icons";
 import { computeNetSalary, type NetSalaryBreakdown } from "../api/payroll";
 import { formatMoney } from "../lib/format";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
+import { AmountInput } from "./fields/AmountInput";
 
 interface Props {
   currency: string;
@@ -88,12 +89,11 @@ export function SalaryCalculator({ currency, initialGross, onResult }: Props) {
   return (
     <View style={styles.container}>
       <Field label="Salario bruto mensual (antes de deducciones)">
-        <TextInput
+        <AmountInput
           style={styles.input}
           value={gross}
-          onChangeText={setGross}
-          keyboardType="decimal-pad"
-          placeholder="1500000"
+          onChangeValue={setGross}
+          placeholder="1 500 000"
           placeholderTextColor={Colors.textMuted}
         />
       </Field>

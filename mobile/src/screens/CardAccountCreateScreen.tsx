@@ -40,6 +40,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createAccount } from "../api/accounts";
 import { parseCardDocument, upsertCardTerms } from "../api/cardTerms";
 import type { CardPrefill } from "../api/chat";
+import { AmountInput } from "../components/fields/AmountInput";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
 
 const LOW_CONFIDENCE = 0.65;
@@ -394,24 +395,22 @@ export function CardAccountCreateScreen() {
           label={dual ? "¿Cuánto debés hoy en colones (₡)?" : "¿Cuánto debés hoy?"}
           hint="Si está en cero, dejalo en 0 — nosotros nos encargamos del signo."
         >
-          <TextInput
+          <AmountInput
             style={styles.input}
             value={balanceOwed}
-            onChangeText={setBalanceOwed}
+            onChangeValue={setBalanceOwed}
             placeholder="0"
             placeholderTextColor={Colors.textMuted}
-            keyboardType="decimal-pad"
           />
         </Field>
         {dual && (
           <Field label="¿Cuánto debés hoy en dólares ($)?">
-            <TextInput
+            <AmountInput
               style={styles.input}
               value={balanceOwedUsd}
-              onChangeText={setBalanceOwedUsd}
+              onChangeValue={setBalanceOwedUsd}
               placeholder="0"
               placeholderTextColor={Colors.textMuted}
-              keyboardType="decimal-pad"
             />
           </Field>
         )}
@@ -424,24 +423,22 @@ export function CardAccountCreateScreen() {
               : `Límite de crédito (${singleSymbol}, opcional)`
           }
         >
-          <TextInput
+          <AmountInput
             style={styles.input}
             value={creditLimit}
-            onChangeText={setCreditLimit}
-            placeholder={mode === "USD" ? "4000" : "2000000"}
+            onChangeValue={setCreditLimit}
+            placeholder={mode === "USD" ? "4 000" : "2 000 000"}
             placeholderTextColor={Colors.textMuted}
-            keyboardType="decimal-pad"
           />
         </Field>
         {dual && (
           <Field label="Límite de crédito en dólares ($, opcional)">
-            <TextInput
+            <AmountInput
               style={styles.input}
               value={creditLimitUsd}
-              onChangeText={setCreditLimitUsd}
-              placeholder="4000"
+              onChangeValue={setCreditLimitUsd}
+              placeholder="4 000"
               placeholderTextColor={Colors.textMuted}
-              keyboardType="decimal-pad"
             />
           </Field>
         )}
@@ -507,24 +504,22 @@ export function CardAccountCreateScreen() {
               : `Pago mínimo base (${singleSymbol}, opcional)`
           }
         >
-          <TextInput
+          <AmountInput
             style={styles.input}
             value={minFloor}
-            onChangeText={setMinFloor}
-            placeholder={mode === "USD" ? "10" : "5000"}
+            onChangeValue={setMinFloor}
+            placeholder={mode === "USD" ? "10" : "5 000"}
             placeholderTextColor={Colors.textMuted}
-            keyboardType="decimal-pad"
           />
         </Field>
         {dual && (
           <Field label="Pago mínimo base en dólares ($, opcional)">
-            <TextInput
+            <AmountInput
               style={styles.input}
               value={minFloorUsd}
-              onChangeText={setMinFloorUsd}
+              onChangeValue={setMinFloorUsd}
               placeholder="10"
               placeholderTextColor={Colors.textMuted}
-              keyboardType="decimal-pad"
             />
           </Field>
         )}

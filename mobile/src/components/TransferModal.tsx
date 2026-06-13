@@ -27,6 +27,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchAccounts, type AccountResponse } from "../api/accounts";
 import { createTransfer } from "../api/transfers";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
+import { AmountInput } from "./fields/AmountInput";
+import { DateField } from "./fields/DateField";
 
 interface Props {
   visible: boolean;
@@ -247,25 +249,17 @@ export function TransferModal({ visible, onClose, initialToAccountId }: Props) {
               <Text style={styles.fieldLabel}>
                 Monto{fromAccount ? ` (${fromAccount.currency})` : ""}
               </Text>
-              <TextInput
+              <AmountInput
                 value={amount}
-                onChangeText={setAmount}
-                keyboardType="decimal-pad"
+                onChangeValue={setAmount}
                 style={styles.input}
                 placeholder="0"
                 placeholderTextColor={Colors.textMuted}
               />
             </View>
             <View style={styles.field}>
-              <Text style={styles.fieldLabel}>Fecha (AAAA-MM-DD)</Text>
-              <TextInput
-                value={date}
-                onChangeText={setDate}
-                style={styles.input}
-                autoCapitalize="none"
-                placeholder={todayIso()}
-                placeholderTextColor={Colors.textMuted}
-              />
+              <Text style={styles.fieldLabel}>Fecha</Text>
+              <DateField value={date} onChange={setDate} style={styles.input} />
             </View>
             {crossCurrency && (
               <View style={styles.field}>

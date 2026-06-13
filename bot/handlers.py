@@ -52,6 +52,7 @@ from .pending import clear_pending, load_pending
 from .pending_db import resolve_from_pending
 from .pipeline import (
     BotReply,
+    handle_clarify_callback,
     handle_nudge_callback,
     handle_pending_callback,
     process_message,
@@ -433,6 +434,34 @@ async def on_pending_callback(cb: CallbackQuery) -> None:
         except Exception:  # pragma: no cover - best effort
             pass
         await cb.message.answer(reply.text)
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("clarify:"))
+async def on_clarify_callback(cb: CallbackQuery) -> None:
+    """Phase 7f — user tapped a clarification option button (account name).
+
+    The follow-up reply can itself carry buttons (the proposal's Sí/No/
+    Editar), so it goes through `_send` with its keyboard — unlike the
+    pending/nudge callbacks whose replies are always plain text."""
+    if cb.from_user is None or cb.data is None:
+        return
+    async with AsyncSessionLocal() as db:
+        user = await user_by_telegram_id(
+            telegram_user_id=cb.from_user.id, db=db
+        )
+        if user is None:
+            await cb.answer(messages_es.PAIR_PROMPT, show_alert=True)
+            return
+        reply = await handle_clarify_callback(
+            user=user, callback_data=cb.data, db=db, redis=get_redis()
+        )
+    if cb.message is not None:
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:  # pragma: no cover - best effort
+            pass
+        await _send(cb.message, reply)
     await cb.answer()
 
 

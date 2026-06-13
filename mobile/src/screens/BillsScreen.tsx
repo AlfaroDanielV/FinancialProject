@@ -7,6 +7,12 @@
  *   - Due within 7 days → accent soft
  *   - Further out → neutral
  *
+ * Phase 7f: "Próximos pagos" also merges the unified feed's projected debt
+ * cuotas + card minimums (item_type "debt" / "card_payment") — they are
+ * recurring obligations too. Debt rows navigate to DebtDetail; card rows are
+ * informational. "Todos" lists active debts read-only below the bills.
+ * Projected, never materialized — no RecurringBill rows exist for these.
+ *
  * Tap an occurrence row to navigate to BillDetailScreen for mark-paid,
  * pause/resume, and archive actions.
  */
@@ -33,6 +39,8 @@ import {
   type BillOccurrenceResponse,
   type RecurringBillResponse,
 } from "../api/bills";
+import { fetchUpcomingFeed, type UpcomingFeedItem } from "../api/dashboard";
+import { fetchDebts, type DebtSummary } from "../api/debts";
 import { BillFormModal } from "../components/BillFormModal";
 import { CardShadow, Colors, FontSize, Radius, Spacing } from "../theme";
 import type { MasStackParamList } from "../navigation/MasNavigator";
@@ -97,10 +105,28 @@ type Props = {
 };
 
 interface OccurrenceRow {
+  kind: "occurrence";
   occurrence: BillOccurrenceResponse;
   bill: RecurringBillResponse;
   urgency: UrgencyLevel;
+  date: string;
 }
+
+// Phase 7f — a projected obligation from the unified feed (debt cuota or
+// card minimum). Derived live by the backend; there is no occurrence row.
+interface ObligationRow {
+  kind: "obligation";
+  item: UpcomingFeedItem;
+  urgency: UrgencyLevel;
+  date: string;
+}
+
+type UpcomingRow = OccurrenceRow | ObligationRow;
+
+const OBLIGATION_LABELS: Record<string, string> = {
+  debt: "Cuota de préstamo",
+  card_payment: "Pago mínimo de tarjeta",
+};
 
 export function BillsScreen({ navigation }: Props) {
   const [refreshing, setRefreshing] = useState(false);
@@ -129,31 +155,64 @@ export function BillsScreen({ navigation }: Props) {
       }),
   });
 
+  // Phase 7f: projected debt cuotas + card minimums come from the unified
+  // feed (same source Inicio uses) — never materialized as bills.
+  const feedQuery = useQuery({
+    queryKey: ["upcoming-feed", "bills-screen"],
+    queryFn: () => fetchUpcomingFeed(todayIso(), plusDaysIso(60)),
+  });
+
+  // Active debts for the read-only "Deudas" section in the "Todos" tab.
+  const debtsQuery = useQuery({
+    queryKey: ["debts", "bills-screen"],
+    queryFn: () => fetchDebts(false),
+  });
+
   const billsById = useMemo(() => {
     const map: Record<string, RecurringBillResponse> = {};
     for (const b of billsQuery.data ?? []) map[b.id] = b;
     return map;
   }, [billsQuery.data]);
 
-  const rows = useMemo((): OccurrenceRow[] => {
+  const rows = useMemo((): UpcomingRow[] => {
     const occs = (occurrencesQuery.data ?? []).filter(
       (o) => o.status !== "paid" && o.status !== "skipped" && o.status !== "cancelled",
     );
-    return occs
+    const occRows = occs
       .map((occ) => {
         const bill = billsById[occ.recurring_bill_id];
         if (!bill) return null;
         return {
+          kind: "occurrence" as const,
           occurrence: occ,
           bill,
           urgency: urgencyLevel(occ.due_date, occ.status),
+          date: occ.due_date,
         };
       })
-      .filter((r): r is OccurrenceRow => r !== null)
-      .sort((a, b) => a.occurrence.due_date.localeCompare(b.occurrence.due_date));
-  }, [occurrencesQuery.data, billsById]);
+      .filter((r): r is OccurrenceRow => r !== null);
+    const obligationRows: ObligationRow[] = (feedQuery.data?.items ?? [])
+      .filter(
+        (it) => it.item_type === "debt" || it.item_type === "card_payment",
+      )
+      .map((it) => ({
+        kind: "obligation" as const,
+        item: it,
+        urgency: urgencyLevel(it.date, it.is_overdue ? "overdue" : ""),
+        date: it.date,
+      }));
+    return [...occRows, ...obligationRows].sort((a, b) =>
+      a.date.localeCompare(b.date),
+    );
+  }, [occurrencesQuery.data, billsById, feedQuery.data]);
 
-  const isLoading = billsQuery.isLoading || occurrencesQuery.isLoading;
+  const activeDebts = useMemo(
+    () => (debtsQuery.data ?? []).filter((d) => d.is_active && !d.archived),
+    [debtsQuery.data],
+  );
+
+  const isLoading =
+    billsQuery.isLoading || occurrencesQuery.isLoading || feedQuery.isLoading;
 
   async function onRefresh() {
     setRefreshing(true);
@@ -161,6 +220,8 @@ export function BillsScreen({ navigation }: Props) {
       billsQuery.refetch(),
       occurrencesQuery.refetch(),
       manageBillsQuery.refetch(),
+      feedQuery.refetch(),
+      debtsQuery.refetch(),
     ]);
     setRefreshing(false);
   }
@@ -170,6 +231,14 @@ export function BillsScreen({ navigation }: Props) {
       bill: row.bill,
       occurrence: row.occurrence,
     });
+  }
+
+  function handlePressObligation(row: ObligationRow) {
+    // Debt cuotas navigate to the debt; card minimums are informational
+    // (credit accounts live in the Cuentas tab stack).
+    if (row.item.item_type === "debt" && row.item.debt_id) {
+      navigation.navigate("DebtDetail", { debtId: row.item.debt_id });
+    }
   }
 
   function handlePressBill(bill: RecurringBillResponse) {
@@ -224,7 +293,11 @@ export function BillsScreen({ navigation }: Props) {
         ) : (
           <FlatList
             data={rows}
-            keyExtractor={(r) => r.occurrence.id}
+            keyExtractor={(r) =>
+              r.kind === "occurrence"
+                ? r.occurrence.id
+                : `feed-${r.item.item_type}-${r.item.id}`
+            }
             contentContainerStyle={rows.length === 0 ? styles.emptyContainer : styles.listContent}
             refreshControl={
               <RefreshControl
@@ -244,39 +317,58 @@ export function BillsScreen({ navigation }: Props) {
             }
             renderItem={({ item: row }) => {
               const colors = URGENCY_COLORS[row.urgency];
-              const days = daysUntil(row.occurrence.due_date);
+              const days = daysUntil(row.date);
+              const isDebtRow =
+                row.kind === "obligation" &&
+                row.item.item_type === "debt" &&
+                row.item.debt_id != null;
+              const name =
+                row.kind === "occurrence" ? row.bill.name : row.item.title;
+              const sub =
+                row.kind === "occurrence"
+                  ? row.bill.provider || row.bill.category || row.bill.frequency
+                  : OBLIGATION_LABELS[row.item.item_type] ?? row.item.item_type;
+              const amountText =
+                row.kind === "occurrence"
+                  ? fmtAmount(
+                      row.occurrence.amount_expected ?? row.bill.amount_expected,
+                      row.bill.currency,
+                    )
+                  : fmtAmount(row.item.amount, row.item.currency);
+              const tappable = row.kind === "occurrence" || isDebtRow;
               return (
                 <Pressable
                   style={({ pressed }) => [
                     styles.row,
                     { backgroundColor: colors.bg, borderColor: colors.border },
-                    pressed && styles.rowPressed,
+                    pressed && tappable && styles.rowPressed,
                   ]}
-                  onPress={() => handlePressRow(row)}
+                  onPress={() =>
+                    row.kind === "occurrence"
+                      ? handlePressRow(row)
+                      : handlePressObligation(row)
+                  }
                 >
                   <View style={styles.rowLeft}>
                     <Text style={styles.rowName} numberOfLines={1}>
-                      {row.bill.name}
+                      {name}
                     </Text>
                     <Text style={styles.rowSub} numberOfLines={1}>
-                      {row.bill.provider || row.bill.category || row.bill.frequency}
+                      {sub}
                     </Text>
                     {colors.label ? (
                       <Text style={styles.overdueLabel}>{colors.label}</Text>
                     ) : null}
                   </View>
                   <View style={styles.rowRight}>
-                    <Text style={styles.rowDate}>{fmtDueDate(row.occurrence.due_date)}</Text>
+                    <Text style={styles.rowDate}>{fmtDueDate(row.date)}</Text>
                     <Text
                       style={[
                         styles.rowAmount,
                         row.urgency === "overdue" && styles.amountOverdue,
                       ]}
                     >
-                      {fmtAmount(
-                        row.occurrence.amount_expected ?? row.bill.amount_expected,
-                        row.bill.currency,
-                      )}
+                      {amountText}
                     </Text>
                     {days >= 0 && days <= 7 ? (
                       <Text
@@ -288,12 +380,14 @@ export function BillsScreen({ navigation }: Props) {
                         {days === 0 ? "Hoy" : `en ${days}d`}
                       </Text>
                     ) : null}
-                    <Feather
-                      name="chevron-right"
-                      size={16}
-                      color={Colors.textMuted}
-                      style={styles.rowChevron}
-                    />
+                    {tappable ? (
+                      <Feather
+                        name="chevron-right"
+                        size={16}
+                        color={Colors.textMuted}
+                        style={styles.rowChevron}
+                      />
+                    ) : null}
                   </View>
                 </Pressable>
               );
@@ -335,6 +429,48 @@ export function BillsScreen({ navigation }: Props) {
                 Registralo por el chat o tocá "+ Nuevo" para crear uno.
               </Text>
             </View>
+          }
+          ListFooterComponent={
+            activeDebts.length > 0 ? (
+              <View style={styles.debtsSection}>
+                <Text style={styles.debtsSectionTitle}>Deudas</Text>
+                <Text style={styles.debtsSectionSub}>
+                  Cuotas mensuales con fecha de pago — se administran desde
+                  Deudas.
+                </Text>
+                {activeDebts.map((debt: DebtSummary) => (
+                  <Pressable
+                    key={debt.id}
+                    style={({ pressed }) => [
+                      styles.manageRow,
+                      pressed && styles.rowPressed,
+                    ]}
+                    onPress={() =>
+                      navigation.navigate("DebtDetail", { debtId: debt.id })
+                    }
+                  >
+                    <View style={styles.rowLeft}>
+                      <Text style={styles.rowName} numberOfLines={1}>
+                        {debt.name}
+                      </Text>
+                      <Text style={styles.rowSub} numberOfLines={1}>
+                        Cuota de préstamo · día {debt.payment_due_day}
+                      </Text>
+                    </View>
+                    <View style={styles.rowRight}>
+                      <Text style={styles.rowAmount}>
+                        {fmtAmount(debt.minimum_payment, "CRC")}
+                      </Text>
+                      <Feather
+                        name="chevron-right"
+                        size={16}
+                        color={Colors.textMuted}
+                      />
+                    </View>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null
           }
           renderItem={({ item: bill }) => (
             <Pressable
@@ -438,6 +574,22 @@ const styles = StyleSheet.create({
     fontSize: FontSize.sm,
     color: Colors.textSecondary,
     fontWeight: "500",
+  },
+  debtsSection: {
+    marginTop: Spacing.lg,
+  },
+  debtsSectionTitle: {
+    fontSize: FontSize.xs,
+    fontWeight: "700",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+    color: Colors.textMuted,
+    marginBottom: 2,
+  },
+  debtsSectionSub: {
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    marginBottom: Spacing.sm,
   },
   manageRow: {
     flexDirection: "row",

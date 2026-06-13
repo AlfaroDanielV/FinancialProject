@@ -22,6 +22,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { archiveTransaction, restoreTransaction } from "../api/transactions";
 import { fetchAccounts } from "../api/accounts";
+import { ENVELOPE_CLASS_COLORS, fetchEnvelopes } from "../api/envelopes";
 import { TransactionEditModal } from "../components/TransactionEditModal";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
 import type { TransactionsStackParamList } from "../navigation/TransactionsNavigator";
@@ -98,6 +99,18 @@ export function TransactionDetailScreen({ route }: Props) {
     staleTime: 60_000,
   });
   const accountName = accounts?.find((a) => a.id === tx.account_id)?.name ?? null;
+
+  // Phase 7f: surface the envelope assignment prominently (named badge).
+  const { data: envelopes } = useQuery({
+    queryKey: ["envelopes", "active"],
+    queryFn: () => fetchEnvelopes(false),
+    enabled: tx.envelope_id != null,
+    staleTime: 60_000,
+  });
+  const envelope =
+    tx.envelope_id != null
+      ? envelopes?.find((e) => e.id === tx.envelope_id) ?? null
+      : null;
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["transactions"] });
@@ -177,6 +190,34 @@ export function TransactionDetailScreen({ route }: Props) {
               <Feather name="clock" size={11} color={Colors.warning} />
               <Text style={[styles.badgeText, { color: Colors.warning }]}>
                 Pendiente de revisión
+              </Text>
+            </View>
+          )}
+          {envelope != null && (
+            <View
+              style={[
+                styles.badge,
+                {
+                  backgroundColor:
+                    ENVELOPE_CLASS_COLORS[envelope.envelope_class] + "22",
+                },
+              ]}
+            >
+              <Feather
+                name="inbox"
+                size={11}
+                color={ENVELOPE_CLASS_COLORS[envelope.envelope_class]}
+              />
+              <Text
+                style={[
+                  styles.badgeText,
+                  {
+                    color: ENVELOPE_CLASS_COLORS[envelope.envelope_class],
+                    fontWeight: "700",
+                  },
+                ]}
+              >
+                Sobre «{envelope.name}»
               </Text>
             </View>
           )}

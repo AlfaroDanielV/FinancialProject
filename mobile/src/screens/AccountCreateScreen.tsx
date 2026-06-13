@@ -21,6 +21,7 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { createAccount, ACCOUNT_TYPE_LABELS } from "../api/accounts";
+import { AmountInput } from "../components/fields/AmountInput";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
 import type { AccountsStackParamList } from "../navigation/AccountsNavigator";
 
@@ -156,13 +157,12 @@ export function AccountCreateScreen() {
         {/* ── Initial balance ──────────────────────────────────────────────── */}
         <View style={styles.fieldGroup}>
           <Text style={styles.label}>Saldo inicial</Text>
-          <TextInput
+          <AmountInput
             style={styles.input}
             value={initialBalance}
-            onChangeText={setInitialBalance}
+            onChangeValue={setInitialBalance}
             placeholder="0"
             placeholderTextColor={Colors.textMuted}
-            keyboardType="decimal-pad"
             returnKeyType="done"
             onSubmitEditing={onSubmit}
           />

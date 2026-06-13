@@ -35,6 +35,7 @@ import {
 } from "../api/envelopes";
 import { formatMoney } from "../lib/format";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
+import { AmountInput } from "./fields/AmountInput";
 
 interface ParentContext {
   id: string;
@@ -273,10 +274,9 @@ export function EnvelopeEditModal({
             )}
 
             <Text style={styles.label}>Límite mensual ({currency})</Text>
-            <TextInput
+            <AmountInput
               value={limit}
-              onChangeText={setLimit}
-              keyboardType="decimal-pad"
+              onChangeValue={setLimit}
               style={styles.input}
               placeholder="0"
               placeholderTextColor={Colors.textMuted}

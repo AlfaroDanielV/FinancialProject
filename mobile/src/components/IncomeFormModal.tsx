@@ -39,6 +39,8 @@ import {
 } from "../api/incomes";
 import { SalaryCalculator } from "./SalaryCalculator";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
+import { AmountInput } from "./fields/AmountInput";
+import { DateField } from "./fields/DateField";
 
 interface Props {
   visible: boolean;
@@ -198,10 +200,9 @@ export function IncomeFormModal({ visible, mode, income, onClose, onSaved }: Pro
             </Field>
 
             <Field label={isSalaryCRC ? "Monto neto" : "Monto"}>
-              <TextInput
+              <AmountInput
                 value={amount}
-                onChangeText={setAmount}
-                keyboardType="decimal-pad"
+                onChangeValue={setAmount}
                 style={styles.input}
                 placeholder="0"
                 placeholderTextColor={Colors.textMuted}
@@ -245,14 +246,11 @@ export function IncomeFormModal({ visible, mode, income, onClose, onSaved }: Pro
               />
             </Field>
 
-            <Field label="Próximo pago (AAAA-MM-DD)">
-              <TextInput
+            <Field label="Próximo pago">
+              <DateField
                 value={nextDate}
-                onChangeText={setNextDate}
+                onChange={setNextDate}
                 style={styles.input}
-                placeholder="2026-06-15"
-                placeholderTextColor={Colors.textMuted}
-                autoCapitalize="none"
               />
             </Field>
 

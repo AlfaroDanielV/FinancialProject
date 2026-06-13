@@ -171,6 +171,19 @@ def _buttons_for(short_id: str) -> list[ConfirmButton]:
     ]
 
 
+def _clarify_buttons(state: ClarificationState) -> list[ConfirmButton]:
+    """Phase 7f — tappable clarification options (account names).
+
+    The label is the literal answer. Native chat posts it back as text (the
+    clarification branch merges it like a typed reply); Telegram taps route
+    through `handle_clarify_callback` via `clarify:{nonce}:{idx}`, where the
+    nonce rejects taps on a superseded question."""
+    return [
+        ConfirmButton(label, f"clarify:{state.nonce}:{idx}")
+        for idx, label in enumerate(state.options)
+    ]
+
+
 def _text_is_confirmation(text: str) -> Optional[bool]:
     """Plain-text confirmation fallback. Strips emoji and punctuation so
     native-app button labels like 'Sí ✅' / 'No ❌' match the word sets."""
@@ -321,8 +334,12 @@ async def process_message(
     if pending_clarify is not None:
         merged = merge_reply(pending_clarify, text, user)
         if merged is None:
-            # Reply couldn't be interpreted — keep state, re-ask.
-            return BotReply(text=pending_clarify.question_es)
+            # Reply couldn't be interpreted — keep state, re-ask (with the
+            # same option buttons, if the question carried any).
+            return BotReply(
+                text=pending_clarify.question_es,
+                buttons=_clarify_buttons(pending_clarify),
+            )
         if merged.dispatcher == "query":
             log.info(
                 "clarification_abandoned reason=query_dispatcher user_id=%s",
@@ -699,18 +716,22 @@ async def _apply_decision(
             ),
         )
     if isinstance(decision, AskClarification):
-        await save_clarification(
-            user_id=user.id,
-            state=ClarificationState(
-                partial=decision.partial,
-                awaiting_field=decision.awaiting_field,
-                question_es=decision.question_es,
-            ),
-            redis=redis,
+        # Phase 7f: when the dispatcher supplied tappable options (account
+        # names), stash them with a fresh nonce so a Telegram tap can be
+        # validated against THIS question, then render them as buttons.
+        state = ClarificationState(
+            partial=decision.partial,
+            awaiting_field=decision.awaiting_field,
+            question_es=decision.question_es,
+            options=list(decision.options),
+            nonce=new_short_id() if decision.options else "",
         )
+        await save_clarification(user_id=user.id, state=state, redis=redis)
         if telemetry_persisted:
             await db.commit()
-        return BotReply(text=decision.question_es)
+        return BotReply(
+            text=decision.question_es, buttons=_clarify_buttons(state)
+        )
     if isinstance(decision, LazyDetectionPrompt):
         await save_lazy_account_creation(
             user_id=user.id,
@@ -788,6 +809,55 @@ async def handle_pending_callback(
         await clear_pending(user_id=user.id, redis=redis)
         return BotReply(text=messages_es.EDIT_PROMPT)
     return BotReply(text=messages_es.PENDING_NONE_TO_CONFIRM)
+
+
+async def handle_clarify_callback(
+    *,
+    user: User,
+    callback_data: str,
+    db: AsyncSession,
+    redis: Redis,
+) -> BotReply:
+    """Phase 7f — the user tapped a clarification option button (an account
+    name). `callback_data` has the form `clarify:<nonce>:<idx>`. The label is
+    resolved against the stashed ClarificationState and routed through the
+    SAME merge→dispatch path a typed reply takes (the native chat never gets
+    here — its chips post the label as text). Stale taps (expired state or
+    nonce from a superseded question) get a gentle "expired" reply."""
+    parts = callback_data.split(":")
+    if len(parts) != 3 or parts[0] != "clarify":
+        return BotReply(text=messages_es.CLARIFY_EXPIRED)
+    _, nonce, idx_raw = parts
+
+    state = await load_clarification(user_id=user.id, redis=redis)
+    if state is None or not state.nonce or state.nonce != nonce:
+        return BotReply(text=messages_es.CLARIFY_EXPIRED)
+    try:
+        label = state.options[int(idx_raw)]
+    except (ValueError, IndexError):
+        return BotReply(text=messages_es.CLARIFY_EXPIRED)
+
+    merged = merge_reply(state, label, user)
+    if merged is None:  # pragma: no cover — option labels merge raw
+        return BotReply(
+            text=state.question_es, buttons=_clarify_buttons(state)
+        )
+    today = _today_for(user)
+    if merged.dispatcher == "query":  # pragma: no cover — defensive; account
+        # merges never flip the dispatcher, but mirror the typed path anyway.
+        await clear_clarification(user_id=user.id, redis=redis)
+        return await _route_extraction(
+            user=user,
+            text=label,
+            extraction=merged,
+            today=today,
+            db=db,
+            redis=redis,
+        )
+    decision = await dispatch(extraction=merged, user=user, today=today, db=db)
+    return await _apply_decision(
+        user=user, decision=decision, db=db, redis=redis, source_text=label
+    )
 
 
 # ── nudge inline-keyboard callbacks ──────────────────────────────────────────

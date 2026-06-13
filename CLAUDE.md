@@ -180,7 +180,7 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 
 ## Implementation Roadmap
 
-### Current Status: Phases 7/7a/7b/7c/7d code-complete (operator on-device sign-off pending). Phase 6f B0–B16 implemented; SPA retired 2026-06-01; native-only daily use ongoing.
+### Current Status: Phases 7/7a/7b/7c/7d code-complete (operator on-device sign-off pending). Phase 7f (Capture & Forms UX) code-complete 2026-06-12. Phase 6f B0–B16 implemented; SPA retired 2026-06-01; native-only daily use ongoing.
 
 | Phase | Focus | Done When |
 |---|---|---|
@@ -204,6 +204,7 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 | **P7b** 🚧 | Accounts CRUD + hard delete, transfers, credit-card clarity | Code-complete 2026-06-11; operator on-device sign-off pending |
 | **P7c** 🚧 | UI 2.0: neutral theme + money clarity | Code-complete 2026-06-11; operator on-device sign-off pending |
 | **P7d** 🚧 | Goal funding from accounts + goals full CRUD | Code-complete 2026-06-11; operator on-device sign-off pending |
+| **P7f** 🚧 | Capture & Forms UX: account buttons in chat, form polish, envelope indicator, debts in Gastos fijos | Code-complete 2026-06-12; operator on-device sign-off pending |
 | **P8** | Beta users | Onboard a second person via Telegram with accurate reports within a week |
 | **P9** | SaaS hardening | Multi-tenant auth, billing, compliance, observability |
 
@@ -1368,6 +1369,58 @@ vault `Decision - Data Foundation (Advice Trace, Snapshots, Consent)`.
 - **Deferred:** outcome-labeling worker (definitions of "followed" needed);
   consent onboarding UX + `core_service` auto-seed at register (P8);
   snapshot read API; `assess_financing` trace kind.
+
+## Phase 7f (active) — Capture & Forms UX
+
+Four operator UX asks (2026-06-12), **code-complete same day — operator
+on-device sign-off pending**. Canonical: `docs/phase-7f-decisions.md`; vault
+`Decision - Capture & Forms UX (Phase 7f)`. No migration (`0031` head).
+Gate: `scripts/test_phase_7f.sh` (mobile `tsc --noEmit`; 6 focused + 79
+regression); `scripts/test_phase_7b.sh` + `test_phase_6f.sh` +
+`test_phase_7d.sh` cross-checks green.
+
+- **B1 — Account buttons on clarification (backend, both channels).**
+  `AskClarification` gains `options: list[str]` (active account names, cap
+  `MAX_ACCOUNT_OPTIONS = 8`); the 7 "¿De qué cuenta?" / transfer-side sites
+  fill it; the question copy drops the inline "Opciones: …" listing (now
+  "Tocá una opción o escribime el nombre"). `ClarificationState` gains
+  `options` + `nonce` (defaulted — old states/tests valid). `_apply_decision`
+  renders options as `ConfirmButton`s with `callback_data="clarify:{nonce}:
+  {idx}"`; re-asks re-attach the buttons. **Native chat: zero changes** —
+  chips already post the label as text into the existing merge path.
+  Telegram: new `clarify:` callback namespace → `bot/handlers.py::
+  on_clarify_callback` → `pipeline.handle_clarify_callback` (nonce-validated,
+  routes the label through the SAME `merge_reply → dispatch` path; stale taps
+  → `CLARIFY_EXPIRED`; reply rendered through `_send` because it can carry
+  the proposal's Sí/No/Editar keyboard). No "crear cuenta" button — typing an
+  unknown name already enters the 6d B8/B9 lazy-create flow with origin
+  replay. Tests: `tests/test_phase_7f_account_buttons.py`.
+- **B2 — Debts + card minimums in Gastos fijos (mobile only).** `BillsScreen`
+  "Próximos pagos" merges the unified feed's `item_type="debt"/"card_payment"`
+  items (labels "Cuota de préstamo" / "Pago mínimo de tarjeta"; same urgency
+  coloring; debt rows navigate to `DebtDetail` via the feed's `debt_id`, card
+  rows informational); "Todos" gains a read-only "Deudas" section (cuota ·
+  día de pago → DebtDetail). Projected, never materialized — no backend
+  change. Closes the "'cuota de préstamo' label on debt feed entries" polish
+  item.
+- **B3 — Prominent envelope indicator (mobile only).** In
+  `EnvelopeDetailModal`, expenses assigned to ANOTHER envelope leave the
+  assignable list and collapse under "En otros sobres (N)": each row shows a
+  class-colored pill naming the envelope + an explicit "Mover aquí" button
+  (no more ambiguous empty-circle + tiny "en otro sobre" text).
+  `TransactionDetailScreen` gains a class-colored "Sobre «X»" badge.
+- **B4 — Form polish (mobile only).** New dep
+  `@react-native-community/datetimepicker@8.4.4` (the SDK 54-bundled version
+  — runs in Expo Go). New shared fields in `mobile/src/components/fields/`:
+  `AmountInput` (live space-grouped thousands `1 000 000`, display-only —
+  the form state keeps the plain numeric string so every existing
+  `Number(v.replace(",", "."))` parse is untouched) and `DateField`
+  (calendar sheet replacing every "AAAA-MM-DD" text input; day-level only).
+  Swept: TransactionEditModal, TransferModal, GoalFormModal, IncomeFormModal,
+  BillFormModal, EnvelopeEditModal, DebtEditModal, CardTermsEditModal,
+  DebtCreateScreen, CardAccountCreateScreen, AccountCreateScreen,
+  SalaryCalculator, GoalDetail contribution form. Percent/day/term inputs
+  stay plain. Category stays free text (6e B11 decision holds).
 
 ## Phase 8 (started) — B1: Telegram cold-start registration (2026-06-12)
 

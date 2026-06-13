@@ -98,6 +98,9 @@ PENDING_OVERWRITTEN = (
 )
 PENDING_EXPIRED = "Se me venció lo que estábamos confirmando. Mandá el mensaje de nuevo si querés."
 PENDING_NONE_TO_CONFIRM = "No tengo nada pendiente por confirmar."
+# Phase 7f — a tapped clarification option (account button) whose question
+# already expired or was replaced by a newer one.
+CLARIFY_EXPIRED = "Esa pregunta ya venció. Mandá el mensaje de nuevo si querés."
 
 COMMITTED_EXPENSE = "Guardado: gasto de {amount}. Mandá /undo si te equivocaste."
 COMMITTED_INCOME = "Guardado: ingreso de {amount}. Mandá /undo si te equivocaste."

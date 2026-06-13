@@ -33,6 +33,8 @@ import {
 } from "../api/transactions";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
 import { EnvelopePickerModal } from "./EnvelopePickerModal";
+import { AmountInput } from "./fields/AmountInput";
+import { DateField } from "./fields/DateField";
 
 interface Props {
   visible: boolean;
@@ -143,10 +145,9 @@ export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
             showsVerticalScrollIndicator={false}
           >
             <Field label={`Monto (${tx.currency})`}>
-              <TextInput
+              <AmountInput
                 value={amount}
-                onChangeText={setAmount}
-                keyboardType="decimal-pad"
+                onChangeValue={setAmount}
                 style={styles.input}
                 placeholder="0"
                 placeholderTextColor={Colors.textMuted}
@@ -180,15 +181,8 @@ export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
                 autoCapitalize="none"
               />
             </Field>
-            <Field label="Fecha (AAAA-MM-DD)">
-              <TextInput
-                value={date}
-                onChangeText={setDate}
-                style={styles.input}
-                placeholder="2026-05-30"
-                placeholderTextColor={Colors.textMuted}
-                autoCapitalize="none"
-              />
+            <Field label="Fecha">
+              <DateField value={date} onChange={setDate} style={styles.input} />
             </Field>
             {isExpense && (
               <Field label="Sobre">
