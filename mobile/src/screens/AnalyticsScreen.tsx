@@ -56,6 +56,12 @@ function lastNMonths(n: number): { from: string; to: string; labels: string[] } 
   return { from: ym(from), to: ym(now), labels };
 }
 
+function daysLeftInMonth(): number {
+  const now = new Date();
+  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  return lastDay - now.getDate();
+}
+
 // Minimal cross-tab navigation typing: jump to the Chat tab's Chat screen with
 // a prefilled question. (React Navigation resolves the tab from any nested
 // screen; we keep the typing local to avoid a full RootParamList.)
@@ -137,6 +143,18 @@ export function AnalyticsScreen() {
     .slice(0, 8)
     .map((c, i) => ({ ...c, color: CATEGORY_PALETTE[i % CATEGORY_PALETTE.length] }));
 
+  // ── budget hero (Phase 7h: "Te queda este mes" moved here from the home) ──
+  const env = envelopes.data;
+  const hasEnvelopes = (env?.envelopes.length ?? 0) > 0;
+  const budgetAvailable = env?.total_available ?? 0;
+  const budgetLimit = env?.total_limit ?? 0;
+  const budgetReserved = env?.total_reserved ?? 0;
+  const overBudget = budgetAvailable < 0;
+  const budgetFraction =
+    budgetLimit > 0 ? Math.max(0, Math.min(budgetAvailable / budgetLimit, 1)) : 0;
+  const budgetLow = budgetLimit > 0 && budgetAvailable <= 0.05 * budgetLimit;
+  const daysLeft = daysLeftInMonth();
+
   // ── envelope execution by class ──
   const byClass = envelopes.data?.by_class ?? [];
   const classRows = ENVELOPE_CLASS_ORDER.map((cls) => {
@@ -162,6 +180,48 @@ export function AnalyticsScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
+        {/* ── Budget hero: "Te queda este mes" (moved from home in 7h) ── */}
+        <View style={[styles.card, styles.heroCard]}>
+          <Text style={styles.heroLabel}>TE QUEDA ESTE MES</Text>
+          {envelopes.isLoading ? (
+            <ActivityIndicator color={Colors.accent} size="small" style={{ marginVertical: Spacing.md }} />
+          ) : !hasEnvelopes ? (
+            <>
+              <Text style={styles.heroAmountEmpty}>—</Text>
+              <Text style={styles.heroContext}>
+                Creá tus sobres para ver cuánto podés gastar este mes.
+              </Text>
+            </>
+          ) : (
+            <>
+              <Text style={[styles.heroAmount, overBudget && { color: Colors.expense }]}>
+                {overBudget ? "−" : ""}
+                {formatMoney(Math.abs(budgetAvailable), currency)}
+              </Text>
+              <View style={styles.heroBarTrack}>
+                <View
+                  style={[
+                    styles.heroBarFill,
+                    { width: `${Math.round(budgetFraction * 100)}%` as `${number}%` },
+                    budgetLow && { backgroundColor: Colors.expense },
+                  ]}
+                />
+              </View>
+              <Text style={styles.heroContext}>
+                de {formatMoney(budgetLimit, currency)} presupuestados ·{" "}
+                {daysLeft === 0 ? "último día del mes" : `quedan ${daysLeft} días`}
+              </Text>
+              {overBudget ? (
+                <Text style={styles.heroOverNote}>Te pasaste del presupuesto del mes.</Text>
+              ) : budgetReserved > 0 ? (
+                <Text style={styles.heroReservedNote}>
+                  {formatMoney(budgetReserved, currency)} ya apartado para gastos fijos
+                </Text>
+              ) : null}
+            </>
+          )}
+        </View>
+
         {/* ── Cash flow ── */}
         <ChartCard
           title="Flujo de caja (6 meses)"
@@ -251,6 +311,53 @@ const styles = StyleSheet.create({
     borderColor: Colors.borderLight,
     ...CardShadow,
     overflow: "hidden",
+  },
+
+  // ── budget hero (moved from home, Phase 7h) ─────────────────────────────────
+  heroCard: { padding: Spacing.md, paddingBottom: Spacing.lg },
+  heroLabel: {
+    fontFamily: Fonts.semibold,
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    letterSpacing: 1.2,
+  },
+  heroAmount: {
+    fontFamily: Fonts.bold,
+    fontSize: FontSize.hero,
+    color: Colors.textPrimary,
+    marginTop: Spacing.xs,
+    fontVariant: ["tabular-nums"],
+  },
+  heroAmountEmpty: {
+    fontFamily: Fonts.bold,
+    fontSize: FontSize.hero,
+    color: Colors.textMuted,
+    marginTop: Spacing.xs,
+  },
+  heroBarTrack: {
+    height: 5,
+    backgroundColor: Colors.bgElevated,
+    borderRadius: 3,
+    marginTop: Spacing.sm,
+  },
+  heroBarFill: { height: 5, borderRadius: 3, backgroundColor: Colors.accent },
+  heroContext: {
+    fontFamily: Fonts.regular,
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    marginTop: Spacing.sm,
+  },
+  heroReservedNote: {
+    fontFamily: Fonts.regular,
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    marginTop: Spacing.xs,
+  },
+  heroOverNote: {
+    fontFamily: Fonts.medium,
+    fontSize: FontSize.xs,
+    color: Colors.expense,
+    marginTop: Spacing.xs,
   },
   cardHeader: {
     flexDirection: "row",

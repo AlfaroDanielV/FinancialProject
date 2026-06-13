@@ -1509,15 +1509,21 @@ Balance`, `Decision - Charts Via react-native-svg`.
   net). `DashboardSummary` gains `available_balance` (savings EXCLUDED — the
   home figure) + `savings_balance` (shown apart); `balance_total` unchanged
   (back-compat). Mobile: `Dashboard.tsx` footer → "Disponible" + "Ahorros
-  aparte" + a compact DISPONIBLE strip under the hero; `AccountsScreen` strip
+  aparte"; the DISPONIBLE strip is the home **headline**; `AccountsScreen` strip
   mirrors it; `AccountCreateScreen` shows a savings-only hint. **Envelope spend
   UNCHANGED** (still all accounts — the operator only excluded savings from the
   balance). No `is_primary`/"cuenta principal" (operator dropped it).
+- **Home leads with Disponible, not the budget (revision 2026-06-13).** The
+  budget hero **"Te queda este mes"** was **removed from the home** and **moved
+  to the top of the Analytics screen** at the operator's request. Inicio order
+  is now Disponible → Próximos pagos → Sobres → Resumen. **Supersedes UI 2.0 §3**
+  ("Inicio answers ¿cuánto me queda este mes? first") for the home surface.
 - **Analytics screen + "explícame este gráfico".** New dep
   `react-native-svg@15.12.1` (Expo SDK 54-bundled, Expo Go-safe; reverses UI
   2.0 §5 "no chart lib"). `mobile/src/components/charts/{DonutChart,LineChart}.tsx`
   (on-palette SVG; color = meaning; bars stay flex). `AnalyticsScreen.tsx`:
-  3 cards from EXISTING endpoints (cash-flow line, category donut, envelope
+  the **"Te queda este mes" budget hero** (moved from home) on top, then 3
+  cards from EXISTING endpoints (cash-flow line, category donut, envelope
   by-class bars) — **no new backend**. `InicioNavigator` wraps the Inicio tab
   (DashboardHome → Analytics); entered via a "Análisis" affordance on the
   `SobresSection` card. Each chart's **"Explícame"** cross-tab navigates to the

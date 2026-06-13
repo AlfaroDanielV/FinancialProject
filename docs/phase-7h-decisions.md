@@ -29,13 +29,20 @@ Operator dogfooding feedback:
   (savings EXCLUDED — the home figure) + `savings_balance` (shown separately).
   Additive; `balance_total` unchanged.
 - Mobile: `Dashboard.tsx` footer "Saldo total en cuentas" → **"Disponible"**
-  (= `available_balance`) + a muted "Ahorros: ₡X (aparte)" line; a compact
-  **DISPONIBLE** strip under the budget hero (hero stays "Te queda este mes").
-  `AccountsScreen.tsx` consolidated strip mirrors the rule. `AccountCreateScreen.tsx`
-  shows a savings-only hint: *"El dinero en cuentas de ahorro no se cuenta en
-  tu disponible del mes — lo tratamos como plata apartada para tus metas."*
+  (= `available_balance`) + a muted "Ahorros: ₡X (aparte)" line; the
+  **DISPONIBLE** strip is the home **headline**. `AccountsScreen.tsx`
+  consolidated strip mirrors the rule. `AccountCreateScreen.tsx` shows a
+  savings-only hint: *"El dinero en cuentas de ahorro no se cuenta en tu
+  disponible del mes — lo tratamos como plata apartada para tus metas."*
 - **Envelope spend is UNCHANGED** — still counts expenses from all accounts;
   only the balance figure excludes savings (the operator's exact ask).
+- **Home leads with Disponible, not the budget (revision 2026-06-13).** The
+  budget hero **"Te queda este mes"** (`total_available` drain bar) was
+  **removed from the home** and **moved to the Analytics screen** (top card) at
+  the operator's request. The home now opens with the Disponible balance; the
+  budget execution lives in Análisis alongside the charts. This **supersedes
+  UI 2.0 §3** ("Inicio answers ¿cuánto me queda este mes? first") for the home
+  surface — Inicio order is now Disponible → Próximos pagos → Sobres → Resumen.
 
 ## Feature 2 — Analytics screen + "explícame este gráfico"
 
@@ -43,11 +50,13 @@ Operator dogfooding feedback:
   no dev build). Reverses UI 2.0 §5 "no chart lib" (see decision note).
 - `mobile/src/components/charts/{DonutChart,LineChart}.tsx` — on-palette SVG
   charts (color = meaning only; muted axes). Bars stay flex Views.
-- `mobile/src/screens/AnalyticsScreen.tsx` — three cards from **existing**
+- `mobile/src/screens/AnalyticsScreen.tsx` — a top **"Te queda este mes"**
+  budget hero card (the drain bar moved here from the home, reusing the same
+  `/envelopes/summary` totals) followed by three chart cards from **existing**
   endpoints (no new backend): Flujo de caja 6m (`/dashboard/cash-flow`, line),
   Gastos por categoría (`/dashboard/summary` category_breakdown, donut),
-  Sobres por clase (`/envelopes/summary` by_class, bars). Each card has an
-  **"Explícame"** button.
+  Sobres por clase (`/envelopes/summary` by_class, bars). Each chart card has
+  an **"Explícame"** button.
 - Navigation: `InicioNavigator` wraps the Inicio tab (DashboardHome →
   Analytics); `SobresSection` gained an `onOpenAnalytics` affordance
   ("Análisis") wired from `Dashboard.tsx`.

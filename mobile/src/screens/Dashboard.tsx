@@ -2,15 +2,17 @@
  * Phase 7c "UI 2.0" — Inicio tab, restructured around money clarity.
  *
  * The screen answers, in order:
- *   1. ¿Cuánto me queda este mes?   → hero from /envelopes/summary totals
+ *   1. ¿Cuánto tengo disponible?    → DisponibleStrip (spending balance,
+ *                                     savings excluded — the headline)
  *   2. ¿Qué pagos vienen?           → bills + cuotas + mínimos de tarjeta,
  *                                     always visible (overdue first)
  *   3. ¿Cómo voy por sobre?         → SobresSection (drain bars)
- *   4. ¿Cómo me fue?                → Resumen (period picker lives HERE —
- *                                     the hero and pagos are always "now")
+ *   4. ¿Cómo me fue?                → Resumen (period picker lives HERE)
  *
- * Rams discipline: neutral surfaces, ink accent, color only for meaning,
- * no chart lib (bars are flex Views), details on demand.
+ * Phase 7h: the budget "Te queda este mes" hero moved OUT of the home to the
+ * Analytics screen — the home leads with the Disponible balance, not the
+ * budget. Rams discipline: neutral surfaces, ink accent, color only for
+ * meaning, details on demand.
  */
 import { useState } from "react";
 import {
@@ -35,7 +37,6 @@ import {
   type DashboardPeriod,
   type UpcomingFeedItem,
 } from "../api/dashboard";
-import { fetchEnvelopeSummary } from "../api/envelopes";
 import { SobresSection } from "../components/SobresSection";
 import type { InicioStackParamList } from "../navigation/InicioNavigator";
 import { formatMoney } from "../lib/format";
@@ -57,12 +58,6 @@ function plusDaysIso(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() + days);
   return d.toISOString().slice(0, 10);
-}
-
-function daysLeftInMonth(): number {
-  const now = new Date();
-  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  return lastDay - now.getDate();
 }
 
 function headerDateLine(): string {
@@ -88,71 +83,6 @@ function relativeDue(iso: string): string {
   if (diff === 0) return "hoy";
   if (diff === 1) return "mañana";
   return `en ${diff} días`;
-}
-
-// ── hero — ¿cuánto me queda este mes? ─────────────────────────────────────────
-
-function HeroCard() {
-  const { data: summary, isLoading } = useQuery({
-    queryKey: ["envelopes", "summary"],
-    queryFn: fetchEnvelopeSummary,
-  });
-
-  const hasEnvelopes = (summary?.envelopes.length ?? 0) > 0;
-  const available = summary?.total_available ?? 0;
-  const limit = summary?.total_limit ?? 0;
-  const reserved = summary?.total_reserved ?? 0;
-  const overBudget = available < 0;
-  const fraction = limit > 0 ? Math.max(0, Math.min(available / limit, 1)) : 0;
-  const low = limit > 0 && available <= 0.05 * limit;
-  const daysLeft = daysLeftInMonth();
-
-  return (
-    <View style={[styles.card, styles.heroCard]}>
-      <Text style={styles.heroLabel}>TE QUEDA ESTE MES</Text>
-
-      {isLoading ? (
-        <ActivityIndicator color={Colors.accent} size="small" style={{ marginVertical: Spacing.md }} />
-      ) : !hasEnvelopes ? (
-        <>
-          <Text style={styles.heroAmountEmpty}>—</Text>
-          <Text style={styles.heroContext}>
-            Creá tus sobres abajo para ver cuánto podés gastar.
-          </Text>
-        </>
-      ) : (
-        <>
-          <Text style={[styles.heroAmount, overBudget && { color: Colors.expense }]}>
-            {overBudget ? "−" : ""}
-            {fmt(available, summary!.currency)}
-          </Text>
-
-          <View style={styles.heroBarTrack}>
-            <View
-              style={[
-                styles.heroBarFill,
-                { width: `${Math.round(fraction * 100)}%` as `${number}%` },
-                low && { backgroundColor: Colors.expense },
-              ]}
-            />
-          </View>
-
-          <Text style={styles.heroContext}>
-            de {fmt(limit, summary!.currency)} presupuestados ·{" "}
-            {daysLeft === 0 ? "último día del mes" : `quedan ${daysLeft} días`}
-          </Text>
-
-          {overBudget ? (
-            <Text style={styles.heroOverNote}>Te pasaste del presupuesto del mes.</Text>
-          ) : reserved > 0 ? (
-            <Text style={styles.heroReservedNote}>
-              {fmt(reserved, summary!.currency)} ya apartado para gastos fijos
-            </Text>
-          ) : null}
-        </>
-      )}
-    </View>
-  );
 }
 
 // ── próximos pagos — siempre visibles, vencidos primero ──────────────────────
@@ -447,7 +377,7 @@ function ResumenCard() {
   );
 }
 
-// ── disponible strip (Phase 7h) — compact balance under the hero ───────────────
+// ── disponible strip (Phase 7h) — the home headline (savings excluded) ─────────
 
 function DisponibleStrip() {
   // Shares the month_current cache with ResumenCard's default period.
@@ -516,7 +446,6 @@ export function DashboardScreen() {
       >
         <Text style={styles.dateLine}>{headerDateLine()}</Text>
 
-        <HeroCard />
         <DisponibleStrip />
         <UpcomingCard />
         <SobresSection onOpenAnalytics={() => nav.navigate("Analytics")} />
@@ -574,60 +503,6 @@ const styles = StyleSheet.create({
   cardBody: {
     paddingHorizontal: Spacing.md,
     paddingBottom: Spacing.md,
-  },
-
-  // ── hero ───────────────────────────────────────────────────────────────────
-  heroCard: {
-    padding: Spacing.md,
-    paddingBottom: Spacing.lg,
-  },
-  heroLabel: {
-    fontFamily: Fonts.semibold,
-    fontSize: FontSize.xs,
-    color: Colors.textMuted,
-    letterSpacing: 1.2,
-  },
-  heroAmount: {
-    fontFamily: Fonts.bold,
-    fontSize: FontSize.hero,
-    color: Colors.textPrimary,
-    marginTop: Spacing.xs,
-    fontVariant: ["tabular-nums"],
-  },
-  heroAmountEmpty: {
-    fontFamily: Fonts.bold,
-    fontSize: FontSize.hero,
-    color: Colors.textMuted,
-    marginTop: Spacing.xs,
-  },
-  heroBarTrack: {
-    height: 5,
-    backgroundColor: Colors.bgElevated,
-    borderRadius: 3,
-    marginTop: Spacing.sm,
-  },
-  heroBarFill: {
-    height: 5,
-    borderRadius: 3,
-    backgroundColor: Colors.accent,
-  },
-  heroContext: {
-    fontFamily: Fonts.regular,
-    fontSize: FontSize.sm,
-    color: Colors.textSecondary,
-    marginTop: Spacing.sm,
-  },
-  heroReservedNote: {
-    fontFamily: Fonts.regular,
-    fontSize: FontSize.xs,
-    color: Colors.textMuted,
-    marginTop: Spacing.xs,
-  },
-  heroOverNote: {
-    fontFamily: Fonts.medium,
-    fontSize: FontSize.xs,
-    color: Colors.expense,
-    marginTop: Spacing.xs,
   },
 
   // ── badges ─────────────────────────────────────────────────────────────────
