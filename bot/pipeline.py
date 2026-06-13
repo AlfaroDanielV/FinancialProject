@@ -375,11 +375,20 @@ async def process_message(
     # ── pending-action short-circuit ──
     # If the user has a pending proposal and typed a confirmation word,
     # skip the LLM entirely. Saves tokens and keeps the flow snappy.
+    #
+    # BUT only when a write proposal is actually pending. A bare "sí"/"no"
+    # with nothing to confirm is almost always answering a question the
+    # QUERY dispatcher just asked (e.g. "¿Querés que revise tu capacidad de
+    # ahorro?"). Short-circuiting it to the write path dead-ends with "no
+    # tengo nada pendiente"; instead fall through to extract → dispatch so
+    # the LLM handles it with its conversation history.
     plain_confirm = _text_is_confirmation(text)
     if plain_confirm is not None:
-        return await _handle_confirm(
-            user=user, yes=plain_confirm, db=db, redis=redis, source_text=text
-        )
+        pending = await load_pending(user_id=user.id, redis=redis)
+        if pending is not None:
+            return await _handle_confirm(
+                user=user, yes=plain_confirm, db=db, redis=redis, source_text=text
+            )
 
     # ── token budget gate ──
     # Source of truth: llm_extractions + llm_query_dispatches summed
@@ -626,11 +635,19 @@ async def _route_extraction(
     redis: Redis,
 ) -> BotReply:
     if extraction.dispatcher == "query":
-        reply = await query_dispatcher_handle(
-            user.id,
-            text,
-            user.telegram_user_id,
-        )
+        # Belt-and-suspenders: the query dispatcher already maps known
+        # failures to Spanish copy, but anything it lets escape (budget-row
+        # commit, an unforeseen path) must not surface as a raw 500 to the
+        # native chat / Telegram. Always hand back a handled message.
+        try:
+            reply = await query_dispatcher_handle(
+                user.id,
+                text,
+                user.telegram_user_id,
+            )
+        except Exception as e:  # noqa: BLE001 - last line of defense
+            log.exception("query_dispatcher_unhandled user_id=%s", user.id)
+            reply = handle_query_error(e, user_id=user.id)
         return BotReply(text=reply)
 
     decision = await dispatch(

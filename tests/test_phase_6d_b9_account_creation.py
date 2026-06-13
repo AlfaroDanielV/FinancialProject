@@ -257,7 +257,14 @@ async def test_expired_state_falls_back_to_idle_without_writing(
 
     reply = await _send(user, "sí", session, redis)
 
-    assert reply.text == messages_es.PENDING_NONE_TO_CONFIRM
+    # The invariant under test — an EXPIRED account-creation state writes
+    # nothing — still holds. The reply text changed with the 2026-06-13
+    # query-robustness fix: a bare "sí" with no pending write no longer
+    # dead-ends at "no tengo nada pendiente"; it falls through to the normal
+    # extract → dispatch path (here the empty FixtureLLMClient can't parse
+    # "sí", so it returns the handled EXTRACTOR_FAILED). Handled message, no
+    # account created.
+    assert reply.text == messages_es.EXTRACTOR_FAILED
     assert await _accounts(session, user_id) == []
 
 

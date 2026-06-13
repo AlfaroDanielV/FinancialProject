@@ -246,33 +246,61 @@ async def run_dispatch(
                 duration_ms=_elapsed_ms(started),
                 error_category="llm_error",
             )
+        except Exception as e:
+            # Catch-all so an unanticipated failure (build_system_prompt, a
+            # tool-loop edge case, anything not wrapped above) returns a
+            # handled Spanish message instead of bubbling to a raw 500.
+            # handle_query_error logs it as `unhandled_query_exception`.
+            try:
+                await _update_error(
+                    db=db, row=row, error=str(e), duration_ms=_elapsed_ms(started)
+                )
+            except Exception:
+                log.exception("query_update_error_failed user_id=%s", user_id)
+            return DispatchOutcome(
+                text=handle_query_error(e, user_id=user_id, query_id=row.id),
+                dispatch_id=row.id,
+                duration_ms=_elapsed_ms(started),
+                error_category="unhandled",
+            )
 
-        await _update_success(db=db, row=row, result=result)
         text = result.text or (
             "Aún estoy aprendiendo a responder consultas financieras."
         )
-        if result.text:
-            # Persist only successful, non-empty exchanges. The empty-response
-            # fallback above is a placeholder, not real conversation content.
-            history_after = await append_turn(
+        # The LLM already produced the answer. Persistence + the attach nudge
+        # are side effects: if any of them hiccups (DB/Redis transient, a tool
+        # context edge case), we MUST still return the answer — never turn a
+        # good response into an error. "No silent failures": logged loudly.
+        try:
+            await _update_success(db=db, row=row, result=result)
+            if result.text:
+                # Persist only successful, non-empty exchanges. The empty-
+                # response fallback above is a placeholder, not real content.
+                history_after = await append_turn(
+                    user_id,
+                    user_msg=message_text,
+                    assistant_msg=result.text,
+                    redis=redis,
+                )
+                enqueue_insight_extraction(
+                    user_id=user_id,
+                    conversation_window=history_after,
+                    transaction_context=compact_transaction_context_from_tools(
+                        result.tools_used
+                    ),
+                    source_event="post_query",
+                    origin_dispatch_id=row.id,
+                )
+                # B4: ephemeral attach nudge — appended to the RETURNED text
+                # only, never persisted to history.
+                text = await _maybe_append_attach_suggestion(
+                    text, db=db, user=user, redis=redis, tools_used=result.tools_used
+                )
+        except Exception:
+            log.exception(
+                "query_post_success_side_effects_failed user_id=%s query_id=%s",
                 user_id,
-                user_msg=message_text,
-                assistant_msg=result.text,
-                redis=redis,
-            )
-            enqueue_insight_extraction(
-                user_id=user_id,
-                conversation_window=history_after,
-                transaction_context=compact_transaction_context_from_tools(
-                    result.tools_used
-                ),
-                source_event="post_query",
-                origin_dispatch_id=row.id,
-            )
-            # B4: ephemeral attach nudge — appended to the RETURNED text only,
-            # never persisted to history (so the LLM doesn't echo it next turn).
-            text = await _maybe_append_attach_suggestion(
-                text, db=db, user=user, redis=redis, tools_used=result.tools_used
+                row.id,
             )
         return DispatchOutcome(
             text=text,
