@@ -182,7 +182,7 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 
 ## Implementation Roadmap
 
-### Current Status: Phases 7/7a/7b/7c/7d code-complete (operator on-device sign-off pending). Phase 7f (Capture & Forms UX) code-complete 2026-06-12. Phase 6f B0–B16 implemented; SPA retired 2026-06-01; native-only daily use ongoing.
+### Current Status: Phases 7/7a/7b/7c/7d/7e code-complete (operator on-device sign-off pending). Phase 7f (Capture & Forms UX) code-complete 2026-06-12; Phase 7g (Income Model Rework) code-complete 2026-06-13. Phase 6f B0–B16 implemented; SPA retired 2026-06-01; native-only daily use ongoing.
 
 | Phase | Focus | Done When |
 |---|---|---|
@@ -206,7 +206,9 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 | **P7b** 🚧 | Accounts CRUD + hard delete, transfers, credit-card clarity | Code-complete 2026-06-11; operator on-device sign-off pending |
 | **P7c** 🚧 | UI 2.0: neutral theme + money clarity | Code-complete 2026-06-11; operator on-device sign-off pending |
 | **P7d** 🚧 | Goal funding from accounts + goals full CRUD | Code-complete 2026-06-11; operator on-device sign-off pending |
+| **P7e** 🚧 | Data foundation: advice trace, snapshots, consent ledger (migration 0031) | Code-complete 2026-06-11; operator on-device sign-off pending |
 | **P7f** 🚧 | Capture & Forms UX: account buttons in chat, form polish, envelope indicator, debts in Gastos fijos | Code-complete 2026-06-12; operator on-device sign-off pending |
+| **P7g** 🚧 | Income Model Rework: monthly→per-payment storage (quincenal = 2/month), CR aguinaldo + salario escolar on gross prorated by hire date (migration 0032) | Code-complete 2026-06-13; operator on-device sign-off pending |
 | **P8** | Beta users | Onboard a second person via Telegram with accurate reports within a week |
 | **P9** | SaaS hardening | Multi-tenant auth, billing, compliance, observability |
 
