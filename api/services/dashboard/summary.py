@@ -75,6 +75,8 @@ def _zero_summary(
         net_flow=Decimal("0"),
         savings_rate=None,
         balance_total=Decimal("0"),
+        available_balance=Decimal("0"),
+        savings_balance=Decimal("0"),
         transaction_count=0,
         transfer_rows_excluded=0,
         accounts_count=accounts_count,
@@ -118,6 +120,62 @@ async def _balance_total(db: AsyncSession, user_id: uuid.UUID) -> Decimal:
     return Decimal(initial_result.scalar_one() or 0) + Decimal(
         movement_result.scalar_one() or 0
     )
+
+
+async def _balance_split(
+    db: AsyncSession, user_id: uuid.UUID
+) -> tuple[Decimal, Decimal]:
+    """Phase 7h — split account balances into (available, savings).
+
+    Savings (`account_type='savings'`) is "plata apartada" and must NOT count
+    toward the home-screen available total. Same `initial_balance + Σ confirmed
+    transactions` convention as `_balance_total`, but the movement sum is JOINed
+    to the account so it can be bucketed by type — so a checking→savings
+    transfer correctly lowers `available` and raises `savings` (transfers still
+    net across accounts). Only active, non-archived accounts count.
+    """
+    is_sav = Account.account_type == "savings"
+
+    initial = await db.execute(
+        select(
+            func.coalesce(
+                func.sum(case((~is_sav, Account.initial_balance), else_=0)), 0
+            ),
+            func.coalesce(
+                func.sum(case((is_sav, Account.initial_balance), else_=0)), 0
+            ),
+        ).where(
+            Account.user_id == user_id,
+            Account.is_active.is_(True),
+            Account.archived.is_(False),
+        )
+    )
+    avail_init, sav_init = initial.one()
+
+    movement = await db.execute(
+        select(
+            func.coalesce(
+                func.sum(case((~is_sav, Transaction.amount), else_=0)), 0
+            ),
+            func.coalesce(
+                func.sum(case((is_sav, Transaction.amount), else_=0)), 0
+            ),
+        )
+        .select_from(Transaction)
+        .join(Account, Transaction.account_id == Account.id)
+        .where(
+            Transaction.user_id == user_id,
+            Transaction.status == "confirmed",
+            Transaction.archived.is_(False),
+            Account.is_active.is_(True),
+            Account.archived.is_(False),
+        )
+    )
+    avail_mov, sav_mov = movement.one()
+
+    available = Decimal(avail_init or 0) + Decimal(avail_mov or 0)
+    savings = Decimal(sav_init or 0) + Decimal(sav_mov or 0)
+    return available, savings
 
 
 async def _category_breakdown(
@@ -206,6 +264,7 @@ async def get_dashboard_summary(
     accounts_count, active_goals_count = await _active_counts(db, user.id)
     window = _period_window(period)
     balance_total = await _balance_total(db, user.id)
+    available_balance, savings_balance = await _balance_split(db, user.id)
 
     # Phase 7d: goal aportes/refunds join transfer legs as "moves money but
     # is neither income nor expense" — _not_flow below excludes both.
@@ -274,6 +333,8 @@ async def get_dashboard_summary(
         net_flow=net_flow,
         savings_rate=savings_rate,
         balance_total=balance_total,
+        available_balance=available_balance,
+        savings_balance=savings_balance,
         transaction_count=int(row[2] or 0),
         transfer_rows_excluded=int(row[3] or 0),
         accounts_count=accounts_count,

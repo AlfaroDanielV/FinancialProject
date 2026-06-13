@@ -13,7 +13,10 @@ import type { CardPrefill, DebtPrefill } from "../api/chat";
 import { Colors, FontSize } from "../theme";
 
 export type ChatStackParamList = {
-  Chat: undefined;
+  // Phase 7h: `initialMessage` lets another screen (e.g. Analytics
+  // "Explícame este gráfico") open the chat with a pre-filled, auto-sent
+  // question.
+  Chat: { initialMessage?: string } | undefined;
   DebtCreate: { prefill?: DebtPrefill } | undefined;
   CardCreate: { prefill?: CardPrefill } | undefined;
 };

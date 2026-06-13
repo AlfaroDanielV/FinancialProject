@@ -17,10 +17,29 @@ export interface DashboardSummary {
   net_flow: string;
   savings_rate: string | null;
   balance_total: string;
+  // Phase 7h: savings is "plata apartada". `available_balance` excludes
+  // savings accounts (the home-screen figure); `savings_balance` is shown
+  // separately. `balance_total` stays for back-compat.
+  available_balance: string;
+  savings_balance: string;
   transaction_count: number;
   accounts_count: number;
   active_goals_count: number;
   category_breakdown: CategoryBreakdownItem[];
+}
+
+// ── Phase 7h: cash-flow time series for the Analytics screen ────────────────
+
+export interface CashFlowPoint {
+  month: string; // "YYYY-MM"
+  income_total: string;
+  expense_total: string;
+  net_flow: string;
+}
+
+export interface CashFlowResponse {
+  display_currency: string;
+  points: CashFlowPoint[];
 }
 
 export interface UpcomingFeedItem {
@@ -59,6 +78,18 @@ export async function fetchUpcomingFeed(
 ): Promise<UpcomingFeedResponse> {
   const { data } = await api.get<UpcomingFeedResponse>("/calendar/upcoming", {
     params: { from: fromDate, to: toDate, include_overdue: true },
+  });
+  return data;
+}
+
+/** Phase 7h — monthly cash-flow series for the Analytics screen.
+ *  `from`/`to` are "YYYY-MM" (backend caps at 36 months). */
+export async function fetchCashFlow(
+  fromMonth: string,
+  toMonth: string,
+): Promise<CashFlowResponse> {
+  const { data } = await api.get<CashFlowResponse>("/dashboard/cash-flow", {
+    params: { from: fromMonth, to: toMonth },
   });
   return data;
 }

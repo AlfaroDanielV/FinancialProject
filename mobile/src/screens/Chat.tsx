@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -16,7 +16,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import * as WebBrowser from "expo-web-browser";
 import * as ImagePicker from "expo-image-picker";
 import { Feather } from "@expo/vector-icons";
-import { useNavigation } from "@react-navigation/native";
+import { useNavigation, useRoute } from "@react-navigation/native";
+import type { RouteProp } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -58,6 +59,7 @@ function nextId() {
 
 export function ChatScreen() {
   const nav = useNavigation<NativeStackNavigationProp<ChatStackParamList, "Chat">>();
+  const route = useRoute<RouteProp<ChatStackParamList, "Chat">>();
   const qc = useQueryClient();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -191,6 +193,20 @@ export function ChatScreen() {
     setInput("");
     mutation.mutate(trimmed);
   };
+
+  // Phase 7h: a prefilled question handed in from another screen (e.g.
+  // Analytics "Explícame este gráfico") is auto-sent once, then the param is
+  // cleared so re-focus doesn't resend it.
+  const autoSentRef = useRef(false);
+  useEffect(() => {
+    const initial = route.params?.initialMessage;
+    if (initial && !autoSentRef.current) {
+      autoSentRef.current = true;
+      send(initial);
+      nav.setParams({ initialMessage: undefined });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route.params?.initialMessage]);
 
   const pickImage = async () => {
     if (isPending) return;

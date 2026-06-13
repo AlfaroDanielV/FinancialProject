@@ -35,7 +35,13 @@ import { CardShadow, Colors, FontSize, Radius, Spacing } from "../theme";
 import { EnvelopeDetailModal } from "./EnvelopeDetailModal";
 import { EnvelopeEditModal } from "./EnvelopeEditModal";
 
-export function SobresSection() {
+export function SobresSection({
+  onOpenAnalytics,
+}: {
+  // Phase 7h: when provided, the header shows a "Análisis" affordance that
+  // opens the Analytics screen (charts of the budget execution + cash flow).
+  onOpenAnalytics?: () => void;
+}) {
   const [createOpen, setCreateOpen] = useState(false);
   const [detailItem, setDetailItem] = useState<EnvelopeSummaryItem | null>(null);
 
@@ -58,13 +64,25 @@ export function SobresSection() {
     <View style={[styles.card]}>
       <View style={styles.header}>
         <Text style={styles.title}>Sobres</Text>
-        <Pressable
-          onPress={openCreate}
-          style={({ pressed }) => [styles.addBtn, pressed && { opacity: 0.7 }]}
-        >
-          <Feather name="plus" size={14} color={Colors.accent} />
-          <Text style={styles.addText}>Nuevo</Text>
-        </Pressable>
+        <View style={styles.headerActions}>
+          {onOpenAnalytics && (
+            <Pressable
+              onPress={onOpenAnalytics}
+              style={({ pressed }) => [styles.analyticsBtn, pressed && { opacity: 0.7 }]}
+              hitSlop={6}
+            >
+              <Feather name="bar-chart-2" size={14} color={Colors.accent} />
+              <Text style={styles.addText}>Análisis</Text>
+            </Pressable>
+          )}
+          <Pressable
+            onPress={openCreate}
+            style={({ pressed }) => [styles.addBtn, pressed && { opacity: 0.7 }]}
+          >
+            <Feather name="plus" size={14} color={Colors.accent} />
+            <Text style={styles.addText}>Nuevo</Text>
+          </Pressable>
+        </View>
       </View>
 
       {summaryQuery.isLoading ? (
@@ -242,6 +260,14 @@ const styles = StyleSheet.create({
     padding: Spacing.md,
   },
   title: { fontSize: FontSize.md, color: Colors.textPrimary, fontWeight: "600" },
+  headerActions: { flexDirection: "row", alignItems: "center", gap: Spacing.sm },
+  analyticsBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: Spacing.xs,
+    paddingVertical: 4,
+  },
   addBtn: {
     flexDirection: "row",
     alignItems: "center",

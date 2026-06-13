@@ -1494,6 +1494,44 @@ Cold-Start Registration`.
   limiting per tg id (beta scale doesn't need it), self-serve account
   delete, formal ToS document.
 
+## Phase 7h (active) — Savings Clarity + Analytics Screen (2026-06-13)
+
+Two operator dogfooding asks. **Code-complete on branch `phase-7h-analytics`
+— on-device sign-off pending.** No migration. Canonical:
+`docs/phase-7h-decisions.md`; vault `Decision - Savings Excluded From Available
+Balance`, `Decision - Charts Via react-native-svg`.
+
+- **Savings is "plata apartada" (excluded from the available total).** The home
+  total was confusing because it summed savings + checking. New
+  `api/services/dashboard/summary.py::_balance_split` returns `(available,
+  savings)` bucketed by `Account.account_type` (JOIN txns→accounts so a
+  checking→savings transfer lowers available, raises savings — transfers still
+  net). `DashboardSummary` gains `available_balance` (savings EXCLUDED — the
+  home figure) + `savings_balance` (shown apart); `balance_total` unchanged
+  (back-compat). Mobile: `Dashboard.tsx` footer → "Disponible" + "Ahorros
+  aparte" + a compact DISPONIBLE strip under the hero; `AccountsScreen` strip
+  mirrors it; `AccountCreateScreen` shows a savings-only hint. **Envelope spend
+  UNCHANGED** (still all accounts — the operator only excluded savings from the
+  balance). No `is_primary`/"cuenta principal" (operator dropped it).
+- **Analytics screen + "explícame este gráfico".** New dep
+  `react-native-svg@15.12.1` (Expo SDK 54-bundled, Expo Go-safe; reverses UI
+  2.0 §5 "no chart lib"). `mobile/src/components/charts/{DonutChart,LineChart}.tsx`
+  (on-palette SVG; color = meaning; bars stay flex). `AnalyticsScreen.tsx`:
+  3 cards from EXISTING endpoints (cash-flow line, category donut, envelope
+  by-class bars) — **no new backend**. `InicioNavigator` wraps the Inicio tab
+  (DashboardHome → Analytics); entered via a "Análisis" affordance on the
+  `SobresSection` card. Each chart's **"Explícame"** cross-tab navigates to the
+  Chat tab with a prefilled, **auto-sent** question (`ChatNavigator` Chat param
+  `initialMessage`; `Chat.tsx` one-shot auto-send). The existing read-only
+  query tools fetch the data; the LLM explains — rules provide data, LLM
+  explains, zero backend change.
+- **Verification:** `scripts/test_phase_7h.sh` green — mobile `tsc` clean; 2
+  focused (`tests/test_phase_7h_savings_balance.py`) + 37 regression
+  (dashboard/cashflow byte-lock/envelopes/goals). No migration.
+- **Deferred:** quincenal budget periods; scoping envelope spend by account;
+  credit-account treatment in the available total; passing chart raw-data to
+  the LLM.
+
 ## CR Salary Calculator + Ingresos CRUD (post-7a, 2026-06-09)
 
 Deterministic Costa Rican net-pay calculator + full Ingresos CRUD. Backend +

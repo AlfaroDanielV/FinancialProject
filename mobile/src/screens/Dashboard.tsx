@@ -24,6 +24,8 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
+import { useNavigation } from "@react-navigation/native";
+import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -35,6 +37,7 @@ import {
 } from "../api/dashboard";
 import { fetchEnvelopeSummary } from "../api/envelopes";
 import { SobresSection } from "../components/SobresSection";
+import type { InicioStackParamList } from "../navigation/InicioNavigator";
 import { formatMoney } from "../lib/format";
 import { CardShadow, Colors, Fonts, FontSize, Radius, Spacing } from "../theme";
 
@@ -330,7 +333,9 @@ function ResumenCard() {
   const expense = parseFloat(summary?.expense_total ?? "0");
   const net = parseFloat(summary?.net_flow ?? "0");
   const savings = summary?.savings_rate != null ? parseFloat(summary.savings_rate) : null;
-  const balance = parseFloat(summary?.balance_total ?? "0");
+  // Phase 7h: "Disponible" excludes savings; savings shown as plata apartada.
+  const available = parseFloat(summary?.available_balance ?? "0");
+  const savingsBalance = parseFloat(summary?.savings_balance ?? "0");
   const categoryCount =
     summary?.category_breakdown.filter((i) => parseFloat(i.expense_total) > 0).length ?? 0;
 
@@ -425,12 +430,52 @@ function ResumenCard() {
         )}
 
         <View style={styles.balanceFooter}>
-          <Text style={styles.balanceFooterLabel}>Saldo total en cuentas</Text>
-          <Text style={[styles.balanceFooterValue, balance < 0 && { color: Colors.expense }]}>
-            {isLoading ? "—" : `${balance < 0 ? "−" : ""}${fmt(balance, currency)}`}
+          <Text style={styles.balanceFooterLabel}>Disponible</Text>
+          <Text style={[styles.balanceFooterValue, available < 0 && { color: Colors.expense }]}>
+            {isLoading ? "—" : `${available < 0 ? "−" : ""}${fmt(available, currency)}`}
           </Text>
         </View>
+        {!isLoading && savingsBalance > 0 && (
+          <View style={styles.savingsAsideRow}>
+            <Text style={styles.savingsAsideText}>
+              Ahorros: {fmt(savingsBalance, currency)} (aparte)
+            </Text>
+          </View>
+        )}
       </View>
+    </View>
+  );
+}
+
+// ── disponible strip (Phase 7h) — compact balance under the hero ───────────────
+
+function DisponibleStrip() {
+  // Shares the month_current cache with ResumenCard's default period.
+  const { data: summary, isLoading } = useQuery({
+    queryKey: ["dashboard", "summary", "month_current"],
+    queryFn: () => fetchDashboardSummary("month_current"),
+  });
+  const currency = summary?.display_currency ?? "CRC";
+  const available = parseFloat(summary?.available_balance ?? "0");
+  const savingsBalance = parseFloat(summary?.savings_balance ?? "0");
+
+  return (
+    <View style={styles.dispStrip}>
+      <View style={styles.dispRow}>
+        <Text style={styles.dispLabel}>DISPONIBLE</Text>
+        {isLoading ? (
+          <ActivityIndicator color={Colors.accent} size="small" />
+        ) : (
+          <Text style={[styles.dispValue, available < 0 && { color: Colors.expense }]}>
+            {`${available < 0 ? "−" : ""}${fmt(available, currency)}`}
+          </Text>
+        )}
+      </View>
+      {!isLoading && savingsBalance > 0 && (
+        <Text style={styles.dispSavings}>
+          + {fmt(savingsBalance, currency)} en ahorros (aparte)
+        </Text>
+      )}
     </View>
   );
 }
@@ -439,6 +484,7 @@ function ResumenCard() {
 
 export function DashboardScreen() {
   const qc = useQueryClient();
+  const nav = useNavigation<NativeStackNavigationProp<InicioStackParamList>>();
   const [refreshing, setRefreshing] = useState(false);
 
   const onRefresh = async () => {
@@ -471,8 +517,9 @@ export function DashboardScreen() {
         <Text style={styles.dateLine}>{headerDateLine()}</Text>
 
         <HeroCard />
+        <DisponibleStrip />
         <UpcomingCard />
-        <SobresSection />
+        <SobresSection onOpenAnalytics={() => nav.navigate("Analytics")} />
         <ResumenCard />
       </ScrollView>
     </SafeAreaView>
@@ -750,6 +797,52 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.semibold,
     fontSize: FontSize.md,
     color: Colors.textPrimary,
+    fontVariant: ["tabular-nums"],
+  },
+  savingsAsideRow: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    marginTop: Spacing.xs,
+  },
+  savingsAsideText: {
+    fontFamily: Fonts.regular,
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    fontVariant: ["tabular-nums"],
+  },
+
+  // ── disponible strip (Phase 7h) ──────────────────────────────────────────────
+  dispStrip: {
+    backgroundColor: Colors.bgCard,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+    ...CardShadow,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm + 2,
+  },
+  dispRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+  },
+  dispLabel: {
+    fontFamily: Fonts.semibold,
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    letterSpacing: 1.2,
+  },
+  dispValue: {
+    fontFamily: Fonts.bold,
+    fontSize: FontSize.lg,
+    color: Colors.textPrimary,
+    fontVariant: ["tabular-nums"],
+  },
+  dispSavings: {
+    fontFamily: Fonts.regular,
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    marginTop: 2,
     fontVariant: ["tabular-nums"],
   },
 

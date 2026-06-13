@@ -22,6 +22,12 @@ class DashboardSummary(BaseModel):
     net_flow: Decimal
     savings_rate: Decimal | None
     balance_total: Decimal
+    # Phase 7h: savings is "plata apartada" — the home screen shows
+    # `available_balance` (spending accounts, savings EXCLUDED) as the figure
+    # and `savings_balance` separately. `balance_total` stays for back-compat
+    # (= every active account, savings included).
+    available_balance: Decimal
+    savings_balance: Decimal
     transaction_count: int
     transfer_rows_excluded: int
     accounts_count: int

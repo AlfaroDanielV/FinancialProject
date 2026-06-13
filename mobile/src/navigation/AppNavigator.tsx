@@ -2,7 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 
 import { ChatNavigator } from "./ChatNavigator";
-import { DashboardScreen } from "../screens/Dashboard";
+import { InicioNavigator } from "./InicioNavigator";
 import { AccountsNavigator } from "./AccountsNavigator";
 import { TransactionsNavigator } from "./TransactionsNavigator";
 import { MasNavigator } from "./MasNavigator";
@@ -66,7 +66,7 @@ export function AppNavigator() {
     >
       <Tab.Screen
         name="Inicio"
-        component={DashboardScreen}
+        component={InicioNavigator}
         options={{ title: "Inicio", headerShown: false }}
       />
       <Tab.Screen

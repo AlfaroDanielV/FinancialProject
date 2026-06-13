@@ -125,10 +125,14 @@ export function AccountsScreen() {
   const archived = (data ?? []).filter((a) => a.archived);
   const displayed = showArchived ? data ?? [] : active;
 
-  const totalBalance = active.reduce(
-    (sum, a) => sum + parseFloat(a.current_balance ?? "0"),
-    0,
-  );
+  // Phase 7h: "Disponible" excludes savings (plata apartada); show savings
+  // separately so this screen agrees with the home screen.
+  const availableBalance = active
+    .filter((a) => a.account_type !== "savings")
+    .reduce((sum, a) => sum + parseFloat(a.current_balance ?? "0"), 0);
+  const savingsBalance = active
+    .filter((a) => a.account_type === "savings")
+    .reduce((sum, a) => sum + parseFloat(a.current_balance ?? "0"), 0);
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -179,12 +183,19 @@ export function AccountsScreen() {
       {/* ── total balance strip ──────────────────────────────────────────── */}
       {!showArchived && !isLoading && active.length > 0 && (
         <View style={styles.totalStrip}>
-          <Text style={styles.totalLabel}>SALDO CONSOLIDADO</Text>
-          <Text
-            style={[styles.totalAmount, totalBalance < 0 && { color: Colors.expense }]}
-          >
-            {fmt(totalBalance, "CRC")}
-          </Text>
+          <View style={styles.totalStripRow}>
+            <Text style={styles.totalLabel}>DISPONIBLE</Text>
+            <Text
+              style={[styles.totalAmount, availableBalance < 0 && { color: Colors.expense }]}
+            >
+              {fmt(availableBalance, "CRC")}
+            </Text>
+          </View>
+          {savingsBalance > 0 && (
+            <Text style={styles.totalSavingsAside}>
+              + {fmt(savingsBalance, "CRC")} en ahorros (aparte)
+            </Text>
+          )}
         </View>
       )}
 
@@ -303,9 +314,18 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.bgCard,
     borderBottomWidth: 1,
     borderBottomColor: Colors.borderLight,
+  },
+  totalStripRow: {
     flexDirection: "row",
     alignItems: "baseline",
     justifyContent: "space-between",
+  },
+  totalSavingsAside: {
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    marginTop: 2,
+    textAlign: "right",
+    fontVariant: ["tabular-nums"],
   },
   totalLabel: {
     fontSize: FontSize.xs,

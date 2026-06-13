@@ -125,6 +125,12 @@ export function AccountCreateScreen() {
               </Pressable>
             ))}
           </View>
+          {accountType === "savings" && (
+            <Text style={styles.hint}>
+              💡 El dinero en cuentas de ahorro no se cuenta en tu disponible
+              del mes — lo tratamos como plata apartada para tus metas.
+            </Text>
+          )}
         </View>
 
         {/* ── Currency ─────────────────────────────────────────────────────── */}
