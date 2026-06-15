@@ -14,6 +14,7 @@
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Modal,
   Pressable,
@@ -30,7 +31,12 @@ import {
   ENVELOPE_CLASS_COLORS,
   ENVELOPE_CLASS_LABELS,
   envelopeProgress,
+  fetchEnvelopeMembers,
   fetchEnvelopeSummary,
+  fetchMyUserId,
+  removeEnvelopeMember,
+  shareEnvelope,
+  type EnvelopeMember,
   type EnvelopeSummaryItem,
 } from "../api/envelopes";
 import { fetchMonthExpenses, type TransactionResponse } from "../api/transactions";
@@ -96,7 +102,8 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
   // "attached here" (offered for detach). The reservation appears live (B2).
   const obligationsQuery = useQuery({
     queryKey: ["fixed-expenses"],
-    enabled: visible && item != null,
+    // Members can't attach obligations — skip the fetch entirely for them.
+    enabled: visible && item != null && !item.is_shared,
     queryFn: async () => {
       const [bills, debts] = await Promise.all([fetchRecurringBills(), fetchDebts()]);
       const out: {
@@ -146,6 +153,9 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
   const activeId = stack.length ? stack[stack.length - 1] : item.id;
   // Prefer the fresh summary row; fall back to the prop while it loads.
   const active = all.find((e) => e.id === activeId) ?? item;
+  // A shared envelope you only JOINED: read-only (no edit / sub-sobre / attach),
+  // but you can still assign your OWN expenses to it.
+  const isMember = active.is_shared === true;
   const children = all.filter((e) => e.parent_id === active.id);
   const atRoot = stack.length === 0;
   const available = Math.max(0, active.limit_amount - active.allocated);
@@ -209,7 +219,24 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
             {`Sin asignar ${formatMoney(available, active.currency)} del presupuesto`}
           </Text>
         )}
+        {isMember && (
+          <>
+            <Text style={styles.summarySub}>
+              Compartido por {active.shared_by_name ?? "otra persona"}
+              {active.member_count ? ` · ${active.member_count} personas` : ""}
+            </Text>
+            <Text style={styles.summarySub}>
+              Vos: {formatMoney(active.your_spent ?? 0, active.currency)} de{" "}
+              {formatMoney(active.limit_amount, active.currency)}
+            </Text>
+          </>
+        )}
       </View>
+
+      {/* sharing (root only): owner shares + manages members; member can leave */}
+      {active.parent_id == null && (
+        <SharingBlock active={active} isMember={isMember} onClose={onClose} />
+      )}
 
       {/* sub-sobres */}
       {children.length > 0 && (
@@ -221,7 +248,7 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
         </>
       )}
 
-      {active.depth < 5 && (
+      {!isMember && active.depth < 5 && (
         <Pressable
           onPress={() => setSubOpen(true)}
           style={({ pressed }) => [styles.subBtn, pressed && { opacity: 0.7 }]}
@@ -231,7 +258,7 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
         </Pressable>
       )}
 
-      {attachedHere.length > 0 && (
+      {!isMember && attachedHere.length > 0 && (
         <>
           <Text style={styles.listTitle}>Gastos fijos en este sobre</Text>
           {attachedHere.map((o) => (
@@ -262,7 +289,7 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
         </>
       )}
 
-      {atRoot && unattached.length > 0 && (
+      {!isMember && atRoot && unattached.length > 0 && (
         <>
           <Text style={styles.listTitle}>Gastos fijos sin sobre</Text>
           {unattached.map((o) => (
@@ -326,9 +353,13 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
           <Text style={styles.headerTitle} numberOfLines={1}>
             {active.name}
           </Text>
-          <Pressable onPress={() => setEditOpen(true)} hitSlop={12} style={styles.headerBtn}>
-            <Feather name="edit-2" size={20} color={Colors.accent} />
-          </Pressable>
+          {isMember ? (
+            <View style={styles.headerBtn} />
+          ) : (
+            <Pressable onPress={() => setEditOpen(true)} hitSlop={12} style={styles.headerBtn}>
+              <Feather name="edit-2" size={20} color={Colors.accent} />
+            </Pressable>
+          )}
         </View>
 
         <FlatList
@@ -432,6 +463,163 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
         />
       </SafeAreaView>
     </Modal>
+  );
+}
+
+// ── sharing ("Sobres compartidos") ──────────────────────────────────────────
+// Root-only. The OWNER mints a 24h code + manages members; a MEMBER can leave.
+
+function SharingBlock({
+  active,
+  isMember,
+  onClose,
+}: {
+  active: EnvelopeSummaryItem;
+  isMember: boolean;
+  onClose: () => void;
+}) {
+  if (active.parent_id != null) return null; // only roots are shareable
+  return isMember ? (
+    <MemberLeave rootId={active.id} onClose={onClose} />
+  ) : (
+    <OwnerShare rootId={active.id} />
+  );
+}
+
+function OwnerShare({ rootId }: { rootId: string }) {
+  const qc = useQueryClient();
+  const [code, setCode] = useState<string | null>(null);
+
+  const membersQuery = useQuery({
+    queryKey: ["envelope-members", rootId],
+    queryFn: () => fetchEnvelopeMembers(rootId),
+  });
+
+  const share = useMutation({
+    mutationFn: () => shareEnvelope(rootId),
+    onSuccess: (res) => {
+      setCode(res.code);
+      void qc.invalidateQueries({ queryKey: ["envelope-members", rootId] });
+    },
+    onError: () => Alert.alert("No se pudo compartir", "Intentá de nuevo."),
+  });
+
+  const remove = useMutation({
+    mutationFn: (userId: string) => removeEnvelopeMember(rootId, userId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["envelope-members", rootId] });
+      void qc.invalidateQueries({ queryKey: ["envelopes"] });
+    },
+  });
+
+  const members = membersQuery.data ?? [];
+  const invited = members.filter((m) => !m.is_owner);
+
+  const confirmRemove = (m: EnvelopeMember) =>
+    Alert.alert(
+      `Quitar a ${m.full_name}`,
+      "Sus gastos en este sobre se desvinculan (no se borran) y pierde el acceso.",
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Quitar",
+          style: "destructive",
+          onPress: () => remove.mutate(m.user_id),
+        },
+      ],
+    );
+
+  return (
+    <View style={styles.shareBlock}>
+      <Pressable
+        onPress={() => share.mutate()}
+        disabled={share.isPending}
+        style={({ pressed }) => [styles.shareBtn, pressed && { opacity: 0.7 }]}
+      >
+        <Feather name="share-2" size={14} color={Colors.accent} />
+        <Text style={styles.shareBtnText}>Compartir este sobre</Text>
+      </Pressable>
+
+      {code && (
+        <View style={styles.codeBox}>
+          <Text style={styles.codeText}>{code}</Text>
+          <Text style={styles.codeHint}>
+            Pasá este código a quien quieras. Vence en 24 h. Hasta 9 personas.
+          </Text>
+        </View>
+      )}
+
+      {invited.length > 0 && (
+        <View style={styles.membersWrap}>
+          <Text style={styles.membersTitle}>Miembros ({invited.length})</Text>
+          {invited.map((m) => (
+            <View key={m.user_id} style={styles.memberRow}>
+              <Text style={styles.memberName} numberOfLines={1}>
+                {m.full_name}
+              </Text>
+              <Pressable
+                onPress={() => confirmRemove(m)}
+                disabled={remove.isPending}
+                style={({ pressed }) => [
+                  styles.detachBtn,
+                  pressed && { opacity: 0.7 },
+                ]}
+              >
+                <Feather name="x" size={13} color={Colors.textSecondary} />
+                <Text style={styles.detachBtnText}>Quitar</Text>
+              </Pressable>
+            </View>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function MemberLeave({
+  rootId,
+  onClose,
+}: {
+  rootId: string;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const leave = useMutation({
+    mutationFn: async () => {
+      const myId = await fetchMyUserId();
+      await removeEnvelopeMember(rootId, myId);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["envelopes"] });
+      onClose();
+    },
+    onError: () => Alert.alert("No se pudo salir", "Intentá de nuevo."),
+  });
+
+  return (
+    <View style={styles.shareBlock}>
+      <Pressable
+        onPress={() =>
+          Alert.alert(
+            "Salir del sobre",
+            "Dejarás de ver este sobre compartido y tus gastos se desvinculan (no se borran).",
+            [
+              { text: "Cancelar", style: "cancel" },
+              {
+                text: "Salir",
+                style: "destructive",
+                onPress: () => leave.mutate(),
+              },
+            ],
+          )
+        }
+        disabled={leave.isPending}
+        style={({ pressed }) => [styles.leaveBtn, pressed && { opacity: 0.7 }]}
+      >
+        <Feather name="log-out" size={14} color={Colors.expense} />
+        <Text style={styles.leaveBtnText}>Salir del sobre compartido</Text>
+      </Pressable>
+    </View>
   );
 }
 
@@ -661,6 +849,79 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   detachBtnText: { color: Colors.textSecondary, fontSize: FontSize.xs, fontWeight: "600" },
+
+  // ── sharing ──────────────────────────────────────────────────────────────────
+  shareBlock: {
+    marginHorizontal: Spacing.md,
+    marginTop: Spacing.md,
+    gap: Spacing.sm,
+  },
+  shareBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 6,
+    borderWidth: 1,
+    borderColor: Colors.accent,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 6,
+  },
+  shareBtnText: { color: Colors.accent, fontSize: FontSize.sm, fontWeight: "600" },
+  codeBox: {
+    backgroundColor: Colors.bgInput,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    padding: Spacing.md,
+    gap: 4,
+    alignItems: "center",
+  },
+  codeText: {
+    fontSize: 26,
+    letterSpacing: 6,
+    fontFamily: "Menlo",
+    fontWeight: "700",
+    color: Colors.textPrimary,
+  },
+  codeHint: {
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    textAlign: "center",
+  },
+  membersWrap: { gap: Spacing.xs },
+  membersTitle: {
+    fontSize: FontSize.xs,
+    fontWeight: "700",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+    color: Colors.textMuted,
+  },
+  memberRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: Spacing.sm,
+    paddingVertical: 4,
+  },
+  memberName: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    color: Colors.textPrimary,
+    fontWeight: "500",
+  },
+  leaveBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 6,
+    borderWidth: 1,
+    borderColor: Colors.expense,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 6,
+  },
+  leaveBtnText: { color: Colors.expense, fontSize: FontSize.sm, fontWeight: "600" },
 
   headerBtn: { padding: 6 },
   childRow: {

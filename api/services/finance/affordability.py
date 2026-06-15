@@ -402,7 +402,11 @@ async def gather_financial_context(
     # ── envelope execution (reuses compute_envelope_summary — no drift) ──────
     summary = await compute_envelope_summary(db, user=user)
     pressure: Optional[EnvelopePressure] = None
-    if summary.envelopes:
+    # Shared envelopes the user only joined are display-only — exclude them from
+    # the user's own pushback context (total_limit / by_class are already
+    # own-only). Otherwise a joined envelope would inflate the user's pressure.
+    own_envelopes = [e for e in summary.envelopes if not e.is_shared]
+    if own_envelopes:
         total_limit = Decimal(str(summary.total_limit))
         total_spent = sum(
             (Decimal(str(c.spent_total)) for c in summary.by_class), Decimal("0")
@@ -413,7 +417,7 @@ async def gather_financial_context(
                 overage=_q(Decimal(str(item.spent)) - Decimal(str(item.limit_amount))),
                 currency=item.currency,
             )
-            for item in summary.envelopes
+            for item in own_envelopes
             if item.over_limit
         )
         pct = (

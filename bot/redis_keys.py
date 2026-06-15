@@ -53,6 +53,19 @@ def device_code_key(code: str) -> str:
     return f"auth:device_code:{code}"
 
 
+# Shared envelopes: a share code minted by the owner via
+# POST /api/v1/envelopes/{id}/share, redeemed by up to 9 invitees via
+# POST /api/v1/envelopes/redeem. Unlike device/pairing codes this is MULTI-USE —
+# `redeem` reads (does NOT pop) the key, so several people can join with the same
+# code until it expires or the member cap is hit. `envelope:` namespace because
+# this is a native-app sharing flow, not durable bot state. 24h window.
+ENVELOPE_SHARE_CODE_TTL_S = 24 * 60 * 60
+
+
+def share_code_key(code: str) -> str:
+    return f"envelope:share_code:{code}"
+
+
 def pending_key(user_id: uuid.UUID | str) -> str:
     return f"telegram:pending:{user_id}"
 

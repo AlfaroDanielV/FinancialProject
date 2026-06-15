@@ -113,6 +113,44 @@ async def is_valid_envelope_target(
     return row.scalar_one_or_none() is not None
 
 
+async def can_assign_transaction_to_envelope(
+    db: AsyncSession, *, user_id: uuid.UUID, envelope_id: uuid.UUID
+) -> bool:
+    """True iff the caller may tag a TRANSACTION to this envelope: it's
+    non-archived AND (owned by the caller OR the caller is a member of its
+    shared root). This is the ONLY place the owner-only rule is widened for
+    sharing — bill/debt attachment stays owner-only (``is_valid_envelope_target``).
+    The PATCH /transactions fetch is already user-scoped, so a member still only
+    ever moves their OWN transaction; this just lets the destination be a shared
+    envelope."""
+    env = (
+        await db.execute(select(Envelope).where(Envelope.id == envelope_id))
+    ).scalar_one_or_none()
+    if env is None or env.archived:
+        return False
+    if env.user_id == user_id:
+        return True
+    # Not the owner — walk to the root (depth ≤ 5, forest guaranteed) and check
+    # membership. The target node + its root must both be non-archived.
+    root = env
+    guard = 0
+    while root.parent_id is not None and guard < 5:
+        parent = (
+            await db.execute(
+                select(Envelope).where(Envelope.id == root.parent_id)
+            )
+        ).scalar_one_or_none()
+        if parent is None:
+            return False
+        root = parent
+        guard += 1
+    if root.archived:
+        return False
+    from .envelope_sharing import is_member
+
+    return await is_member(db, user_id=user_id, root_id=root.id)
+
+
 # ── name resolution for chat attachment (Intent.ATTACH_EXPENSE) ───────────────
 
 
@@ -358,27 +396,37 @@ async def compute_envelope_summary(
     # PATCH still 409s legs). That stamped debit leg MUST count as spend so the
     # card reservation swaps to spend when paid, never both. So no transfer
     # exclusion here — an envelope-tagged expense counts, leg or not.
-    spend_rows = await db.execute(
-        select(
-            Transaction.envelope_id,
-            Transaction.currency,
-            func.coalesce(func.sum(func.abs(Transaction.amount)), 0),
-        )
-        .where(
-            Transaction.user_id == user.id,
-            Transaction.envelope_id.isnot(None),
-            Transaction.amount < 0,
-            Transaction.archived.is_(False),
-            Transaction.status == "confirmed",
-            Transaction.transaction_date >= start,
-            Transaction.transaction_date < end,
-        )
-        .group_by(Transaction.envelope_id, Transaction.currency)
-    )
+    # Scope spend to THIS user's envelope ids rather than `user_id == user.id`.
+    # Shared envelopes: when this user OWNS a shared envelope, members' expenses
+    # tagged to it must drain the same (shared-cap) bar — so we count every
+    # transaction tagged to the user's own envelopes regardless of who created
+    # it. A non-shared envelope can only be tagged by its owner
+    # (can_assign_transaction_to_envelope), so this is IDENTICAL to the old
+    # user_id filter absent sharing. The user's OWN spend on envelopes they only
+    # JOINED is NOT counted here (those ids aren't in own_env_ids) — it surfaces
+    # via shared_summary_items instead, so it never inflates their own totals.
+    own_env_ids = [e.id for e in envelopes]
     # {envelope_id: [(tx_currency, summed_abs_amount), ...]}
     spent_raw: dict = {}
-    for env_id, tx_currency, total in spend_rows.all():
-        spent_raw.setdefault(env_id, []).append((tx_currency, Decimal(total)))
+    if own_env_ids:
+        spend_rows = await db.execute(
+            select(
+                Transaction.envelope_id,
+                Transaction.currency,
+                func.coalesce(func.sum(func.abs(Transaction.amount)), 0),
+            )
+            .where(
+                Transaction.envelope_id.in_(own_env_ids),
+                Transaction.amount < 0,
+                Transaction.archived.is_(False),
+                Transaction.status == "confirmed",
+                Transaction.transaction_date >= start,
+                Transaction.transaction_date < end,
+            )
+            .group_by(Transaction.envelope_id, Transaction.currency)
+        )
+        for env_id, tx_currency, total in spend_rows.all():
+            spent_raw.setdefault(env_id, []).append((tx_currency, Decimal(total)))
 
     # Direct spend per node, in the NODE's own currency.
     direct: dict[uuid.UUID, Decimal] = {}
@@ -630,6 +678,16 @@ async def compute_envelope_summary(
         for env in envelopes
         if env.parent_id is None
     )
+
+    # Shared envelopes the user is a MEMBER of (not owner) are appended as
+    # display-only items AFTER all owner-scoped figures above are computed. They
+    # are deliberately NOT folded into class_acc / by_class / total_* — the
+    # byte-locked cashflow/affordability/snapshot consumers must keep seeing only
+    # the user's OWN budget. See api/services/envelope_sharing.py.
+    from .envelope_sharing import shared_summary_items
+
+    items += await shared_summary_items(db, user=user, start=start, end=end)
+
     return EnvelopeSummaryResponse(
         period=period,
         currency=currency,

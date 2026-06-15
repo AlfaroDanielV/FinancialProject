@@ -19,11 +19,26 @@ from ..database import get_db
 from ..dependencies import current_user
 from ..models.envelope import Envelope
 from ..models.user import User
+from ..redis_client import get_redis
+from ..schemas.envelope_sharing import (
+    MemberRemovedResponse,
+    MemberResponse,
+    RedeemRequest,
+    ShareCodeResponse,
+)
 from ..schemas.envelopes import (
     EnvelopeCreate,
     EnvelopeResponse,
     EnvelopeSummaryResponse,
     EnvelopeUpdate,
+)
+from ..services.envelope_sharing import (
+    fetch_shared_trees,
+    is_member,
+    list_members,
+    mint_share_code,
+    redeem_share_code,
+    remove_member,
 )
 from ..services.envelopes import (
     active_children,
@@ -132,7 +147,24 @@ async def list_envelopes(
     if not include_archived:
         stmt = stmt.where(Envelope.archived.is_(False))
     stmt = stmt.order_by(Envelope.envelope_class.asc(), Envelope.name.asc())
-    return list((await db.execute(stmt)).scalars().all())
+    own = (await db.execute(stmt)).scalars().all()
+    out = [EnvelopeResponse.model_validate(e) for e in own]
+    # Append shared envelopes (root + subtree) the caller is a MEMBER of, so the
+    # assignment picker can target them. Marked is_shared → the client renders
+    # them read-only; `user_id` on these rows is the OWNER's, not the caller's.
+    for tree in await fetch_shared_trees(db, user_id=user.id):
+        for env in tree.envelopes:
+            out.append(
+                EnvelopeResponse.model_validate(env).model_copy(
+                    update={
+                        "is_shared": True,
+                        "role": "member",
+                        "shared_by_name": tree.owner_name,
+                        "member_count": tree.member_count,
+                    }
+                )
+            )
+    return out
 
 
 @router.get("/summary", response_model=EnvelopeSummaryResponse)
@@ -143,6 +175,33 @@ async def envelopes_summary(
     """Home-tab feed: per-envelope limit/spent/over_limit + per-class subtotals
     + total-limit-vs-monthly-income for the current month (user timezone)."""
     return await compute_envelope_summary(db, user=user)
+
+
+# ── sharing ───────────────────────────────────────────────────────────────────
+# Declared before the `/{envelope_id}` routes so the static `/redeem` segment is
+# never captured as an id.
+
+
+@router.post("/redeem", response_model=EnvelopeResponse)
+async def redeem_envelope(
+    payload: RedeemRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """Join a shared envelope with a code its owner gave you. Idempotent; the
+    code is multi-use until it expires or the 9-member cap is hit."""
+    redis = get_redis()
+    root = await redeem_share_code(db, redis, user=user, code=payload.code)
+    trees = await fetch_shared_trees(db, user_id=user.id)
+    tree = next((t for t in trees if t.root.id == root.id), None)
+    return EnvelopeResponse.model_validate(root).model_copy(
+        update={
+            "is_shared": True,
+            "role": "member",
+            "shared_by_name": tree.owner_name if tree else None,
+            "member_count": tree.member_count if tree else 0,
+        }
+    )
 
 
 @router.get("/{envelope_id}", response_model=EnvelopeResponse)
@@ -270,3 +329,79 @@ async def delete_envelope(
     await db.commit()
     await db.refresh(env)
     return env
+
+
+@router.post("/{envelope_id}/share", response_model=ShareCodeResponse)
+async def share_envelope(
+    envelope_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """Owner mints a 24h code to share this ROOT envelope with up to 9 people.
+    `_get_envelope` is owner-scoped, so a non-owner gets 404 — only the owner
+    can share."""
+    env = await _get_envelope(db, user_id=user.id, envelope_id=envelope_id)
+    redis = get_redis()
+    code, expires_at = await mint_share_code(db, redis, owner=user, envelope=env)
+    return ShareCodeResponse(code=code, expires_at=expires_at)
+
+
+@router.get("/{envelope_id}/members", response_model=list[MemberResponse])
+async def list_envelope_members(
+    envelope_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """Everyone with access to a shared root: the owner first, then invited
+    members (name only). Visible to the owner or any member."""
+    env = (
+        await db.execute(select(Envelope).where(Envelope.id == envelope_id))
+    ).scalar_one_or_none()
+    if env is None or env.parent_id is not None:
+        raise HTTPException(status_code=404, detail="Sobre no encontrado.")
+    is_owner = env.user_id == user.id
+    if not is_owner and not await is_member(
+        db, user_id=user.id, root_id=env.id
+    ):
+        raise HTTPException(status_code=404, detail="Sobre no encontrado.")
+    owner = await db.get(User, env.user_id)
+    out: list[MemberResponse] = []
+    if owner is not None:
+        out.append(
+            MemberResponse(
+                user_id=owner.id, full_name=owner.full_name, is_owner=True
+            )
+        )
+    for uid, name in await list_members(db, root_id=env.id):
+        out.append(MemberResponse(user_id=uid, full_name=name, is_owner=False))
+    return out
+
+
+@router.delete(
+    "/{envelope_id}/members/{target_user_id}",
+    response_model=MemberRemovedResponse,
+)
+async def remove_envelope_member(
+    envelope_id: uuid.UUID,
+    target_user_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """Owner removes any member; a member may remove only themselves (leave).
+    The removed member's tagged transactions are unlinked, never deleted."""
+    env = (
+        await db.execute(select(Envelope).where(Envelope.id == envelope_id))
+    ).scalar_one_or_none()
+    if env is None or env.parent_id is not None:
+        raise HTTPException(status_code=404, detail="Sobre no encontrado.")
+    is_owner = env.user_id == user.id
+    if not is_owner and user.id != target_user_id:
+        raise HTTPException(
+            status_code=403, detail="Solo el dueño puede quitar a otros miembros."
+        )
+    if target_user_id == env.user_id:
+        raise HTTPException(
+            status_code=400, detail="El dueño no se puede quitar del sobre."
+        )
+    await remove_member(db, root=env, target_user_id=target_user_id)
+    return MemberRemovedResponse(removed_user_id=target_user_id)

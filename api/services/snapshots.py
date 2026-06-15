@@ -55,6 +55,11 @@ async def _upsert_envelope_rows(
 ) -> int:
     count = 0
     for item in summary.envelopes:
+        # Shared envelopes the user only JOINED aren't theirs to snapshot — the
+        # owner snapshots them. (And the envelope_id FK SET NULL on the owner's
+        # hard delete would orphan a member's snapshot.)
+        if item.is_shared:
+            continue
         values = dict(
             user_id=user.id,
             period=summary.period,

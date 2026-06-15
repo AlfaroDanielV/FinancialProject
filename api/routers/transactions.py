@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..dependencies import current_user, current_user_via_token
 from ..models.account import Account
-from ..models.envelope import Envelope
 from ..models.transaction import Transaction
 from ..models.user import User
 from ..models.user_category import UserCategory
@@ -31,6 +30,7 @@ from ..schemas.transaction import (
     TransactionUpdate,
 )
 from ..services.dedup import clear_duplicate_nudges_for_txn, flag_and_notify
+from ..services.envelopes import can_assign_transaction_to_envelope
 from ..services.transactions import (
     TXN_DELETE_REASON_ES,
     TransactionDeleteError,
@@ -680,14 +680,12 @@ async def update_transaction(
             raise HTTPException(status_code=400, detail="Categoría inválida.")
 
     if "envelope_id" in update_data and update_data["envelope_id"] is not None:
-        envelope_result = await db.execute(
-            select(Envelope.id).where(
-                Envelope.id == update_data["envelope_id"],
-                Envelope.user_id == user.id,
-                Envelope.archived.is_(False),
-            )
-        )
-        if envelope_result.scalar_one_or_none() is None:
+        # Owner OR a member of a shared envelope's root may assign here. The txn
+        # fetch above is user-scoped, so a member still only ever moves their OWN
+        # transaction — this just allows the destination to be a shared envelope.
+        if not await can_assign_transaction_to_envelope(
+            db, user_id=user.id, envelope_id=update_data["envelope_id"]
+        ):
             raise HTTPException(status_code=400, detail="Sobre inválido.")
 
     for field, value in update_data.items():

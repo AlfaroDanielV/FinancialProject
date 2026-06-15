@@ -19,6 +19,13 @@ export interface EnvelopeResponse {
   archived: boolean;
   created_at: string;
   updated_at: string;
+  // Shared envelopes ("Sobres compartidos"): set only when this row is returned
+  // to a MEMBER (you joined someone else's envelope). is_shared=true → read-only;
+  // user_id is the OWNER's, not yours.
+  is_shared?: boolean;
+  role?: string | null; // "member" when shared
+  shared_by_name?: string | null;
+  member_count?: number;
 }
 
 export interface EnvelopeCreate {
@@ -72,6 +79,14 @@ export interface EnvelopeSummaryItem {
   allocated: number;
   unallocated: number; // limit − allocated; may be negative (over-allocated)
   over_allocated: boolean;
+  // Shared envelopes: when is_shared, this item is another user's tree you're a
+  // MEMBER of. `spent` is then the SHARED (all-members) figure and `your_spent`
+  // is only yours ("Vos: ₡X de ₡Y"). Display-only — NOT in by_class / total_*.
+  is_shared?: boolean;
+  role?: string | null; // "member" on shared items
+  shared_by_name?: string | null;
+  member_count?: number;
+  your_spent?: number;
 }
 
 export interface EnvelopeClassSubtotal {
@@ -247,4 +262,53 @@ export async function assignTransactionEnvelope(
   await api.patch(`/transactions/${transactionId}`, {
     envelope_id: envelopeId,
   });
+}
+
+// ── sharing ("Sobres compartidos") ──────────────────────────────────────────
+
+export interface ShareCodeResponse {
+  code: string;
+  expires_at: string;
+}
+
+export interface EnvelopeMember {
+  user_id: string;
+  full_name: string;
+  is_owner: boolean;
+}
+
+/** Owner mints a 24h code to share this ROOT envelope (up to 9 people join). */
+export async function shareEnvelope(id: string): Promise<ShareCodeResponse> {
+  const res = await api.post<ShareCodeResponse>(`/envelopes/${id}/share`);
+  return res.data;
+}
+
+/** Join a shared envelope with a code its owner gave you. Idempotent. */
+export async function redeemEnvelope(code: string): Promise<EnvelopeResponse> {
+  const res = await api.post<EnvelopeResponse>("/envelopes/redeem", { code });
+  return res.data;
+}
+
+/** Everyone with access (owner first, then invited members). Owner or member. */
+export async function fetchEnvelopeMembers(
+  id: string
+): Promise<EnvelopeMember[]> {
+  const res = await api.get<EnvelopeMember[]>(`/envelopes/${id}/members`);
+  return res.data;
+}
+
+/** Owner removes any member; a member may remove only themselves (leave). The
+ * removed member's tagged transactions are unlinked, never deleted. */
+export async function removeEnvelopeMember(
+  id: string,
+  userId: string
+): Promise<void> {
+  await api.delete(`/envelopes/${id}/members/${userId}`);
+}
+
+/** The current user's id — needed to "leave" a shared envelope (the DELETE
+ * endpoint keys on the member's id, and the auth context doesn't persist it). */
+export async function fetchMyUserId(): Promise<string> {
+  const res = await api.get<{ id: string }>("/users/me");
+  return res.data.id;
 }

@@ -58,6 +58,13 @@ class EnvelopeResponse(BaseModel):
     archived: bool
     created_at: datetime
     updated_at: datetime
+    # Shared envelopes (defaulted; set only when this row is returned to a
+    # MEMBER via GET /envelopes). `is_shared=True` means the caller is a member,
+    # not the owner — `user_id` is the owner's id. Own rows leave these defaulted.
+    is_shared: bool = False
+    role: Optional[str] = None  # "member" when shared
+    shared_by_name: Optional[str] = None
+    member_count: int = 0
 
     model_config = {"from_attributes": True}
 
@@ -90,6 +97,17 @@ class EnvelopeSummaryItem(BaseModel):
     allocated: float = 0.0
     unallocated: float = 0.0
     over_allocated: bool = False
+    # Shared envelopes: when `is_shared`, this item belongs to ANOTHER user's
+    # tree the caller is a member of. `spent` is then the SHARED (all-members)
+    # rolled-up figure and `your_spent` is the caller's own portion ("Vos: ₡X de
+    # ₡Y"). Shared items are display-only — they are NOT counted in by_class /
+    # total_* and the byte-locked cashflow/affordability/snapshot consumers
+    # filter them out. Defaulted so own-envelope serialization is unchanged.
+    is_shared: bool = False
+    role: Optional[str] = None  # "member" on shared items; None on own
+    shared_by_name: Optional[str] = None
+    member_count: int = 0
+    your_spent: float = 0.0
 
 
 class EnvelopeClassSubtotal(BaseModel):

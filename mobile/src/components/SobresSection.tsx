@@ -34,6 +34,7 @@ import { formatMoney } from "../lib/format";
 import { CardShadow, Colors, FontSize, Radius, Spacing } from "../theme";
 import { EnvelopeDetailModal } from "./EnvelopeDetailModal";
 import { EnvelopeEditModal } from "./EnvelopeEditModal";
+import { JoinEnvelopeModal } from "./JoinEnvelopeModal";
 
 export function SobresSection({
   onOpenAnalytics,
@@ -43,6 +44,7 @@ export function SobresSection({
   onOpenAnalytics?: () => void;
 }) {
   const [createOpen, setCreateOpen] = useState(false);
+  const [joinOpen, setJoinOpen] = useState(false);
   const [detailItem, setDetailItem] = useState<EnvelopeSummaryItem | null>(null);
 
   const summaryQuery = useQuery({
@@ -51,14 +53,25 @@ export function SobresSection({
   });
 
   const summary = summaryQuery.data;
-  const grouped = useMemo(() => groupItems(summary?.envelopes ?? []), [summary]);
+  // Shared envelopes (ones you JOINED) come appended to the summary with
+  // is_shared=true. Keep them OUT of the class groups + subtotals (those are
+  // your own budget) and render them in their own "Compartidos con vos" block.
+  const ownItems = useMemo(
+    () => (summary?.envelopes ?? []).filter((e) => !e.is_shared),
+    [summary],
+  );
+  const sharedItems = useMemo(
+    () => (summary?.envelopes ?? []).filter((e) => e.is_shared),
+    [summary],
+  );
+  const grouped = useMemo(() => groupItems(ownItems), [ownItems]);
 
   // Tapping an envelope opens the detail (spend bar + this month's expenses
   // with assign toggles + an "Editar" entry). "+ Nuevo" opens the create sheet.
   const openDetail = (item: EnvelopeSummaryItem) => setDetailItem(item);
   const openCreate = () => setCreateOpen(true);
 
-  const hasEnvelopes = (summary?.envelopes.length ?? 0) > 0;
+  const hasEnvelopes = ownItems.length > 0 || sharedItems.length > 0;
 
   return (
     <View style={[styles.card]}>
@@ -75,6 +88,14 @@ export function SobresSection({
               <Text style={styles.addText}>Análisis</Text>
             </Pressable>
           )}
+          <Pressable
+            onPress={() => setJoinOpen(true)}
+            style={({ pressed }) => [styles.analyticsBtn, pressed && { opacity: 0.7 }]}
+            hitSlop={6}
+          >
+            <Feather name="user-plus" size={14} color={Colors.accent} />
+            <Text style={styles.addText}>Unirme</Text>
+          </Pressable>
           <Pressable
             onPress={openCreate}
             style={({ pressed }) => [styles.addBtn, pressed && { opacity: 0.7 }]}
@@ -137,11 +158,36 @@ export function SobresSection({
             );
           })}
 
-          {summary!.monthly_income != null && (
+          {ownItems.length > 0 && summary!.monthly_income != null && (
             <Text style={styles.incomeNote}>
               Topes: {formatMoney(summary!.total_limit, summary!.currency)} de{" "}
               {formatMoney(summary!.monthly_income, summary!.currency)} de ingreso mensual
             </Text>
+          )}
+
+          {sharedItems.length > 0 && (
+            <View style={styles.classBlock}>
+              <View style={styles.classHeaderRow}>
+                <View style={styles.classHeaderLeft}>
+                  <Feather name="users" size={13} color={Colors.textSecondary} />
+                  <Text style={styles.classTitle}>Compartidos con vos</Text>
+                </View>
+              </View>
+              {flattenEnvelopeTree(sharedItems).map((env) => (
+                <EnvelopeRow
+                  key={env.id}
+                  item={env}
+                  currency={env.currency}
+                  color={ENVELOPE_CLASS_COLORS[env.envelope_class]}
+                  onPress={() => openDetail(env)}
+                  sharedBy={
+                    env.parent_id == null
+                      ? env.shared_by_name ?? undefined
+                      : undefined
+                  }
+                />
+              ))}
+            </View>
           )}
         </View>
       )}
@@ -152,6 +198,8 @@ export function SobresSection({
         onClose={() => setCreateOpen(false)}
         onSaved={() => setCreateOpen(false)}
       />
+
+      <JoinEnvelopeModal visible={joinOpen} onClose={() => setJoinOpen(false)} />
 
       <EnvelopeDetailModal
         visible={detailItem != null}
@@ -167,11 +215,14 @@ function EnvelopeRow({
   currency,
   color,
   onPress,
+  sharedBy,
 }: {
   item: EnvelopeSummaryItem;
   currency: string;
   color: string;
   onPress: () => void;
+  // Shared root: "Compartido por X" caption (undefined for own + sub-sobres).
+  sharedBy?: string;
 }) {
   // Money-left bar: starts full, drains with each expense + each reservation,
   // red in the last 5%. `remaining` is the free amount (limit − reserved − spent).
@@ -209,6 +260,12 @@ function EnvelopeRow({
           ]}
         />
       </View>
+      {sharedBy && (
+        <Text style={styles.sharedNote}>
+          Compartido por {sharedBy}
+          {item.member_count ? ` · ${item.member_count} personas` : ""}
+        </Text>
+      )}
       {reserved > 0 && (
         <Text style={styles.reservedNote}>
           {formatMoney(reserved, currency)} reservado para gastos fijos
@@ -346,6 +403,10 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xs,
     color: Colors.textMuted,
     fontStyle: "italic",
+  },
+  sharedNote: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
   },
   incomeNote: {
     fontSize: FontSize.xs,

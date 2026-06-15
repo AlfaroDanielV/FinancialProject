@@ -210,7 +210,12 @@ async def compute_monthly_cashflow(db: AsyncSession, *, user: User) -> MonthlyCa
         ),
         Decimal("0"),
     )
-    has_budget = bool(summary.envelopes)
+    # Shared envelopes the user only JOINED are appended to summary.envelopes for
+    # display, but they are NOT the user's own budget — a member with no own
+    # envelopes must still read as `no_budget`. Count own (non-shared) only.
+    # (total_limit / by_class are already own-only, so committed/savings are
+    # untouched — Model A byte-lock holds.)
+    has_budget = any(not e.is_shared for e in summary.envelopes)
     # Per-item under_coverage (B3): active bills/debts with no envelope. Attaching
     # an obligation only moves this list — committed/surplus are untouched.
     unattached = tuple(

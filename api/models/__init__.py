@@ -29,6 +29,7 @@ from .recurring_income import RecurringIncome
 from .magic_link_token import MagicLinkToken
 from .lazy_detection_event import LazyDetectionEvent
 from .envelope import Envelope
+from .envelope_member import EnvelopeMember
 from .credit_card_terms import CreditCardTerms
 from .advice_event import AdviceEvent
 from .snapshot import CashflowSnapshot, EnvelopeSnapshot
@@ -69,6 +70,7 @@ __all__ = [
     "MagicLinkToken",
     "LazyDetectionEvent",
     "Envelope",
+    "EnvelopeMember",
     "CreditCardTerms",
     "AdviceEvent",
     "EnvelopeSnapshot",

@@ -1090,10 +1090,43 @@ code-complete, **operator on-device sign-off pending**. Decision note:
   present / income hint absent) — both in `scripts/test_phase_6f.sh`. Full gate
   green: mobile `tsc` clean, 118 focused backend tests + 27 regression.
   `alembic current` → `0022 (head)`.
-- **Sharing an envelope between users is deferred to P8** (multi-tenant
-  membership work) — vault `Decision - Shared Household Envelopes (Deferred
-  P8)`. An at-capture *account* picker is likewise deferred (account is
-  immutable post-create; it's a pre-commit proposal change).
+- **Shared envelopes ("Sobres compartidos") — IMPLEMENTED 2026-06-15** (branch
+  `feature/shared-envelopes`, migration `0034`; operator on-device sign-off
+  pending). Pulled forward from P8 as a **single-envelope share via a 6-char
+  security code** (NOT the full household/tenant model — that stays P9). An owner
+  shares a **root** envelope (subtree included) with **≤ 9** others. New
+  `envelope_members` table (`UNIQUE(envelope_id,user_id)`, FKs CASCADE);
+  `api/services/envelope_sharing.py` (`mint_share_code` owner+root only;
+  `redeem_share_code` multi-use `redis.get` + root `FOR UPDATE` + cap, idempotent;
+  `remove_member` unlinks the member's tagged tx via `envelope_id→NULL`;
+  `fetch_shared_trees` / `shared_summary_items`). Code lives in Redis at
+  `envelope:share_code:{CODE}` (24h, `bot/redis_keys.py`). Endpoints:
+  `POST /envelopes/{id}/share`, `POST /envelopes/redeem` (declared before
+  `/{id}`), `GET /envelopes/{id}/members`, `DELETE /envelopes/{id}/members/{user_id}`
+  (owner removes anyone; a member removes only self); `GET /envelopes` appends
+  shared trees. **A member can add/remove only their OWN expenses**
+  (`can_assign_transaction_to_envelope` — the only place the owner-only rule is
+  widened; bill/debt attach stays owner-only via `is_valid_envelope_target`) and
+  sees only aggregate `spent` + their own `your_spent`, never another member's
+  tx lines. **Shared cap**: `compute_envelope_summary`'s own-spend query was
+  rescoped from `Transaction.user_id == user.id` to `envelope_id IN (the user's
+  own envelope ids)` so an owner's bar drains with the COMBINED spend — identical
+  absent sharing (only the owner/members can tag an envelope). **Byte-lock
+  preserved**: shared envelopes a user only *joined* are appended to
+  `summary.envelopes` as `is_shared` display-only items and are NEVER in
+  `by_class`/`total_*`/`committed_outflows`/`has_budget`/snapshots — `cashflow`
+  (`has_budget = any(not e.is_shared …)`), `affordability.gather_financial_context`
+  (own-only), and `snapshots` (skip shared) are guarded; the unified-cashflow
+  byte-lock stays identical. Mobile: `SobresSection` "Unirme con código" +
+  "Compartidos con vos" block, `EnvelopeDetailModal` member read-only / owner
+  share+members panel, new `JoinEnvelopeModal`. Verification:
+  `tests/test_envelope_sharing.py` (8) + envelope/cashflow/affordability/snapshot
+  regression (89, incl. byte-lock) green; mobile `tsc` + ruff clean; `alembic →
+  0034 (head)`. **Still deferred**: general household/tenant model + RLS (P9),
+  sharing bills/debts into a shared envelope, cross-currency per-member display.
+  Vault `Decision - Shared Household Envelopes (Deferred P8)` (status flipped to
+  implemented). An at-capture *account* picker remains deferred (account is
+  immutable post-create; a pre-commit proposal change).
 
 ---
 
