@@ -75,6 +75,9 @@ class ShadowConfirmItem(BaseModel):
     merchant: Optional[str] = Field(default=None, max_length=255)
     description: Optional[str] = Field(default=None, max_length=2000)
     category: Optional[str] = Field(default=None, max_length=100)
+    # FK to a user_categories row (the Categorías screen). Sent alongside
+    # `category` (name) by the native review picker; validated in the router.
+    category_id: Optional[uuid.UUID] = None
     transaction_date: Optional[date] = None
 
 

@@ -25,18 +25,19 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
+import { Feather } from "@expo/vector-icons";
 
 import {
   createRecurringBill,
   updateRecurringBill,
-  fetchBillCategories,
   BILL_FREQUENCIES,
   FREQUENCY_LABELS,
   type BillFrequency,
   type RecurringBillResponse,
 } from "../api/bills";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
+import { CategoryPickerModal } from "./CategoryPickerModal";
 import { AmountInput } from "./fields/AmountInput";
 import { DateField } from "./fields/DateField";
 
@@ -64,13 +65,7 @@ export function BillFormModal({ visible, mode, bill, onClose, onSaved }: Props) 
   const [provider, setProvider] = useState("");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
-
-  const { data: categories } = useQuery({
-    queryKey: ["bill-categories"],
-    queryFn: fetchBillCategories,
-    enabled: visible,
-    staleTime: 60 * 60 * 1000,
-  });
+  const [categoryPickerVisible, setCategoryPickerVisible] = useState(false);
 
   // Seed from the bill on edit, or reset to defaults on create.
   useEffect(() => {
@@ -159,8 +154,6 @@ export function BillFormModal({ visible, mode, bill, onClose, onSaved }: Props) 
     (typeof serverError === "string" ? serverError : null) ??
     (mutation.isError ? "No se pudo guardar. Intentá de nuevo." : null);
 
-  const categoryOptions = categories ?? [category];
-
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <KeyboardAvoidingView
@@ -189,11 +182,17 @@ export function BillFormModal({ visible, mode, bill, onClose, onSaved }: Props) 
             </Field>
 
             <Field label="Categoría">
-              <Segmented
-                options={categoryOptions.map((c) => ({ value: c, label: c }))}
-                value={category}
-                onChange={setCategory}
-              />
+              <Pressable
+                onPress={() => setCategoryPickerVisible(true)}
+                style={({ pressed }) => [
+                  styles.input,
+                  styles.selectRow,
+                  pressed && { opacity: 0.7 },
+                ]}
+              >
+                <Text style={styles.selectText}>{category}</Text>
+                <Feather name="chevron-right" size={18} color={Colors.textMuted} />
+              </Pressable>
             </Field>
 
             <View style={styles.switchRow}>
@@ -312,6 +311,18 @@ export function BillFormModal({ visible, mode, bill, onClose, onSaved }: Props) 
           </View>
         </View>
       </KeyboardAvoidingView>
+
+      <CategoryPickerModal
+        visible={categoryPickerVisible}
+        kind="expense"
+        allowClear={false}
+        currentCategoryId={null}
+        onClose={() => setCategoryPickerVisible(false)}
+        onSelect={(cat) => {
+          if (cat) setCategory(cat.name);
+          setCategoryPickerVisible(false);
+        }}
+      />
     </Modal>
   );
 }
@@ -400,6 +411,12 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
   },
   multiline: { minHeight: 64, textAlignVertical: "top" },
+  selectRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  selectText: { fontSize: FontSize.md, color: Colors.textPrimary },
   switchRow: {
     flexDirection: "row",
     alignItems: "center",

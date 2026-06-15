@@ -6,8 +6,12 @@
  * backend rejects shadow rows, transfer legs, and archived rows with 409; we
  * surface that detail in an Alert. The amount field edits magnitude only and
  * preserves the original sign (expense stays expense) — switching income↔
- * expense is rare and out of scope here. Category is free text, matching how
- * the extractor writes it; a category picker is deferred.
+ * expense is rare and out of scope here. Category is chosen from the Categorías
+ * screen (user_categories) via a picker — see CategoryPickerModal. We send both
+ * `category` (name, what the list/detail screens display) and `category_id`
+ * (FK) so the displayed string and the FK stay in sync. A transaction captured
+ * via chat carries a free-text `category` with no `category_id`; it shows as the
+ * label until the user picks a real category here.
  */
 import { useEffect, useState } from "react";
 import {
@@ -32,6 +36,7 @@ import {
   updateTransaction,
 } from "../api/transactions";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
+import { CategoryPickerModal } from "./CategoryPickerModal";
 import { EnvelopePickerModal } from "./EnvelopePickerModal";
 import { AmountInput } from "./fields/AmountInput";
 import { DateField } from "./fields/DateField";
@@ -63,10 +68,14 @@ export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
   const [amount, setAmount] = useState(String(Math.abs(tx.amount)));
   const [merchant, setMerchant] = useState(tx.merchant ?? "");
   const [description, setDescription] = useState(tx.description ?? "");
-  const [category, setCategory] = useState(tx.category ?? "");
+  // Category is now picked from the Categorías list; we keep the name (for
+  // display + the legacy `category` string) and the FK id side by side.
+  const [categoryName, setCategoryName] = useState(tx.category ?? "");
+  const [categoryId, setCategoryId] = useState<string | null>(tx.category_id);
   const [date, setDate] = useState(tx.transaction_date);
   const [envelopeId, setEnvelopeId] = useState<string | null>(tx.envelope_id);
   const [pickerVisible, setPickerVisible] = useState(false);
+  const [categoryPickerVisible, setCategoryPickerVisible] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Re-seed the form whenever a different row is opened.
@@ -74,7 +83,8 @@ export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
     setAmount(String(Math.abs(tx.amount)));
     setMerchant(tx.merchant ?? "");
     setDescription(tx.description ?? "");
-    setCategory(tx.category ?? "");
+    setCategoryName(tx.category ?? "");
+    setCategoryId(tx.category_id);
     setDate(tx.transaction_date);
     setEnvelopeId(tx.envelope_id);
     setError(null);
@@ -109,7 +119,10 @@ export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
       amount: isExpense ? -Math.abs(parsed) : Math.abs(parsed),
       merchant: merchant.trim() || null,
       description: description.trim() || null,
-      category: category.trim() || null,
+      // Set both: the name keeps the displayed string right, the id links the
+      // user_categories row (so the Categorías screen counts it).
+      category: categoryName.trim() || null,
+      category_id: categoryId,
       transaction_date: date,
       // Only send envelope_id for expenses (income/transfers never carry one).
       ...(isExpense ? { envelope_id: envelopeId } : {}),
@@ -172,14 +185,24 @@ export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
               />
             </Field>
             <Field label="Categoría">
-              <TextInput
-                value={category}
-                onChangeText={setCategory}
-                style={styles.input}
-                placeholder="Alimentación…"
-                placeholderTextColor={Colors.textMuted}
-                autoCapitalize="none"
-              />
+              <Pressable
+                onPress={() => setCategoryPickerVisible(true)}
+                style={({ pressed }) => [
+                  styles.input,
+                  styles.selectRow,
+                  pressed && { opacity: 0.7 },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.selectText,
+                    !categoryName.trim() && styles.selectPlaceholder,
+                  ]}
+                >
+                  {categoryName.trim() || "Sin categoría"}
+                </Text>
+                <Feather name="chevron-right" size={18} color={Colors.textMuted} />
+              </Pressable>
             </Field>
             <Field label="Fecha">
               <DateField value={date} onChange={setDate} style={styles.input} />
@@ -239,6 +262,18 @@ export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
           </View>
         </View>
       </KeyboardAvoidingView>
+
+      <CategoryPickerModal
+        visible={categoryPickerVisible}
+        kind={isExpense ? "expense" : "income"}
+        currentCategoryId={categoryId}
+        onClose={() => setCategoryPickerVisible(false)}
+        onSelect={(cat) => {
+          setCategoryId(cat?.id ?? null);
+          setCategoryName(cat?.name ?? "");
+          setCategoryPickerVisible(false);
+        }}
+      />
 
       <EnvelopePickerModal
         visible={pickerVisible}

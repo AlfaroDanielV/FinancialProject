@@ -92,7 +92,7 @@ export function SobresSection({
           <Feather name="inbox" size={20} color={Colors.textMuted} />
           <Text style={styles.emptyTitle}>Creá tu primer sobre</Text>
           <Text style={styles.emptyBody}>
-            Poné un tope mensual por categoría (necesidades, gustos, ahorro,
+            Poné un tope mensual por tipo (necesidades, gustos, ahorro,
             inversión) y mirá cuánto llevás gastado.
           </Text>
         </Pressable>

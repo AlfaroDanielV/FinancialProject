@@ -211,6 +211,70 @@ async def test_confirm_shadow_subset_applies_overrides(db_with_user):
 
 
 @pytest.mark.asyncio
+async def test_confirm_shadow_links_category_id(db_with_user):
+    """The native review picker sends category_id (FK) + name; confirm links
+    the row to the user_categories row (the Categorías screen)."""
+    session, user_id = db_with_user
+    t1 = await _mk_shadow(session, user_id, "g1", category="otros")
+    token = await _token(session, user_id)
+    try:
+        async with _client() as ac:
+            # GET seeds the default categories; grab one's id.
+            cats = await ac.get(
+                "/api/v1/categories",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert cats.status_code == 200, cats.text
+            alimentacion = next(c for c in cats.json() if c["name"] == "alimentación")
+
+            resp = await ac.post(
+                "/api/v1/gmail/shadow/confirm",
+                json={
+                    "items": [
+                        {
+                            "id": str(t1.id),
+                            "category": alimentacion["name"],
+                            "category_id": alimentacion["id"],
+                        }
+                    ]
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200, resp.text
+        await session.refresh(t1)
+        assert t1.status == "confirmed"
+        assert t1.category == "alimentación"
+        assert str(t1.category_id) == alimentacion["id"]
+    finally:
+        _clear_db_override()
+
+
+@pytest.mark.asyncio
+async def test_confirm_shadow_rejects_foreign_category_id(db_with_user):
+    """A category_id that isn't the caller's active category is rejected 400
+    (mirrors PATCH /transactions/{id})."""
+    session, user_id = db_with_user
+    t1 = await _mk_shadow(session, user_id, "g1", category="otros")
+    token = await _token(session, user_id)
+    try:
+        async with _client() as ac:
+            resp = await ac.post(
+                "/api/v1/gmail/shadow/confirm",
+                json={
+                    "items": [
+                        {"id": str(t1.id), "category_id": "00000000-0000-0000-0000-000000000000"}
+                    ]
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 400, resp.text
+        await session.refresh(t1)
+        assert t1.status == "shadow"  # not confirmed
+    finally:
+        _clear_db_override()
+
+
+@pytest.mark.asyncio
 async def test_discard_shadow_marks_seen_and_deletes(db_with_user):
     session, user_id = db_with_user
     t1 = await _mk_shadow(session, user_id, "g1")

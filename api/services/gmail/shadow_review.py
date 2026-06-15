@@ -38,6 +38,7 @@ class ShadowEdit:
     merchant: Optional[str] = None
     description: Optional[str] = None
     category: Optional[str] = None
+    category_id: Optional[uuid.UUID] = None
     transaction_date: Optional[date] = None
 
 
@@ -92,6 +93,8 @@ async def confirm_shadow(
                 row.description = edit.description
             if edit.category is not None:
                 row.category = edit.category
+            if edit.category_id is not None:
+                row.category_id = edit.category_id
             if edit.transaction_date is not None:
                 row.transaction_date = edit.transaction_date
         row.status = "confirmed"

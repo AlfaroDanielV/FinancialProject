@@ -114,6 +114,10 @@ export interface TransactionUpdate {
   merchant?: string | null;
   description?: string | null;
   category?: string | null;
+  // FK to a user_categories row (the Categorías screen). The edit dropdown sets
+  // this alongside `category` (name) so the displayed string and the FK stay in
+  // sync. Backend validates it belongs to the caller and is active (400 else).
+  category_id?: string | null;
   transaction_date?: string; // YYYY-MM-DD
   // Envelope budgeting: which spending-cap envelope this expense counts
   // against. null clears it. Backend 400s on a foreign/archived envelope.

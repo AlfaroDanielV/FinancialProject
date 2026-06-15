@@ -171,12 +171,6 @@ export async function updateRecurringBill(
   return data;
 }
 
-/** CR category suggestions (single source of truth — the backend list). */
-export async function fetchBillCategories(): Promise<string[]> {
-  const { data } = await api.get<{ categories: string[] }>("/onboarding/categories");
-  return data.categories;
-}
-
 export async function pauseBill(billId: string): Promise<RecurringBillResponse> {
   const { data } = await api.patch<RecurringBillResponse>(
     `/recurring-bills/${billId}`,

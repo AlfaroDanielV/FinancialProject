@@ -1424,7 +1424,9 @@ regression); `scripts/test_phase_7b.sh` + `test_phase_6f.sh` +
   BillFormModal, EnvelopeEditModal, DebtEditModal, CardTermsEditModal,
   DebtCreateScreen, CardAccountCreateScreen, AccountCreateScreen,
   SalaryCalculator, GoalDetail contribution form. Percent/day/term inputs
-  stay plain. Category stays free text (6e B11 decision holds).
+  stay plain. (Category was free text here under 6e B11; **superseded
+  2026-06-13** — see "Categories Reconciled" below: transaction-edit + bills now
+  pick from the Categorías-screen list.)
 
 ## Phase 7g (active) — Income Model Rework (2026-06-13)
 
@@ -1539,6 +1541,46 @@ Balance`, `Decision - Charts Via react-native-svg`.
 - **Deferred:** quincenal budget periods; scoping envelope spend by account;
   credit-account treatment in the available total; passing chart raw-data to
   the LLM.
+
+## Categories Reconciled — Single Source (2026-06-13)
+
+Operator ask: one category list across the app + an easy picker. Transaction
+edit + bills + envelope label **signed off on device 2026-06-15**; the Gmail
+shadow-review picker (follow-up same day) is code-complete, on-device sign-off
+pending. On `dev`. No migration. Decision note: vault `Decision - Categories
+Reconciled (Single Source)`.
+
+- **`user_categories` (the Categorías screen) is the single source for every
+  manual category picker.** New shared `mobile/src/components/CategoryPickerModal.tsx`
+  (mirrors `EnvelopePickerModal`), filtered by `kind` to the transaction's sign.
+- **Transaction edit (`TransactionEditModal`) → dropdown, no free text** (**supersedes
+  6e B11 "category stays free text"** for this surface). On select it sends BOTH
+  `category` (name — what list/detail screens display) AND `category_id` (FK the
+  backend already validated) so display + FK + per-category counts stay in sync.
+  `TransactionUpdate` (mobile) gained `category_id`.
+- **Bills (`BillFormModal`) share the picker** (kind `expense`); bills store the
+  category **name** string (no FK on `recurring_bills`). `fetchBillCategories` /
+  `GET /onboarding/categories` no longer used by the form (endpoint kept for the
+  bot/onboarding). **Backend validation relaxed**: `RecurringBillCreate`/`Update`
+  accept any non-empty `≤50`-char category (custom names like "mascotas" no
+  longer 422). `VALID_RECURRING_BILL_CATEGORIES` stays — still used by the chat
+  `create_bill` dispatcher for the `servicios` fallback (chat path unchanged).
+- **Envelope "Categoría" → "Tipo" (cosmetic only)** in `EnvelopeEditModal` +
+  `SobresSection` — the 4 budget classes and their math are unchanged.
+- **Gmail shadow-review picker (`GmailReviewScreen`, follow-up 2026-06-15).** Its
+  per-row edit also used free-text category; now the same `CategoryPickerModal`.
+  Shadow rows can't be PATCHed (409), so the edit lands at confirm time:
+  `ShadowConfirmItem` + `shadow_review.ShadowEdit` gained `category_id`, and
+  `POST /gmail/shadow/confirm` validates it (active + caller-owned, 400 else) then
+  sets `category` (name) + `category_id` on the promoted row.
+- **Preserved:** LLM still emits free-text `category_hint` (no extractor/enum
+  change). **Deferred:** backfill linking existing free-text `tx.category` to a
+  matching `category_id` (manual via the dropdown for now).
+- **Verification:** mobile `tsc --noEmit` clean; `tests/test_phase_6e_b5_transactions`,
+  `test_phase_6e_b11_categories`, `test_phase_6d_b2_endpoints`,
+  `test_phase_6f_b10_bills` (+ a new custom-category test),
+  `test_phase_6f_chat_create_bill`, `test_gmail_native` (+ 2 new category_id
+  confirm tests) green.
 
 ## CR Salary Calculator + Ingresos CRUD (post-7a, 2026-06-09)
 

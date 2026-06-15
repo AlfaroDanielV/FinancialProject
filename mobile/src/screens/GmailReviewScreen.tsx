@@ -32,12 +32,14 @@ import {
 } from "../api/gmail";
 import type { TransactionResponse } from "../api/transactions";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
+import { CategoryPickerModal } from "../components/CategoryPickerModal";
 
 type Decision = "keep" | "discard";
 type Draft = {
   amountMagnitude: string;
   merchant: string;
   category: string;
+  categoryId: string | null;
   date: string;
 };
 
@@ -248,7 +250,14 @@ function EditModal({
   onSave: (id: string, patch: Partial<ShadowConfirmItem>) => void;
 }) {
   const sign = txn && txn.amount < 0 ? -1 : 1;
-  const [draft, setDraft] = useState<Draft>({ amountMagnitude: "", merchant: "", category: "", date: "" });
+  const [draft, setDraft] = useState<Draft>({
+    amountMagnitude: "",
+    merchant: "",
+    category: "",
+    categoryId: null,
+    date: "",
+  });
+  const [categoryPickerVisible, setCategoryPickerVisible] = useState(false);
 
   // Re-seed the local draft whenever a different row opens.
   const seedKey = txn?.id ?? "none";
@@ -259,6 +268,7 @@ function EditModal({
       amountMagnitude: String(Math.abs(amt)),
       merchant: initial?.merchant ?? txn.merchant ?? "",
       category: initial?.category ?? txn.category ?? "",
+      categoryId: initial?.category_id ?? txn.category_id ?? null,
       date: initial?.transaction_date ?? txn.transaction_date,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -270,7 +280,9 @@ function EditModal({
     const mag = parseFloat(draft.amountMagnitude.replace(",", "."));
     const patch: Partial<ShadowConfirmItem> = {
       merchant: draft.merchant.trim() || undefined,
+      // Set both name + FK so the confirmed row matches the Categorías screen.
       category: draft.category.trim() || undefined,
+      category_id: draft.categoryId ?? undefined,
       transaction_date: draft.date.trim() || undefined,
     };
     if (!isNaN(mag) && mag > 0) patch.amount = sign * mag;
@@ -297,12 +309,15 @@ function EditModal({
             onChangeText={(t) => setDraft((d) => ({ ...d, merchant: t }))}
           />
           <Text style={styles.label}>Categoría</Text>
-          <TextInput
-            style={styles.input}
-            value={draft.category}
-            onChangeText={(t) => setDraft((d) => ({ ...d, category: t }))}
-            autoCapitalize="none"
-          />
+          <Pressable
+            onPress={() => setCategoryPickerVisible(true)}
+            style={({ pressed }) => [styles.input, styles.selectRow, pressed && { opacity: 0.7 }]}
+          >
+            <Text style={[styles.selectText, !draft.category.trim() && styles.selectPlaceholder]}>
+              {draft.category.trim() || "Elegí una categoría"}
+            </Text>
+            <Feather name="chevron-right" size={18} color={Colors.textMuted} />
+          </Pressable>
           <Text style={styles.label}>Fecha (YYYY-MM-DD)</Text>
           <TextInput
             style={styles.input}
@@ -320,6 +335,18 @@ function EditModal({
           </View>
         </View>
       </View>
+
+      <CategoryPickerModal
+        visible={categoryPickerVisible}
+        kind={sign < 0 ? "expense" : "income"}
+        currentCategoryId={draft.categoryId}
+        allowClear={false}
+        onClose={() => setCategoryPickerVisible(false)}
+        onSelect={(cat) => {
+          if (cat) setDraft((d) => ({ ...d, category: cat.name, categoryId: cat.id }));
+          setCategoryPickerVisible(false);
+        }}
+      />
     </Modal>
   );
 }
@@ -411,6 +438,9 @@ const styles = StyleSheet.create({
     fontSize: FontSize.md,
     color: Colors.textPrimary,
   },
+  selectRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  selectText: { fontSize: FontSize.md, color: Colors.textPrimary },
+  selectPlaceholder: { color: Colors.textMuted },
   modalActions: { flexDirection: "row", gap: Spacing.sm, marginTop: Spacing.md },
   modalBtn: { flex: 1, borderRadius: Radius.md, paddingVertical: Spacing.sm + 2, alignItems: "center" },
   modalCancel: { fontSize: FontSize.md, color: Colors.textSecondary, fontWeight: "600" },

@@ -217,7 +217,7 @@ export function EnvelopeEditModal({
             {creatingChild && parentEnvelope && (
               <Text style={styles.parentNote}>
                 Sub-sobre de <Text style={styles.parentNoteName}>{parentEnvelope.name}</Text>.
-                Hereda la categoría ({ENVELOPE_CLASS_LABELS[parentEnvelope.envelope_class]}) y
+                Hereda el tipo ({ENVELOPE_CLASS_LABELS[parentEnvelope.envelope_class]}) y
                 la moneda ({parentEnvelope.currency}); su límite es una parte del presupuesto
                 del sobre padre.
                 {parentEnvelope.available != null && (
@@ -239,7 +239,7 @@ export function EnvelopeEditModal({
 
             {!creatingChild && (
               <>
-                <Text style={styles.label}>Categoría</Text>
+                <Text style={styles.label}>Tipo</Text>
                 <View style={styles.classGrid}>
                   {ENVELOPE_CLASS_ORDER.map((c) => {
                     const active = c === cls;
@@ -284,7 +284,7 @@ export function EnvelopeEditModal({
             <Text style={styles.help}>
               Acá cargás la cantidad de dinero que disponés para gastar en este
               rubro. Empieza lleno (100%) y se va descontando con cada
-              transacción que agregués o clasifiqués en esta categoría; cuando te
+              transacción que agregués o asignés a este sobre; cuando te
               queda poco, la barra se pone roja.
             </Text>
 

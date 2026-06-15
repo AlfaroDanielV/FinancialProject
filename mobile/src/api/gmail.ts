@@ -42,6 +42,9 @@ export interface ShadowConfirmItem {
   merchant?: string;
   description?: string;
   category?: string;
+  // FK to a user_categories row, set alongside `category` (name) by the review
+  // picker. Backend validates it belongs to the caller and is active.
+  category_id?: string | null;
   transaction_date?: string;
 }
 

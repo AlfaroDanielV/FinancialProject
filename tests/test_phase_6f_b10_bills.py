@@ -306,3 +306,47 @@ async def test_archive_bill_cancels_future_occurrences(db_with_user):
             assert len(pending) == 0
     finally:
         _clear()
+
+
+# ── 8. category reconciliation: a custom user category name is accepted ───────
+# Bills used to validate category against a fixed CR enum. After categories were
+# reconciled to user_categories (the Categorías screen), the picker can offer a
+# custom category, so the REST create/update must accept any non-empty string
+# (same free-text contract as transactions.category).
+
+
+@pytest.mark.asyncio
+async def test_create_and_update_bill_with_custom_category(db_with_user):
+    session, user_id = db_with_user
+    _override(session, user_id)
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            account = await _create_account(ac, "BAC")
+            today = date.today()
+            create = await ac.post(
+                "/api/v1/recurring-bills",
+                json={
+                    "name": "Veterinario",
+                    "category": "mascotas",  # not a CR-enum category
+                    "currency": "CRC",
+                    "amount_expected": 15_000,
+                    "is_variable_amount": False,
+                    "frequency": "monthly",
+                    "day_of_month": today.day or 5,
+                    "start_date": today.isoformat(),
+                    "account_id": account["id"],
+                },
+            )
+            assert create.status_code == 201, create.text
+            bill = create.json()
+            assert bill["category"] == "mascotas"
+
+            patched = await ac.patch(
+                f"/api/v1/recurring-bills/{bill['id']}",
+                json={"category": "regalos"},
+            )
+            assert patched.status_code == 200, patched.text
+            assert patched.json()["category"] == "regalos"
+    finally:
+        _clear()

@@ -45,6 +45,7 @@ from ..database import get_db
 from ..dependencies import current_user
 from ..models.gmail_credential import GmailCredential
 from ..models.user import User
+from ..models.user_category import UserCategory
 from ..redis_client import get_redis
 from ..models.gmail_ingestion_run import GmailIngestionRun
 from ..schemas.gmail import (
@@ -486,6 +487,22 @@ async def confirm_shadow_transactions(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(current_user),
 ) -> ShadowConfirmResponse:
+    # Any category_id override must belong to the caller and be active
+    # (mirrors PATCH /transactions/{id} — shadow rows can't be PATCHed, so the
+    # native review applies edits here at confirm time).
+    requested_category_ids = {i.category_id for i in payload.items if i.category_id is not None}
+    if requested_category_ids:
+        valid = await db.execute(
+            select(UserCategory.id).where(
+                UserCategory.id.in_(requested_category_ids),
+                UserCategory.user_id == user.id,
+                UserCategory.archived.is_(False),
+            )
+        )
+        valid_ids = {row[0] for row in valid.fetchall()}
+        if requested_category_ids - valid_ids:
+            raise HTTPException(status_code=400, detail="Categoría inválida.")
+
     items = [
         shadow_review.ShadowEdit(
             id=i.id,
@@ -493,6 +510,7 @@ async def confirm_shadow_transactions(
             merchant=i.merchant,
             description=i.description,
             category=i.category,
+            category_id=i.category_id,
             transaction_date=i.transaction_date,
         )
         for i in payload.items
