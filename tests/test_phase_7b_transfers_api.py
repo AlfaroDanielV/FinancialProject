@@ -33,13 +33,15 @@ def _clear():
     app.dependency_overrides.pop(get_db, None)
 
 
-async def _add_account(session, user_id, name: str) -> Account:
+async def _add_account(
+    session, user_id, name: str, *, initial_balance: Decimal = Decimal("0")
+) -> Account:
     account = Account(
         user_id=user_id,
         name=name,
         account_type="checking",
         currency="CRC",
-        initial_balance=Decimal("0"),
+        initial_balance=initial_balance,
     )
     session.add(account)
     await session.commit()
@@ -50,9 +52,16 @@ async def _add_account(session, user_id, name: str) -> Account:
 @pytest.mark.asyncio
 async def test_list_transfers_filters_by_account_and_paginates(db_with_user):
     session, user_id = db_with_user
-    a = await _add_account(session, user_id, "Cuenta A")
-    b = await _add_account(session, user_id, "Cuenta B")
-    c = await _add_account(session, user_id, "Cuenta C")
+    # Fund the sources so the transfers below clear the funds guard.
+    a = await _add_account(
+        session, user_id, "Cuenta A", initial_balance=Decimal("100000")
+    )
+    b = await _add_account(
+        session, user_id, "Cuenta B", initial_balance=Decimal("100000")
+    )
+    c = await _add_account(
+        session, user_id, "Cuenta C", initial_balance=Decimal("100000")
+    )
 
     _override(session, user_id)
     try:

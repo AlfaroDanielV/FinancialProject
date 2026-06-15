@@ -149,7 +149,9 @@ async def test_transfer_with_fx_creates_linked_transactions_and_dashboard_exclud
                     "to_account_id": usd.json()["id"],
                     "amount": "1000",
                     "currency": "CRC",
-                    "fx_rate": "0.00195",
+                    # Canonical fx_rate = funding(CRC) per 1 destination(USD).
+                    # Mode B (amount in CRC): applied = 1000 ÷ 500 = $2.00.
+                    "fx_rate": "500",
                     "occurred_at": datetime.now(timezone.utc).isoformat(),
                     "notes": "Compra de dólares",
                 },
@@ -163,7 +165,7 @@ async def test_transfer_with_fx_creates_linked_transactions_and_dashboard_exclud
                 select(Transaction).where(Transaction.transfer_id == body["id"])
             )
             amounts = sorted(Decimal(txn.amount) for txn in txns.scalars().all())
-            assert amounts == [Decimal("-1000.00"), Decimal("1.95")]
+            assert amounts == [Decimal("-1000.00"), Decimal("2.00")]
 
             summary = await ac.get(
                 "/api/v1/dashboard/summary", params={"period": "month_current"}

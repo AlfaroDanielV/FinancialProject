@@ -26,6 +26,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { fetchAccounts, type AccountResponse } from "../api/accounts";
 import { createTransfer } from "../api/transfers";
+import { formatMoney } from "../lib/format";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
 import { AmountInput } from "./fields/AmountInput";
 import { DateField } from "./fields/DateField";
@@ -124,6 +125,9 @@ export function TransferModal({ visible, onClose, initialToAccountId }: Props) {
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(todayIso());
   const [fxRate, setFxRate] = useState("");
+  // Which currency the typed amount is expressed in (cross-currency only).
+  // null → defaults to the funding (from) currency = Mode B.
+  const [inputCurrency, setInputCurrency] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -133,6 +137,7 @@ export function TransferModal({ visible, onClose, initialToAccountId }: Props) {
       setAmount("");
       setDate(todayIso());
       setFxRate("");
+      setInputCurrency(null);
       setError(null);
     }
   }, [visible, initialToAccountId]);
@@ -154,6 +159,43 @@ export function TransferModal({ visible, onClose, initialToAccountId }: Props) {
     fromAccount != null &&
     toAccount != null &&
     fromAccount.currency !== toAccount.currency;
+
+  // Effective input currency: the funding (from) currency unless the user
+  // toggled to the destination currency on a cross-currency transfer.
+  const inputCcy = !fromAccount
+    ? (toAccount?.currency ?? "CRC")
+    : crossCurrency && inputCurrency === toAccount!.currency
+      ? toAccount!.currency
+      : fromAccount.currency;
+
+  // Pre-confirm preview (display only; the backend is authoritative). Canonical
+  // fx_rate = from-currency units per 1 to-currency unit (e.g. CRC per USD).
+  const preview = (() => {
+    if (!crossCurrency || !fromAccount || !toAccount) return null;
+    const amt = Number(amount.replace(",", "."));
+    const rate = Number(fxRate.replace(",", "."));
+    if (!Number.isFinite(amt) || amt <= 0) return null;
+    if (!Number.isFinite(rate) || rate <= 0) return null;
+    let debited: number;
+    let applied: number;
+    if (inputCcy === toAccount.currency) {
+      applied = amt; // Mode A — typed in the destination (credit) currency.
+      debited = amt * rate;
+    } else {
+      debited = amt; // Mode B — typed in the funding (source) currency.
+      applied = amt / rate;
+    }
+    const debitedTxt = formatMoney(debited, fromAccount.currency);
+    const appliedTxt = formatMoney(applied, toAccount.currency);
+    if (inputCcy === toAccount.currency) {
+      return isCardPayment
+        ? `Abonás ${appliedTxt} al crédito → salen ${debitedTxt} de ${fromAccount.name}`
+        : `Entran ${appliedTxt} a ${toAccount.name} → salen ${debitedTxt} de ${fromAccount.name}`;
+    }
+    return isCardPayment
+      ? `Pagás ${debitedTxt} → abona ${appliedTxt} al crédito`
+      : `Salen ${debitedTxt} → entran ${appliedTxt} a ${toAccount.name}`;
+  })();
 
   const mutation = useMutation({
     mutationFn: createTransfer,
@@ -195,7 +237,7 @@ export function TransferModal({ visible, onClose, initialToAccountId }: Props) {
       from_account_id: fromAccount.id,
       to_account_id: toAccount.id,
       amount: String(parsed),
-      currency: fromAccount.currency,
+      currency: inputCcy,
       fx_rate: fx,
       occurred_at: `${date}T12:00:00Z`,
     });
@@ -245,9 +287,39 @@ export function TransferModal({ visible, onClose, initialToAccountId }: Props) {
               excludeId={fromId}
               onSelect={setToId}
             />
+            {crossCurrency && fromAccount && toAccount && (
+              <View style={styles.field}>
+                <Text style={styles.fieldLabel}>Moneda del monto</Text>
+                <View style={styles.toggleRow}>
+                  {[fromAccount.currency, toAccount.currency].map((ccy) => {
+                    const activeOpt = inputCcy === ccy;
+                    return (
+                      <Pressable
+                        key={ccy}
+                        onPress={() => setInputCurrency(ccy)}
+                        style={({ pressed }) => [
+                          styles.toggleOpt,
+                          activeOpt && styles.toggleOptActive,
+                          pressed && { opacity: 0.8 },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.toggleOptText,
+                            activeOpt && styles.toggleOptTextActive,
+                          ]}
+                        >
+                          {ccy}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+            )}
             <View style={styles.field}>
               <Text style={styles.fieldLabel}>
-                Monto{fromAccount ? ` (${fromAccount.currency})` : ""}
+                Monto{fromAccount ? ` (${inputCcy})` : ""}
               </Text>
               <AmountInput
                 value={amount}
@@ -264,18 +336,20 @@ export function TransferModal({ visible, onClose, initialToAccountId }: Props) {
             {crossCurrency && (
               <View style={styles.field}>
                 <Text style={styles.fieldLabel}>
-                  Tipo de cambio ({fromAccount?.currency} → {toAccount?.currency})
+                  Tipo de cambio (1 {toAccount?.currency} = ?{" "}
+                  {fromAccount?.currency})
                 </Text>
                 <TextInput
                   value={fxRate}
                   onChangeText={setFxRate}
                   keyboardType="decimal-pad"
                   style={styles.input}
-                  placeholder="500"
+                  placeholder="520"
                   placeholderTextColor={Colors.textMuted}
                 />
               </View>
             )}
+            {preview != null && <Text style={styles.preview}>{preview}</Text>}
             {isCardPayment && (
               <Text style={styles.cardNote}>
                 El pago baja la deuda de la tarjeta y no cuenta como un gasto
@@ -400,6 +474,34 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm,
     paddingHorizontal: Spacing.xs,
     paddingVertical: 1,
+  },
+  toggleRow: {
+    flexDirection: "row",
+    gap: Spacing.xs,
+  },
+  toggleOpt: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: Spacing.sm + 2,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.bgCard,
+  },
+  toggleOptActive: {
+    borderColor: Colors.accent,
+    backgroundColor: Colors.accentBg,
+  },
+  toggleOptText: { fontSize: FontSize.md, color: Colors.textSecondary },
+  toggleOptTextActive: { color: Colors.accent, fontWeight: "600" },
+  preview: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    backgroundColor: Colors.accentBg,
+    borderRadius: Radius.md,
+    padding: Spacing.sm,
+    marginBottom: Spacing.md,
+    lineHeight: 19,
   },
   cardNote: {
     fontSize: FontSize.sm,

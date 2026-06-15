@@ -55,13 +55,14 @@ async def _add_account(
     *,
     account_type: str = "checking",
     currency: str = "CRC",
+    initial_balance: Decimal = Decimal("0"),
 ) -> Account:
     account = Account(
         user_id=user_id,
         name=name,
         account_type=account_type,
         currency=currency,
-        initial_balance=Decimal("0"),
+        initial_balance=initial_balance,
     )
     session.add(account)
     await session.commit()
@@ -238,7 +239,10 @@ async def test_card_payment_full_flow_commits_and_undoes(db_with_user):
     from api.redis_client import get_redis
 
     session, user_id = db_with_user
-    corriente = await _add_account(session, user_id, "Corriente BCR")
+    # Fund the source so the ₡80.000 card payment clears the funds guard.
+    corriente = await _add_account(
+        session, user_id, "Corriente BCR", initial_balance=Decimal("200000")
+    )
     visa = await _add_account(
         session, user_id, "BAC Visa", account_type="credit"
     )

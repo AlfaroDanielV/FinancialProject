@@ -43,13 +43,15 @@ async def _get_user(session, user_id) -> User:
     ).scalar_one()
 
 
-async def _add_account(session, user_id, name, *, account_type="credit"):
+async def _add_account(
+    session, user_id, name, *, account_type="credit", initial_balance=Decimal("0")
+):
     account = Account(
         user_id=user_id,
         name=name,
         account_type=account_type,
         currency="CRC",
-        initial_balance=Decimal("0"),
+        initial_balance=initial_balance,
     )
     session.add(account)
     await session.commit()
@@ -134,7 +136,11 @@ async def test_feed_projects_card_minimum_live(db_with_user):
 async def test_reservation_reserves_then_swaps_to_spend_on_payment(db_with_user):
     session, user_id = db_with_user
     checking = await _add_account(
-        session, user_id, "Corriente", account_type="checking"
+        session,
+        user_id,
+        "Corriente",
+        account_type="checking",
+        initial_balance=Decimal("100000"),  # cover the ₡15.000 payment below
     )
     card = await _add_account(session, user_id, "BAC Visa")
     env = await _add_envelope(session, user_id)

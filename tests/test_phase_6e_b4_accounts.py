@@ -352,7 +352,9 @@ async def test_patch_transaction_rejects_shadow_and_transfer_legs(db_with_user):
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            primary = await _create_account(ac, "BAC", initial="0")
+            # Fund the source so the transfer below clears the funds guard
+            # (the -500 row is a shadow, excluded from the balance).
+            primary = await _create_account(ac, "BAC", initial="2000")
             other = await _create_account(ac, "Promerica", initial="0")
 
             # shadow row inserted directly (mimics Gmail 7-day window)

@@ -57,13 +57,15 @@ def _clear():
     app.dependency_overrides.pop(get_db, None)
 
 
-async def _add_account(session, user_id, name: str) -> Account:
+async def _add_account(
+    session, user_id, name: str, *, initial_balance: Decimal = Decimal("0")
+) -> Account:
     account = Account(
         user_id=user_id,
         name=name,
         account_type="checking",
         currency="CRC",
-        initial_balance=Decimal("0"),
+        initial_balance=initial_balance,
     )
     session.add(account)
     await session.commit()
@@ -89,7 +91,11 @@ async def _add_txn(session, user_id, account_id, amount: str) -> Transaction:
 @pytest.mark.asyncio
 async def test_hard_delete_cascades_and_detaches(db_with_user):
     session, user_id = db_with_user
-    doomed = await _add_account(session, user_id, "Cuenta Basura")
+    # Fund the doomed account so the ₡10.000 transfer below (after ₡12.000 of
+    # expenses) clears the new funds guard.
+    doomed = await _add_account(
+        session, user_id, "Cuenta Basura", initial_balance=Decimal("50000")
+    )
     survivor = await _add_account(session, user_id, "Cuenta Buena")
 
     # Two plain expenses in the doomed account.

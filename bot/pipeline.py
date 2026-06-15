@@ -18,6 +18,7 @@ from decimal import Decimal
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+from fastapi import HTTPException
 from pydantic import ValidationError
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -544,8 +545,13 @@ async def _handle_confirm(
     if pending.action_type == "log_transfer":
         # Phase 7b: a transfer commits two legs through the shared transfers
         # service. No assign_envelope hint — legs are excluded from envelope
-        # spend math (paying the card is not new consumption).
-        await commit_pending(user=user, pending=pending, db=db, redis=redis)
+        # spend math (paying the card is not new consumption). The shared
+        # service runs the funds guard; surface its Spanish message in-chat
+        # instead of bubbling a raw error (the pending row stays for a retry).
+        try:
+            await commit_pending(user=user, pending=pending, db=db, redis=redis)
+        except HTTPException as exc:
+            return BotReply(text=str(exc.detail))
         payload = pending.payload
         amt = format_amount(Decimal(payload["amount"]), payload["currency"])
         tmpl = (

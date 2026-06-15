@@ -49,14 +49,16 @@ def _clear():
     app.dependency_overrides.pop(get_db, None)
 
 
-async def _create_account(ac: AsyncClient, name: str, currency: str = "CRC"):
+async def _create_account(
+    ac: AsyncClient, name: str, currency: str = "CRC", *, initial: str = "0"
+):
     response = await ac.post(
         "/api/v1/accounts",
         json={
             "name": name,
             "account_type": "checking",
             "currency": currency,
-            "initial_balance": "0",
+            "initial_balance": initial,
         },
     )
     assert response.status_code == 201, response.text
@@ -286,7 +288,9 @@ async def test_bulk_archive_rejects_shadow_and_transfer_legs(db_with_user):
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            primary = await _create_account(ac, "BAC")
+            # Fund the source so the 200 transfer below clears the funds guard
+            # after the -1000 confirmed row (the -500 row is a shadow).
+            primary = await _create_account(ac, "BAC", initial="5000")
             other = await _create_account(ac, "Promerica")
             today = date.today().isoformat()
 

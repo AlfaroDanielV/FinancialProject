@@ -14,6 +14,7 @@ from ..models.credit_card_terms import CreditCardTerms
 from ..models.transaction import Transaction
 from ..models.transfer import Transfer
 from ..schemas.transfers import TransferCreate
+from .accounts import compute_account_balances
 
 
 @dataclass
@@ -21,6 +22,12 @@ class TransferCreationResult:
     transfer: Transfer
     debit_transaction_id: uuid.UUID
     credit_transaction_id: uuid.UUID
+
+
+def _fmt(amount: Decimal, currency: str) -> str:
+    """Compact money label for error copy — ₡/$ prefix, 2 decimals."""
+    prefix = {"CRC": "₡", "USD": "$"}.get(currency, f"{currency} ")
+    return f"{prefix}{amount:,.2f}"
 
 
 async def create_transfer_with_transactions(
@@ -49,27 +56,71 @@ async def create_transfer_with_transactions(
             detail="No se puede transferir con cuentas archivadas.",
         )
 
-    currency = payload.currency.upper()
-    if currency != from_account.currency:
+    from_ccy = from_account.currency
+    to_ccy = to_account.currency
+    # `payload.currency` is the currency the typed `amount` is expressed in
+    # (the input currency / mode selector). It must be one of the two accounts.
+    input_ccy = payload.currency.upper()
+    if input_ccy not in (from_ccy, to_ccy):
         raise HTTPException(
             status_code=400,
             detail=(
-                "La moneda de la transferencia tiene que coincidir con "
-                "la cuenta origen."
+                "La moneda del monto tiene que ser la de la cuenta origen "
+                "o la de destino."
             ),
         )
 
-    amount = Decimal(payload.amount)
-    if from_account.currency != to_account.currency and payload.fx_rate is None:
+    amount_in = Decimal(payload.amount)
+
+    # Canonical fx_rate direction: units of the FROM-account (funding) currency
+    # per 1 unit of the TO-account (credit/destination) currency — e.g. CRC per
+    # 1 USD ≈ 520. `debited` leaves the funding account (from_ccy); `applied`
+    # lands on the destination (to_ccy). All Decimal, quantized to cents.
+    if from_ccy == to_ccy:
+        # Same currency: no exchange. Force rate 1, store no fx_rate.
+        debited = amount_in.quantize(Decimal("0.01"))
+        applied = debited
+        stored_fx = None
+    else:
+        if payload.fx_rate is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Necesitás indicar el tipo de cambio para transferencias "
+                    "entre monedas distintas."
+                ),
+            )
+        rate = Decimal(payload.fx_rate)
+        if rate <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="El tipo de cambio tiene que ser mayor que cero.",
+            )
+        if input_ccy == to_ccy:
+            # Mode A — amount typed in the destination (credit) currency.
+            applied = amount_in.quantize(Decimal("0.01"))
+            debited = (amount_in * rate).quantize(Decimal("0.01"))
+        else:
+            # Mode B — amount typed in the funding (source) currency.
+            debited = amount_in.quantize(Decimal("0.01"))
+            applied = (amount_in / rate).quantize(Decimal("0.01"))
+        stored_fx = rate
+
+    # Funds guard (always in funding currency, single source of truth): the
+    # amount leaving the funding account must not exceed its current balance.
+    balances = await compute_account_balances(
+        db, user_id=user_id, account_ids=[from_account.id]
+    )
+    current = balances.get(from_account.id)
+    current_balance = current.current if current else Decimal("0")
+    if debited > current_balance:
         raise HTTPException(
             status_code=400,
-            detail="Necesitás indicar el tipo de cambio para transferencias mixtas.",
-        )
-
-    destination_amount = amount
-    if from_account.currency != to_account.currency:
-        destination_amount = (amount * Decimal(payload.fx_rate)).quantize(
-            Decimal("0.01")
+            detail=(
+                f"Fondos insuficientes en «{from_account.name}». "
+                f"Necesitás {_fmt(debited, from_ccy)} y tenés "
+                f"{_fmt(current_balance, from_ccy)}."
+            ),
         )
 
     occurred_at = payload.occurred_at or datetime.now(timezone.utc)
@@ -77,9 +128,9 @@ async def create_transfer_with_transactions(
         user_id=user_id,
         from_account_id=from_account.id,
         to_account_id=to_account.id,
-        amount=amount,
-        currency=currency,
-        fx_rate=payload.fx_rate,
+        amount=debited,
+        currency=from_ccy,
+        fx_rate=stored_fx,
         occurred_at=occurred_at,
         notes=payload.notes,
     )
@@ -110,7 +161,7 @@ async def create_transfer_with_transactions(
         user_id=user_id,
         account_id=from_account.id,
         transfer_id=transfer.id,
-        amount=-amount,
+        amount=-debited,
         currency=from_account.currency,
         merchant=to_account.name,
         description=description,
@@ -123,7 +174,7 @@ async def create_transfer_with_transactions(
         user_id=user_id,
         account_id=to_account.id,
         transfer_id=transfer.id,
-        amount=destination_amount,
+        amount=applied,
         currency=to_account.currency,
         merchant=from_account.name,
         description=description,
