@@ -42,13 +42,15 @@ def _clear():
     app.dependency_overrides.pop(get_db, None)
 
 
-async def _create_account(ac: AsyncClient, name: str, *, initial: str = "0"):
+async def _create_account(
+    ac: AsyncClient, name: str, *, initial: str = "0", currency: str = "CRC"
+):
     response = await ac.post(
         "/api/v1/accounts",
         json={
             "name": name,
             "account_type": "checking",
-            "currency": "CRC",
+            "currency": currency,
             "initial_balance": initial,
         },
     )
@@ -337,6 +339,139 @@ async def test_patch_transaction_updates_confirmed_row(db_with_user):
             assert Decimal(str(body["amount"])) == Decimal("-1500")
             assert body["description"] == "almuerzo del lunes"
             assert body["category_id"] == category_id
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_patch_transaction_reassigns_account_moves_balance(db_with_user):
+    """Reassigning a movement to another account moves the amount between the
+    two live-computed balances (no stored balance to keep in sync)."""
+    session, user_id = db_with_user
+    _override(session, user_id)
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            account_a = await _create_account(ac, "BAC", initial="0")
+            account_b = await _create_account(ac, "Promerica", initial="0")
+
+            created = await ac.post(
+                "/api/v1/transactions",
+                json={
+                    "amount": "-1000",
+                    "currency": "CRC",
+                    "merchant": "Tienda",
+                    "transaction_date": date.today().isoformat(),
+                    "source": "manual",
+                    "account_id": account_a["id"],
+                },
+            )
+            assert created.status_code == 201, created.text
+            txn_id = created.json()["id"]
+
+            patched = await ac.patch(
+                f"/api/v1/transactions/{txn_id}",
+                json={"account_id": account_b["id"]},
+            )
+            assert patched.status_code == 200, patched.text
+            assert patched.json()["account_id"] == account_b["id"]
+
+            listed = await ac.get("/api/v1/accounts")
+            by_id = {row["id"]: row for row in listed.json()}
+            assert Decimal(str(by_id[account_a["id"]]["current_balance"])) == Decimal("0")
+            assert Decimal(str(by_id[account_b["id"]]["current_balance"])) == Decimal("-1000")
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_patch_transaction_cross_currency_converts(db_with_user):
+    """Reassigning a ₡ movement to a $ account converts amount + currency at the
+    fixed ₡500/US$ reference rate (fx.convert)."""
+    session, user_id = db_with_user
+    _override(session, user_id)
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            crc = await _create_account(ac, "BAC Colones", initial="0")
+            usd = await _create_account(ac, "BAC Dólares", initial="0", currency="USD")
+
+            created = await ac.post(
+                "/api/v1/transactions",
+                json={
+                    "amount": "-1000",
+                    "currency": "CRC",
+                    "merchant": "Tienda",
+                    "transaction_date": date.today().isoformat(),
+                    "source": "manual",
+                    "account_id": crc["id"],
+                },
+            )
+            assert created.status_code == 201, created.text
+            txn_id = created.json()["id"]
+
+            patched = await ac.patch(
+                f"/api/v1/transactions/{txn_id}",
+                json={"account_id": usd["id"]},
+            )
+            assert patched.status_code == 200, patched.text
+            body = patched.json()
+            assert body["account_id"] == usd["id"]
+            assert body["currency"] == "USD"
+            # ₡1000 / ₡500 per US$ = US$2.00
+            assert Decimal(str(body["amount"])) == Decimal("-2.00")
+
+            listed = await ac.get("/api/v1/accounts")
+            by_id = {row["id"]: row for row in listed.json()}
+            assert Decimal(str(by_id[crc["id"]]["current_balance"])) == Decimal("0")
+            assert Decimal(str(by_id[usd["id"]]["current_balance"])) == Decimal("-2.00")
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_patch_transaction_rejects_foreign_or_archived_account(db_with_user):
+    """An account that isn't the caller's active account → 400 'Cuenta inválida.'"""
+    session, user_id = db_with_user
+    _override(session, user_id)
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            account = await _create_account(ac, "BAC", initial="0")
+            archived = await _create_account(ac, "Vieja", initial="0")
+
+            created = await ac.post(
+                "/api/v1/transactions",
+                json={
+                    "amount": "-1000",
+                    "currency": "CRC",
+                    "merchant": "Tienda",
+                    "transaction_date": date.today().isoformat(),
+                    "source": "manual",
+                    "account_id": account["id"],
+                },
+            )
+            assert created.status_code == 201, created.text
+            txn_id = created.json()["id"]
+
+            # Archive the second account, then try to reassign onto it.
+            archive_resp = await ac.delete(f"/api/v1/accounts/{archived['id']}")
+            assert archive_resp.status_code == 200, archive_resp.text
+
+            blocked_archived = await ac.patch(
+                f"/api/v1/transactions/{txn_id}",
+                json={"account_id": archived["id"]},
+            )
+            assert blocked_archived.status_code == 400, blocked_archived.text
+
+            # A random non-existent account id → 400 as well.
+            import uuid as _uuid
+
+            blocked_foreign = await ac.patch(
+                f"/api/v1/transactions/{txn_id}",
+                json={"account_id": str(_uuid.uuid4())},
+            )
+            assert blocked_foreign.status_code == 400, blocked_foreign.text
     finally:
         _clear()
 

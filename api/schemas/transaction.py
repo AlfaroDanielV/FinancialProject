@@ -75,8 +75,12 @@ class TransactionListResponse(BaseModel):
 class TransactionUpdate(BaseModel):
     """Phase 6e B4 — editable fields on an existing transaction.
 
-    Account, transfer, source, status are immutable post-creation. Shadow
-    rows (Phase 6b status='shadow') are blocked at the router layer.
+    Transfer, source, status are immutable post-creation. Shadow rows (Phase 6b
+    status='shadow') are blocked at the router layer. `account_id` is editable:
+    reassigning a movement to an account of a DIFFERENT currency converts the
+    amount and rewrites `transactions.currency` to the destination account's
+    currency (router-side, via fx.convert) — so per-account balance sums, which
+    are computed live, stay correct.
     """
 
     amount: Optional[float] = None
@@ -84,6 +88,9 @@ class TransactionUpdate(BaseModel):
     description: Optional[str] = Field(None, max_length=2000)
     category: Optional[str] = Field(None, max_length=100)
     category_id: Optional[uuid.UUID] = None
+    # Reassign the movement to another account. Validated active/same-user in
+    # the router; cross-currency reassignment converts amount + currency there.
+    account_id: Optional[uuid.UUID] = None
     # Envelope budgeting — assign/recategorize the expense to a spending-cap
     # envelope. Validated against the caller's envelopes in the router.
     envelope_id: Optional[uuid.UUID] = None

@@ -29,6 +29,7 @@ import {
 import { Feather } from "@expo/vector-icons";
 import { useMutation, useQuery } from "@tanstack/react-query";
 
+import { fetchAccounts } from "../api/accounts";
 import { fetchEnvelopes } from "../api/envelopes";
 import {
   type TransactionResponse,
@@ -36,10 +37,17 @@ import {
   updateTransaction,
 } from "../api/transactions";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
+import { AccountPickerModal } from "./AccountPickerModal";
 import { CategoryPickerModal } from "./CategoryPickerModal";
 import { EnvelopePickerModal } from "./EnvelopePickerModal";
 import { AmountInput } from "./fields/AmountInput";
 import { DateField } from "./fields/DateField";
+
+function currencyName(currency: string): string {
+  if (currency === "CRC") return "colones";
+  if (currency === "USD") return "dólares";
+  return currency;
+}
 
 interface Props {
   visible: boolean;
@@ -74,8 +82,10 @@ export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
   const [categoryId, setCategoryId] = useState<string | null>(tx.category_id);
   const [date, setDate] = useState(tx.transaction_date);
   const [envelopeId, setEnvelopeId] = useState<string | null>(tx.envelope_id);
+  const [accountId, setAccountId] = useState<string | null>(tx.account_id);
   const [pickerVisible, setPickerVisible] = useState(false);
   const [categoryPickerVisible, setCategoryPickerVisible] = useState(false);
+  const [accountPickerVisible, setAccountPickerVisible] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Re-seed the form whenever a different row is opened.
@@ -87,8 +97,21 @@ export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
     setCategoryId(tx.category_id);
     setDate(tx.transaction_date);
     setEnvelopeId(tx.envelope_id);
+    setAccountId(tx.account_id);
     setError(null);
   }, [tx, visible]);
+
+  // Resolve the selected account's name + currency for the "Cuenta" field and
+  // the cross-currency conversion hint. All currencies are offered; the backend
+  // converts when the destination currency differs from the row's.
+  const { data: accounts } = useQuery({
+    queryKey: ["accounts", "active"],
+    queryFn: () => fetchAccounts(false),
+    enabled: visible,
+  });
+  const selectedAccount = accounts?.find((a) => a.id === accountId) ?? null;
+  const crossCurrency =
+    selectedAccount != null && selectedAccount.currency !== tx.currency;
 
   // Only expenses can be assigned to a spending-cap envelope.
   const { data: envelopes } = useQuery({
@@ -123,6 +146,9 @@ export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
       // user_categories row (so the Categorías screen counts it).
       category: categoryName.trim() || null,
       category_id: categoryId,
+      // Reassign the movement; backend converts amount + currency if the
+      // destination account uses a different currency.
+      account_id: accountId,
       transaction_date: date,
       // Only send envelope_id for expenses (income/transfers never carry one).
       ...(isExpense ? { envelope_id: envelopeId } : {}),
@@ -204,6 +230,31 @@ export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
                 <Feather name="chevron-right" size={18} color={Colors.textMuted} />
               </Pressable>
             </Field>
+            <Field label="Cuenta">
+              <Pressable
+                onPress={() => setAccountPickerVisible(true)}
+                style={({ pressed }) => [
+                  styles.input,
+                  styles.selectRow,
+                  pressed && { opacity: 0.7 },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.selectText,
+                    selectedAccount == null && styles.selectPlaceholder,
+                  ]}
+                >
+                  {selectedAccount?.name ?? "Sin cuenta"}
+                </Text>
+                <Feather name="chevron-right" size={18} color={Colors.textMuted} />
+              </Pressable>
+              {crossCurrency && selectedAccount != null && (
+                <Text style={styles.hint}>
+                  El monto se convertirá a {currencyName(selectedAccount.currency)}.
+                </Text>
+              )}
+            </Field>
             <Field label="Fecha">
               <DateField value={date} onChange={setDate} style={styles.input} />
             </Field>
@@ -284,6 +335,16 @@ export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
           setPickerVisible(false);
         }}
       />
+
+      <AccountPickerModal
+        visible={accountPickerVisible}
+        currentAccountId={accountId}
+        onClose={() => setAccountPickerVisible(false)}
+        onSelect={(account) => {
+          setAccountId(account?.id ?? null);
+          setAccountPickerVisible(false);
+        }}
+      />
     </Modal>
   );
 }
@@ -340,6 +401,11 @@ const styles = StyleSheet.create({
   },
   selectText: { fontSize: FontSize.md, color: Colors.textPrimary },
   selectPlaceholder: { color: Colors.textMuted },
+  hint: {
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    marginTop: 6,
+  },
   error: {
     color: Colors.expense,
     fontSize: FontSize.sm,

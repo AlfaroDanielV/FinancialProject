@@ -31,6 +31,7 @@ from ..schemas.transaction import (
 )
 from ..services.dedup import clear_duplicate_nudges_for_txn, flag_and_notify
 from ..services.envelopes import can_assign_transaction_to_envelope
+from ..services.fx import convert
 from ..services.transactions import (
     TXN_DELETE_REASON_ES,
     TransactionDeleteError,
@@ -687,6 +688,34 @@ async def update_transaction(
             db, user_id=user.id, envelope_id=update_data["envelope_id"]
         ):
             raise HTTPException(status_code=400, detail="Sobre inválido.")
+
+    # Reassign to another account. Balances are computed live from
+    # transactions.account_id, so changing it moves the amount between accounts
+    # for free. When the destination account uses a DIFFERENT currency, convert
+    # the amount and rewrite the row's currency to the account's — mirroring the
+    # transfers convention (each leg stored in its own account's currency) so
+    # per-account balance sums stay correct.
+    if "account_id" in update_data and update_data["account_id"] is not None:
+        account = (
+            await db.execute(
+                select(Account).where(
+                    Account.id == update_data["account_id"],
+                    Account.user_id == user.id,
+                    Account.archived.is_(False),
+                )
+            )
+        ).scalar_one_or_none()
+        if account is None:
+            raise HTTPException(status_code=400, detail="Cuenta inválida.")
+        if account.currency != txn.currency:
+            # The client edits the amount in the row's CURRENT currency, so the
+            # effective amount (edited or unchanged) is in txn.currency.
+            effective_amount = update_data.get("amount", txn.amount)
+            converted = convert(
+                Decimal(str(effective_amount)), txn.currency, account.currency
+            ).quantize(Decimal("0.01"))
+            update_data["amount"] = converted
+            txn.currency = account.currency
 
     for field, value in update_data.items():
         setattr(txn, field, value)

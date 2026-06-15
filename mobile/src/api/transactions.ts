@@ -118,6 +118,10 @@ export interface TransactionUpdate {
   // this alongside `category` (name) so the displayed string and the FK stay in
   // sync. Backend validates it belongs to the caller and is active (400 else).
   category_id?: string | null;
+  // Reassign the movement to another account. Backend validates it belongs to
+  // the caller and is active (400 else); if the destination account's currency
+  // differs, the backend converts the amount and rewrites the row's currency.
+  account_id?: string | null;
   transaction_date?: string; // YYYY-MM-DD
   // Envelope budgeting: which spending-cap envelope this expense counts
   // against. null clears it. Backend 400s on a foreign/archived envelope.
