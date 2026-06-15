@@ -98,6 +98,14 @@ _BUTTONS: dict[str, list[NudgeButton]] = {
         NudgeButton("Más tarde", "later"),
         NudgeButton("No mostrar más", "dismiss"),
     ],
+    # Duplicate-transaction warning: two terminal choices. `act` deletes the
+    # likely-duplicate row; `dismiss` keeps it (clears the flag). Neither
+    # counts toward type-silence — see resolve_duplicate (a kept false positive
+    # must NOT mute duplicate detection).
+    "duplicate_transaction": [
+        NudgeButton("Eliminar", "act"),
+        NudgeButton("Conservar", "dismiss"),
+    ],
 }
 
 

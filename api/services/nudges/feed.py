@@ -100,6 +100,18 @@ def render_nudge_text(nudge_type: str, payload: dict[str, Any]) -> str:
         tail = f" el {due}" if due else ""
         return f"Se viene {name} por {monto}{tail}. ¿Ya lo pagaste?"
 
+    if nudge_type == "duplicate_transaction":
+        currency = payload.get("currency") or "CRC"
+        monto = _money(currency, payload.get("amount"))
+        merchant = payload.get("merchant") or payload.get("matched_merchant")
+        quien = f" en {merchant}" if merchant else ""
+        fecha = payload.get("transaction_date", "")
+        tail = f" del {fecha}" if fecha else ""
+        return (
+            f"Registraste un gasto de {monto}{quien}{tail} que se parece a uno "
+            "que ya tenés. ¿Lo elimino o lo dejo?"
+        )
+
     return "Tenés una notificación pendiente."
 
 

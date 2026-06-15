@@ -574,25 +574,55 @@ async def _handle_confirm(
     # Phase 6f B16: the SPA "Ver en Centro Financiero" deep-link button was
     # removed with the SPA. The committed transaction is visible in the
     # native app's Transactions tab.
-    #
-    # Envelope budgeting (Sobres): after an EXPENSE commits, hand the native
-    # chat a structured `assign_envelope` hint carrying the new transaction id
-    # so it can offer an in-chat "Asignar a un sobre" affordance (the user
-    # tags the spend to a cap envelope). The Telegram renderer ignores
-    # open_screen (envelopes are a native-only feature, like the debt form).
-    # Income never gets the hint — envelopes are spending caps only.
+    text = tmpl.format(amount=amt_formatted)
     open_screen = None
     if pending.action_type == "log_expense":
-        open_screen = OpenScreen(
-            screen="assign_envelope",
-            prefill={
-                "transaction_id": str(txn_id),
-                "amount": str(amt_decimal),
-                "currency": currency,
-                "merchant": pending.payload.get("merchant"),
-            },
-        )
-    return BotReply(text=tmpl.format(amount=amt_formatted), open_screen=open_screen)
+        # Duplicate detection first: if the just-logged expense looks like a
+        # dupe, flag it + raise the nudge (best-effort) and prefer a
+        # `duplicate_warning` hint over the envelope-assign one — the user
+        # should decide keep/delete before tagging a possibly-duplicate spend.
+        from api.models.transaction import Transaction as _Txn
+        from api.services.dedup import flag_and_notify
+
+        matched = None
+        dup_nudge_id = None
+        txn = await db.get(_Txn, txn_id)
+        if txn is not None:
+            matched, dup_nudge_id = await flag_and_notify(db, user=user, txn=txn)
+
+        if matched is not None:
+            text = text + messages_es.DUPLICATE_WARNING.format(
+                merchant=matched.merchant or "sin comercio",
+                date=matched.transaction_date.isoformat(),
+            )
+            open_screen = OpenScreen(
+                screen="duplicate_warning",
+                prefill={
+                    "transaction_id": str(txn_id),
+                    "nudge_id": str(dup_nudge_id) if dup_nudge_id else None,
+                    "amount": str(amt_decimal),
+                    "currency": currency,
+                    "merchant": pending.payload.get("merchant"),
+                    "matched_merchant": matched.merchant,
+                    "matched_date": matched.transaction_date.isoformat(),
+                },
+            )
+        else:
+            # Envelope budgeting (Sobres): after an EXPENSE commits, hand the
+            # native chat a structured `assign_envelope` hint carrying the new
+            # transaction id so it can offer an in-chat "Asignar a un sobre"
+            # affordance. Telegram ignores open_screen (envelopes are
+            # native-only). Income never gets the hint — caps are for spending.
+            open_screen = OpenScreen(
+                screen="assign_envelope",
+                prefill={
+                    "transaction_id": str(txn_id),
+                    "amount": str(amt_decimal),
+                    "currency": currency,
+                    "merchant": pending.payload.get("merchant"),
+                },
+            )
+    return BotReply(text=text, open_screen=open_screen)
 
 
 # ── dev/smoke entry: skip LLM, inject a pre-baked ExtractionResult ──────────
@@ -934,6 +964,36 @@ async def handle_nudge_callback(
     if nudge is None:
         return BotReply(text=messages_es.NUDGE_EXPIRED)
     nudge_type = nudge.nudge_type
+
+    # Duplicate warning: act = delete the dupe, dismiss = keep it. Both resolve
+    # the nudge terminally (acted_on) via resolve_duplicate — NOT through the
+    # generic dismiss path, whose auto-silence would mute duplicate detection
+    # after two false positives.
+    if nudge_type == "duplicate_transaction":
+        from api.services.dedup import resolve_duplicate
+        from api.services.transactions import (
+            TXN_DELETE_REASON_ES,
+            TransactionDeleteError,
+        )
+
+        if verb == _NUDGE_VERB_ACT:
+            try:
+                await resolve_duplicate(db, user=user, nudge=nudge, keep=False)
+            except TransactionDeleteError as exc:
+                await db.rollback()
+                return BotReply(
+                    text=TXN_DELETE_REASON_ES.get(
+                        exc.reason_code,
+                        "No se puede eliminar este movimiento.",
+                    )
+                )
+            await db.commit()
+            return BotReply(text=messages_es.DUPLICATE_DELETED)
+        if verb == _NUDGE_VERB_DISMISS:
+            await resolve_duplicate(db, user=user, nudge=nudge, keep=True)
+            await db.commit()
+            return BotReply(text=messages_es.DUPLICATE_KEPT)
+        return BotReply(text=messages_es.NUDGE_ACK_LATER)
 
     if verb == _NUDGE_VERB_ACT:
         await mark_acted_on(db, user_id=user.id, nudge_id=nudge_id)

@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.bill_occurrence import BillOccurrence
+from ..models.debt import DebtPayment
 from ..models.transaction import Transaction
 from ..models.user import User
 
@@ -38,6 +39,101 @@ class UndoGuardError(Exception):
 UNDO_REASON_NOT_FOUND = "not_found"
 UNDO_REASON_WRONG_SOURCE = "wrong_source"
 UNDO_REASON_LINKED_TO_BILL = "linked_to_bill"
+
+
+# ── general hard delete (app "Eliminar definitivamente" + duplicate flow) ─────
+
+TXN_DELETE_SHADOW = "shadow"
+TXN_DELETE_TRANSFER_LEG = "transfer_leg"
+TXN_DELETE_GOAL_FLOW = "goal_flow"
+TXN_DELETE_LINKED_TO_BILL = "linked_to_bill"
+TXN_DELETE_LINKED_TO_DEBT = "linked_to_debt"
+
+# Voseo CR copy, shared by every delete surface (REST 409, bot reply, native).
+TXN_DELETE_REASON_ES: dict[str, str] = {
+    TXN_DELETE_SHADOW: (
+        "Este movimiento está pendiente de aprobar. "
+        "Aprobalo o rechazalo desde el bot."
+    ),
+    TXN_DELETE_TRANSFER_LEG: (
+        "Es parte de una transferencia. Eliminá la transferencia, no el "
+        "movimiento."
+    ),
+    TXN_DELETE_GOAL_FLOW: (
+        "Este movimiento pertenece a una meta de ahorro. Gestionalo desde la "
+        "meta."
+    ),
+    TXN_DELETE_LINKED_TO_BILL: (
+        "Está ligado al pago de un gasto fijo. Desvinculá el pago antes de "
+        "eliminarlo."
+    ),
+    TXN_DELETE_LINKED_TO_DEBT: (
+        "Está ligado al pago de una deuda. Desvinculá el pago antes de "
+        "eliminarlo."
+    ),
+}
+
+
+@dataclass
+class TransactionDeleteError(Exception):
+    """Raised when a hard delete would violate an auditability guard.
+
+    `reason_code` is machine-readable so each surface (REST 409, bot reply,
+    native Alert) picks its own Spanish copy.
+    """
+
+    reason_code: str
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return f"txn_delete_blocked:{self.reason_code}"
+
+
+async def hard_delete_transaction(
+    db: AsyncSession, *, user: User, txn: Transaction
+) -> None:
+    """Permanently delete a transaction (no archive). FLUSHES, never commits —
+    the caller owns the transaction boundary so the delete can compose with
+    nudge cleanup / the duplicate flow in one commit.
+
+    Guards (raise TransactionDeleteError, mirroring the PATCH immutability
+    rules + the /undo bill guard so deleting can't silently orphan a payment):
+      - shadow / pending_review rows → approve or reject via the bot.
+      - transfer legs → delete the transfer instead.
+      - goal flows → machine-managed, gestionar desde la meta.
+      - linked to a paid bill occurrence / debt payment → desvincular primero
+        (the FK is SET NULL, so deleting would leave the bill/debt marked paid
+        with no backing movement — a silent ledger inconsistency).
+    Archived rows ARE deletable (unlike PATCH, which blocks them).
+    """
+    if txn.status != "confirmed":
+        raise TransactionDeleteError(TXN_DELETE_SHADOW)
+    if txn.transfer_id is not None:
+        raise TransactionDeleteError(TXN_DELETE_TRANSFER_LEG)
+    if txn.goal_id is not None:
+        raise TransactionDeleteError(TXN_DELETE_GOAL_FLOW)
+
+    linked_bill = (
+        await db.execute(
+            select(func.count())
+            .select_from(BillOccurrence)
+            .where(BillOccurrence.transaction_id == txn.id)
+        )
+    ).scalar_one()
+    if linked_bill > 0:
+        raise TransactionDeleteError(TXN_DELETE_LINKED_TO_BILL)
+
+    linked_debt = (
+        await db.execute(
+            select(func.count())
+            .select_from(DebtPayment)
+            .where(DebtPayment.transaction_id == txn.id)
+        )
+    ).scalar_one()
+    if linked_debt > 0:
+        raise TransactionDeleteError(TXN_DELETE_LINKED_TO_DEBT)
+
+    await db.delete(txn)
+    await db.flush()
 
 
 async def create_transaction(

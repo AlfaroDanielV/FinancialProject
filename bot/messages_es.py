@@ -616,3 +616,13 @@ NUDGE_ACK_DISMISS_SOFT = "Listo, descartado."
 NUDGE_ACK_LATER = (
     "Okey. Te aviso la próxima vez que chequee, si sigue pendiente."
 )
+
+# ── duplicate-transaction warning ─────────────────────────────────────────────
+
+DUPLICATE_DELETED = "Listo, eliminé el movimiento duplicado."
+DUPLICATE_KEPT = "Perfecto, lo dejo tal cual. No era un duplicado."
+# Appended to the commit reply when the just-logged expense looks like a dupe.
+DUPLICATE_WARNING = (
+    "\n\n⚠️ Ojo: este gasto se parece a uno que ya tenés ({merchant} del "
+    "{date}). ¿Lo elimino o lo dejo?"
+)

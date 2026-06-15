@@ -20,7 +20,11 @@ import type { NativeStackNavigationProp, NativeStackScreenProps } from "@react-n
 import { Feather } from "@expo/vector-icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { archiveTransaction, restoreTransaction } from "../api/transactions";
+import {
+  archiveTransaction,
+  deleteTransaction,
+  restoreTransaction,
+} from "../api/transactions";
 import { fetchAccounts } from "../api/accounts";
 import { ENVELOPE_CLASS_COLORS, fetchEnvelopes } from "../api/envelopes";
 import { TransactionEditModal } from "../components/TransactionEditModal";
@@ -130,7 +134,24 @@ export function TransactionDetailScreen({ route }: Props) {
     onError: () => Alert.alert("Error", "No se pudo restaurar el movimiento."),
   });
 
-  const isPending = archiveMutation.isPending || restoreMutation.isPending;
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteTransaction(tx.id),
+    onSuccess: () => { invalidate(); nav.goBack(); },
+    onError: (e: unknown) => {
+      // Surface the backend 409 reason (shadow / transfer / goal / linked).
+      const detail = (e as { response?: { data?: { detail?: unknown } } })
+        ?.response?.data?.detail;
+      Alert.alert(
+        "No se pudo eliminar",
+        typeof detail === "string" ? detail : "Intentá de nuevo.",
+      );
+    },
+  });
+
+  const isPending =
+    archiveMutation.isPending ||
+    restoreMutation.isPending ||
+    deleteMutation.isPending;
   const isExpense = tx.amount < 0;
   const isShadow = tx.status === "shadow";
 
@@ -152,6 +173,21 @@ export function TransactionDetailScreen({ route }: Props) {
       [
         { text: "Cancelar", style: "cancel" },
         { text: "Restaurar", onPress: () => restoreMutation.mutate() },
+      ],
+    );
+  };
+
+  const onDelete = () => {
+    Alert.alert(
+      "Eliminar para siempre",
+      "¿Eliminar este movimiento de forma permanente? No se puede deshacer.",
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Eliminar",
+          style: "destructive",
+          onPress: () => deleteMutation.mutate(),
+        },
       ],
     );
   };
@@ -331,6 +367,23 @@ export function TransactionDetailScreen({ route }: Props) {
               </Pressable>
             </View>
           )}
+          {/* Permanent delete — distinct from Archivar (reversible). */}
+          <Pressable
+            onPress={onDelete}
+            disabled={isPending}
+            style={({ pressed }) => [
+              styles.actionBtn,
+              styles.actionBtnDelete,
+              { marginTop: Spacing.sm },
+              isPending && { opacity: 0.5 },
+              pressed && { opacity: 0.75 },
+            ]}
+          >
+            <Feather name="trash-2" size={16} color={Colors.expense} />
+            <Text style={[styles.actionBtnLabel, { color: Colors.expense }]}>
+              Eliminar definitivamente
+            </Text>
+          </Pressable>
         </View>
       )}
 
@@ -495,6 +548,10 @@ const styles = StyleSheet.create({
   actionBtnRestore: {
     borderColor: Colors.accent,
     backgroundColor: Colors.accentBg,
+  },
+  actionBtnDelete: {
+    borderColor: Colors.expense + "55",
+    backgroundColor: Colors.bg,
   },
   actionBtnLabel: {
     fontSize: FontSize.md,

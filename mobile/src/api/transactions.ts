@@ -134,3 +134,13 @@ export async function updateTransaction(
   );
   return data;
 }
+
+/**
+ * Permanently delete a movement (NOT archive). Distinct from
+ * archiveTransaction, which is a reversible soft delete. The backend 409s on
+ * shadow rows, transfer legs, goal flows, and bill/debt-linked rows — surface
+ * `error.response.data.detail` in an Alert.
+ */
+export async function deleteTransaction(id: string): Promise<void> {
+  await api.delete(`/transactions/${id}`);
+}

@@ -25,9 +25,16 @@ from ..schemas.transaction import (
     TransactionBulkCategorize,
     TransactionBulkResponse,
     TransactionCreate,
+    TransactionDeleteResponse,
     TransactionListResponse,
     TransactionResponse,
     TransactionUpdate,
+)
+from ..services.dedup import clear_duplicate_nudges_for_txn, flag_and_notify
+from ..services.transactions import (
+    TXN_DELETE_REASON_ES,
+    TransactionDeleteError,
+    hard_delete_transaction,
 )
 
 router = APIRouter(prefix="/api/v1/transactions", tags=["transactions"])
@@ -97,6 +104,9 @@ async def shortcut_transaction(
     db.add(txn)
     await db.commit()
     await db.refresh(txn)
+    # Duplicate detection: flag + raise a nudge if this looks like a dupe
+    # (best-effort, never blocks the capture). Telegram + in-app Alertas.
+    await flag_and_notify(db, user=user, txn=txn)
     return txn
 
 
@@ -145,6 +155,7 @@ async def create_transaction(
     db.add(txn)
     await db.commit()
     await db.refresh(txn)
+    await flag_and_notify(db, user=user, txn=txn)
     return txn
 
 
@@ -685,3 +696,43 @@ async def update_transaction(
     await db.commit()
     await db.refresh(txn)
     return txn
+
+
+@router.delete("/{transaction_id}", response_model=TransactionDeleteResponse)
+async def delete_transaction_permanently(
+    transaction_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """Permanently delete a movement (app 'Eliminar definitivamente').
+
+    Distinct from archive (POST /bulk/archive), which is a reversible soft
+    delete. Guards mirror the PATCH immutability rules (shadow / transfer leg /
+    goal flow) plus the bill/debt-link guard → 409. Any stale 'posible
+    duplicado' nudge for this row is resolved in the same commit.
+    """
+    result = await db.execute(
+        select(Transaction).where(
+            Transaction.id == transaction_id,
+            Transaction.user_id == user.id,
+        )
+    )
+    txn = result.scalar_one_or_none()
+    if not txn:
+        raise HTTPException(status_code=404, detail="Transacción no encontrada.")
+
+    try:
+        await hard_delete_transaction(db, user=user, txn=txn)
+    except TransactionDeleteError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=TXN_DELETE_REASON_ES.get(
+                exc.reason_code, "No se puede eliminar este movimiento."
+            ),
+        ) from exc
+
+    await clear_duplicate_nudges_for_txn(
+        db, user_id=user.id, txn_id=transaction_id
+    )
+    await db.commit()
+    return TransactionDeleteResponse(deleted=True)

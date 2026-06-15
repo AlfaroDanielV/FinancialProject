@@ -1582,6 +1582,61 @@ Reconciled (Single Source)`.
   `test_phase_6f_chat_create_bill`, `test_gmail_native` (+ 2 new category_id
   confirm tests) green.
 
+## Duplicate Detection + Transaction Hard Delete (2026-06-15)
+
+Operator ask: warn about likely-duplicate gastos (notify via Telegram + in-app,
+let the user keep/delete) + a TRUE permanent delete from the app (not just
+archive). **Code-complete on branch `feature/dedup-hard-delete`; operator
+on-device sign-off pending.** Migration `0033` (CHECK widen only). No new dep.
+`committed_outflows`/cashflow math untouched (byte-lock green). Canonical:
+`docs/duplicate-detection-decisions.md`; vault `Decision - Duplicate Detection &
+Transaction Hard Delete`.
+
+- **Detector** `api/services/dedup/duplicate_detector.py` (deterministic — LLM
+  never decides a dupe, only phrases the push). `find_likely_duplicate`: same
+  currency + magnitude (±0.01), `transaction_date` within ±3 days, both
+  confirmed non-archived expenses, no transfer/goal flow; merchant similarity
+  **boosts/breaks ties, not required** (catches manual-vs-Gmail dupes whose
+  merchant text differs). Only the **newer** row is flagged via
+  `transactions.is_duplicate` (column unused since migration `0001` — **no
+  migration for the flag**). `flag_and_notify` (at-capture, best-effort
+  swallow-on-fail like `advice_trace`) flags + raises the nudge (idempotent,
+  dedup_key `duplicate:{txn_id}`) and returns the matched row + nudge_id.
+- **At-capture hooks**: chat post-commit (`bot/pipeline.py` `_handle_confirm`
+  log_expense), `POST /transactions`, `POST /transactions/shortcut`. Gmail keeps
+  its reconciler dedup (not re-hooked). A safety-net evaluator
+  (`evaluators/duplicate_transaction.py`) turns any flagged-but-unnudged row into
+  a nudge.
+- **Notification = Phase 5d nudge rails.** New `nudge_type="duplicate_transaction"`
+  (migration `0033` widens the CHECK on `user_nudges` + `user_nudge_silences`),
+  buttons `[Eliminar(act), Conservar(dismiss)]`, phrasing prompt, feed render.
+  Delivers to **Telegram + in-app Alertas**. WhatsApp not wired (P5c) → inherited
+  when it lands.
+- **"Ambas" surface** (operator choice): an inline chat warning at capture
+  (`open_screen screen="duplicate_warning"` — mirrors `assign_envelope`, preferred
+  over it when a dupe is found) **and** the proactive nudge. Native `Chat.tsx`
+  renders Eliminar/Conservar wired to the nudge act/dismiss endpoints, so chat +
+  Alertas + Telegram resolve identically.
+- **Keep ≠ silence (hard rule):** the dupe nudge resolves via `mark_acted_on` for
+  BOTH buttons (verb only picks delete-vs-keep), bypassing the generic
+  `mark_dismissed` auto-silence — saying "no es duplicado" twice must NOT mute
+  duplicate detection. `resolve_duplicate(keep)` is the one place; wired in
+  `bot/pipeline.py::handle_nudge_callback` + the REST `/nudges/{id}/act|dismiss`
+  duplicate branch.
+- **Permanent delete**: `DELETE /api/v1/transactions/{id}` (distinct from the
+  archive bulk endpoint) → `hard_delete_transaction` (generalized from `/undo`'s
+  `delete_telegram_transaction`). Guards mirror PATCH + the `/undo` bill guard →
+  409: shadow / transfer leg / goal flow / linked-to-bill / linked-to-debt
+  (FK is `SET NULL`, so deleting a linked row would leave a bill/debt paid with no
+  movement). Archived rows ARE deletable. Spanish copy `TXN_DELETE_REASON_ES`.
+  Native "Eliminar definitivamente" on `TransactionDetailScreen` + simple
+  destructive Alert (operator choice — one row, no cascade).
+- **Verification:** `tests/test_duplicate_detection.py` (15) +
+  `tests/test_transaction_hard_delete.py` (8) + nudge/transactions/chat-post-commit
+  regression (94) + cashflow byte-lock (16) green; mobile `npx tsc --noEmit`
+  clean. `alembic → 0033 (head)`. **Deferred:** WhatsApp delivery (P5c);
+  auto-merge; backfilling `is_duplicate` on historical rows.
+
 ## CR Salary Calculator + Ingresos CRUD (post-7a, 2026-06-09)
 
 Deterministic Costa Rican net-pay calculator + full Ingresos CRUD. Backend +

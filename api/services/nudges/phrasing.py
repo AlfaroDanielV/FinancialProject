@@ -147,6 +147,8 @@ def build_user_prompt(nudge_type: str, payload: dict[str, Any]) -> str:
         return _prompt_upcoming_bill(payload)
     if nudge_type == "over_commitment":
         return _prompt_over_commitment(payload)
+    if nudge_type == "duplicate_transaction":
+        return _prompt_duplicate_transaction(payload)
     return (
         "Escribí un recordatorio breve al usuario. "
         f"Contexto raw: {payload!r}"
@@ -227,4 +229,27 @@ def _prompt_over_commitment(payload: dict[str, Any]) -> str:
         "compromisos fijos están consumiendo gran parte del ingreso y le queda "
         "poco margen, (2) preguntale si quiere revisar dónde aflojar. No des "
         "consejo numérico ni inventés montos; usá solo las cifras del contexto."
+    )
+
+
+def _prompt_duplicate_transaction(payload: dict[str, Any]) -> str:
+    currency = payload.get("currency") or "CRC"
+    amount = payload.get("amount")
+    try:
+        monto = f"{currency} {float(amount):,.0f}"
+    except (TypeError, ValueError):
+        monto = "monto desconocido"
+    merchant = payload.get("merchant") or "sin comercio"
+    txn_date = payload.get("transaction_date", "")
+    matched_date = payload.get("matched_date", "")
+    return (
+        "Contexto: el usuario registró un gasto que SE PARECE a uno que ya "
+        "tenía guardado (mismo monto, fechas muy cercanas). Puede ser un "
+        "duplicado.\n"
+        f"- Gasto nuevo: {monto}, comercio \"{merchant}\", fecha {txn_date}\n"
+        f"- Gasto parecido ya registrado: fecha {matched_date}\n"
+        "\n"
+        "Escribí un aviso breve: (1) decile que este gasto parece repetido, "
+        "(2) preguntale si lo elimina o lo deja. No afirmes que ES un "
+        "duplicado seguro; usá solo las cifras del contexto, sin inventar."
     )

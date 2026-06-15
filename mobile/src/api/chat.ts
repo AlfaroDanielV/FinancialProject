@@ -51,9 +51,30 @@ export interface AssignEnvelopePrefill {
   merchant: string | null;
 }
 
+/**
+ * Duplicate detection — emitted after an EXPENSE commits that looks like a
+ * duplicate (`screen: "duplicate_warning"`). The chat renders an in-bubble
+ * "posible duplicado" card with Eliminar (→ act the nudge = hard delete) and
+ * Conservar (→ dismiss the nudge = keep). `nudge_id` may be null if the nudge
+ * couldn't be raised (rare); the card then only offers Eliminar via the txn.
+ */
+export interface DuplicateWarningPrefill {
+  transaction_id: string;
+  nudge_id: string | null;
+  amount: string;
+  currency: string;
+  merchant: string | null;
+  matched_merchant: string | null;
+  matched_date: string;
+}
+
 export interface ChatOpenScreen {
   screen: string;
-  prefill: DebtPrefill | CardPrefill | AssignEnvelopePrefill;
+  prefill:
+    | DebtPrefill
+    | CardPrefill
+    | AssignEnvelopePrefill
+    | DuplicateWarningPrefill;
 }
 
 export interface ChatMessageResponse {

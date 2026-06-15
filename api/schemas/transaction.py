@@ -101,3 +101,9 @@ class TransactionBulkCategorize(BaseModel):
 
 class TransactionBulkResponse(BaseModel):
     updated: int
+
+
+class TransactionDeleteResponse(BaseModel):
+    """Permanent delete result (app 'Eliminar definitivamente')."""
+
+    deleted: bool = True

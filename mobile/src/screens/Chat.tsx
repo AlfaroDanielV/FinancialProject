@@ -30,7 +30,10 @@ import {
   type ChatButton,
   type ChatUrlButton,
   type DebtPrefill,
+  type DuplicateWarningPrefill,
 } from "../api/chat";
+import { actOnNudge, dismissNudge } from "../api/nudges";
+import { deleteTransaction } from "../api/transactions";
 import { assignTransactionEnvelope } from "../api/envelopes";
 import { EnvelopePickerModal } from "../components/EnvelopePickerModal";
 import type { ChatStackParamList } from "../navigation/ChatNavigator";
@@ -50,6 +53,9 @@ type Message = {
   // Envelope budgeting: set when the bot reply carried an `assign_envelope`
   // hint — renders an "Asignar a un sobre" chip for this transaction.
   assignTxId?: string;
+  // Duplicate detection: set when the bot reply carried a `duplicate_warning`
+  // hint — renders Eliminar / Conservar chips for the likely-duplicate row.
+  duplicate?: { txId: string; nudgeId: string | null; merchant: string | null };
 };
 
 let _nextId = 1;
@@ -77,6 +83,15 @@ export function ChatScreen() {
       screen === "assign_envelope"
         ? (data.open_screen!.prefill as AssignEnvelopePrefill).transaction_id
         : undefined;
+    let duplicate: Message["duplicate"];
+    if (screen === "duplicate_warning") {
+      const p = data.open_screen!.prefill as DuplicateWarningPrefill;
+      duplicate = {
+        txId: p.transaction_id,
+        nudgeId: p.nudge_id,
+        merchant: p.matched_merchant ?? p.merchant,
+      };
+    }
     setMessages((prev) => [
       ...prev,
       {
@@ -86,6 +101,7 @@ export function ChatScreen() {
         buttons: data.buttons.length > 0 ? data.buttons : undefined,
         urlButtons: data.url_buttons.length > 0 ? data.url_buttons : undefined,
         assignTxId,
+        duplicate,
       },
     ]);
     // Phase 6f debt slice: the chat hands off to a native form instead of
@@ -124,6 +140,64 @@ export function ChatScreen() {
       setMessages((prev) => [
         ...prev,
         { id: nextId(), role: "bot", text: "No pude asignar el sobre. Intentá de nuevo." },
+      ]);
+    },
+  });
+
+  // Duplicate warning: "Eliminar" deletes the dupe (via the nudge act =
+  // hard delete, or directly if no nudge was raised); "Conservar" keeps it
+  // (dismiss the nudge = clear the flag). Reuses the nudge act/dismiss path
+  // so all surfaces resolve the same way.
+  const duplicateMutation = useMutation({
+    mutationFn: async ({
+      action,
+      txId,
+      nudgeId,
+    }: {
+      action: "delete" | "keep";
+      txId: string;
+      nudgeId: string | null;
+      messageId: string;
+    }) => {
+      if (action === "delete") {
+        if (nudgeId) await actOnNudge(nudgeId);
+        else await deleteTransaction(txId);
+      } else if (nudgeId) {
+        await dismissNudge(nudgeId);
+      }
+    },
+    onSuccess: (_data, { action, messageId }) => {
+      void qc.invalidateQueries({ queryKey: ["transactions"] });
+      void qc.invalidateQueries({ queryKey: ["dashboard"] });
+      void qc.invalidateQueries({ queryKey: ["nudgeFeed"] });
+      setUsedChips((prev) => new Set(prev).add(messageId));
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextId(),
+          role: "bot",
+          text:
+            action === "delete"
+              ? "Listo, eliminé el movimiento duplicado."
+              : "Perfecto, lo dejé tal cual. No era un duplicado.",
+        },
+      ]);
+    },
+    onError: (e: unknown, { action }) => {
+      const detail = (e as { response?: { data?: { detail?: unknown } } })
+        ?.response?.data?.detail;
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextId(),
+          role: "bot",
+          text:
+            typeof detail === "string"
+              ? detail
+              : action === "delete"
+                ? "No pude eliminar el movimiento. Intentá de nuevo."
+                : "No pude actualizar el movimiento. Intentá de nuevo.",
+        },
       ]);
     },
   });
@@ -268,6 +342,17 @@ export function ChatScreen() {
                   ? () => setAssigning({ messageId: item.id, txId: item.assignTxId! })
                   : undefined
               }
+              onTapDuplicate={
+                item.duplicate
+                  ? (action) =>
+                      duplicateMutation.mutate({
+                        action,
+                        txId: item.duplicate!.txId,
+                        nudgeId: item.duplicate!.nudgeId,
+                        messageId: item.id,
+                      })
+                  : undefined
+              }
             />
           )}
           contentContainerStyle={styles.listContent}
@@ -359,6 +444,7 @@ interface MessageBubbleProps {
   chipsUsed: boolean;
   onTapButton: (label: string) => void;
   onTapAssign?: () => void;
+  onTapDuplicate?: (action: "delete" | "keep") => void;
 }
 
 function MessageBubble({
@@ -366,6 +452,7 @@ function MessageBubble({
   chipsUsed,
   onTapButton,
   onTapAssign,
+  onTapDuplicate,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
 
@@ -442,6 +529,44 @@ function MessageBubble({
           >
             <Text style={[styles.chipLabel, chipsUsed && styles.chipLabelUsed]}>
               Asignar a un sobre
+            </Text>
+          </Pressable>
+        </View>
+      )}
+
+      {message.duplicate && onTapDuplicate && (
+        <View style={styles.actionRow}>
+          <Pressable
+            onPress={() => !chipsUsed && onTapDuplicate("delete")}
+            disabled={chipsUsed}
+            style={({ pressed }) => [
+              styles.chip,
+              styles.chipDanger,
+              chipsUsed && styles.chipUsed,
+              !chipsUsed && pressed && { opacity: 0.7 },
+            ]}
+          >
+            <Text
+              style={[
+                styles.chipLabel,
+                styles.chipLabelDanger,
+                chipsUsed && styles.chipLabelUsed,
+              ]}
+            >
+              Eliminar
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => !chipsUsed && onTapDuplicate("keep")}
+            disabled={chipsUsed}
+            style={({ pressed }) => [
+              styles.chip,
+              chipsUsed && styles.chipUsed,
+              !chipsUsed && pressed && { opacity: 0.7 },
+            ]}
+          >
+            <Text style={[styles.chipLabel, chipsUsed && styles.chipLabelUsed]}>
+              Conservar
             </Text>
           </Pressable>
         </View>
@@ -581,6 +706,12 @@ const styles = StyleSheet.create({
   },
   chipLabelUsed: {
     color: Colors.textMuted,
+  },
+  chipDanger: {
+    borderColor: Colors.expense,
+  },
+  chipLabelDanger: {
+    color: Colors.expense,
   },
   urlChip: {
     flexDirection: "row",
