@@ -1065,9 +1065,12 @@ code-complete, **operator on-device sign-off pending**. Decision note:
   `transaction_id`. The native chat renders an in-chat **"Asignar a un sobre"**
   chip → a picker sheet → `PATCH /transactions/{id}{envelope_id}`. Income never
   gets the hint (envelopes are spending caps). Telegram ignores `open_screen`
-  (envelopes are native-only, same pattern as the debt form). **Account is
-  immutable post-create**, so an explicit at-capture account picker is NOT part
-  of this slice — it's a separate pre-commit concern (see parity note below).
+  (envelopes are native-only, same pattern as the debt form). An explicit
+  **at-capture** account picker is NOT part of this slice — it's a separate
+  pre-commit concern (see parity note below). (Account was immutable
+  post-create at the time; **post-create reassignment via the edit-modal "Cuenta"
+  dropdown landed 2026-06-15** — see "Reassign Movement To Account" below — but
+  the at-capture picker remains deferred.)
 - **Mobile:** `mobile/src/api/envelopes.ts` (CRUD + `/summary` +
   `assignTransactionEnvelope` + `archiveEnvelope`/`deleteEnvelope`);
   `api/transactions.ts::fetchMonthExpenses` (current-month confirmed expenses
@@ -1125,8 +1128,9 @@ code-complete, **operator on-device sign-off pending**. Decision note:
   0034 (head)`. **Still deferred**: general household/tenant model + RLS (P9),
   sharing bills/debts into a shared envelope, cross-currency per-member display.
   Vault `Decision - Shared Household Envelopes (Deferred P8)` (status flipped to
-  implemented). An at-capture *account* picker remains deferred (account is
-  immutable post-create; a pre-commit proposal change).
+  implemented). An at-capture *account* picker remains deferred (a pre-commit
+  proposal change) — note **post-create** account reassignment now exists via the
+  edit-modal "Cuenta" dropdown (2026-06-15), distinct from this at-capture concern.
 
 ---
 
@@ -1669,6 +1673,55 @@ Transaction Hard Delete`.
   regression (94) + cashflow byte-lock (16) green; mobile `npx tsc --noEmit`
   clean. `alembic → 0033 (head)`. **Deferred:** WhatsApp delivery (P5c);
   auto-merge; backfilling `is_duplicate` on historical rows.
+
+## Reassign Movement To Account (Edit Modal, 2026-06-15)
+
+Operator ask: adjuntar un movimiento a otra cuenta desde la pantalla de
+Movimientos, con la selección por **dropdown**, y que el saldo de la cuenta
+refleje el monto. **Merged to `dev` (`87dcb8a`); operator on-device sign-off
+pending.** No migration. `committed_outflows`/cashflow math untouched (byte-lock
+green). Canonical: `docs/transaction-account-reassignment-decisions.md`; vault
+`Decision - Reassign Movement To Account (Edit Modal)`.
+
+- **`account_id` is now editable** — was immutable post-create (the
+  `TransactionUpdate` schema comment said so). The "se descuenta el monto" is
+  **automatic**: balances aren't stored — `compute_account_balances` derives them
+  live as `initial_balance + Σ confirmed non-archived txns WHERE account_id = X`,
+  so changing `transactions.account_id` moves the amount between accounts with
+  zero balance-update code (no drift, same principle as envelope spend).
+- **Backend** (`api/`): `account_id` added to `TransactionUpdate`;
+  `PATCH /transactions/{id}` validates the account is the caller's + active (400
+  "Cuenta inválida.", mirroring the create-time check). Existing immutability
+  guards UNCHANGED — shadow / transfer leg / goal flow / archived → 409.
+- **Cross-currency** (operator: "cualquier cuenta … se realiza la conversión").
+  Reassigning to a different-currency account converts the amount via
+  `api/services/fx.py::convert` (fixed ₡500/US$) and **rewrites
+  `transactions.currency` to the destination account's** — mirroring the
+  transfers convention (each leg stored in its account's currency) so per-account
+  balance sums (currency-naive `SUM(amount)`) stay correct. The client edits the
+  amount in the row's CURRENT currency, so the effective amount is interpreted in
+  `txn.currency` before converting. **No funds guard** (unlike transfers —
+  reassigning doesn't move money the user lacks, only relabels which account a
+  movement hit).
+- **Mobile** (`mobile/`): new `components/AccountPickerModal.tsx` (bottom-sheet,
+  mirrors `CategoryPickerModal`/`EnvelopePickerModal`; lists active accounts of
+  ALL currencies with name + ₡/$ + type, plus a "Sin cuenta" clear row); new
+  **"Cuenta"** dropdown field in `TransactionEditModal` beside Categoría/Sobre,
+  with a one-line conversion hint when the chosen account's currency differs.
+  `TransactionDetailScreen` unchanged (already renders the Cuenta row + invalidates
+  the accounts/dashboard caches on save). `TransactionUpdate` (mobile) gained
+  `account_id`.
+- **Operator decisions:** the dropdown lives in the **edit modal** (not inline on
+  list rows); attach to **any account regardless of currency** with conversion
+  (not same-currency filtering).
+- **Verification:** `tests/test_phase_6e_b4_accounts.py` (8 — 3 new: reassign
+  moves balance between accounts, ₡→$ converts to −$2.00, foreign/archived account
+  → 400) + `tests/test_envelopes.py` (7, post-rebase over the envelope-sharing
+  commit) green; mobile `tsc --noEmit` clean; `scripts/test_phase_7b.sh` green
+  (cashflow byte-lock + transfers intact). No migration.
+- **Deferred:** inline-on-list assignment; manual fx rate (uses the fixed
+  reference); preserving the original amount/currency of a converted row; the
+  **at-capture** account picker (pre-commit) stays deferred (separate concern).
 
 ## CR Salary Calculator + Ingresos CRUD (post-7a, 2026-06-09)
 
