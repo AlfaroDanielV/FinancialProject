@@ -249,6 +249,30 @@ async def on_help(message: Message) -> None:
     await message.answer(reply.text)
 
 
+@router.message(Command("menu"))
+async def on_menu(message: Message) -> None:
+    from bot.menu import build_menu_text
+
+    await message.answer(build_menu_text())
+
+
+@router.message(Command("resumen", "resumen_mes", "resumen_semana", "resumen_hoy"))
+async def on_resumen(message: Message) -> None:
+    if message.from_user is None:
+        return
+    from bot.menu import handle_resumen
+
+    async with AsyncSessionLocal() as db:
+        user = await user_by_telegram_id(
+            telegram_user_id=message.from_user.id, db=db
+        )
+        if user is None:
+            await message.answer(messages_es.PAIR_PROMPT)
+            return
+        reply = await handle_resumen(message.text or "/resumen", user=user, db=db)
+    await message.answer(reply.text)
+
+
 @router.message(Command("login", "iniciar"))
 async def on_login(message: Message) -> None:
     """Phase 6f B3 — mint a 6-character device-login code.

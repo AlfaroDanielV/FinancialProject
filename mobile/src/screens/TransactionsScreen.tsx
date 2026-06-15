@@ -7,7 +7,7 @@
  *             on date sort — switching sort would silently break pagination).
  * Deferred: CSV export, bulk-select (browser-native patterns, not mobile-native).
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -19,7 +19,8 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useNavigation } from "@react-navigation/native";
+import { useNavigation, useRoute } from "@react-navigation/native";
+import type { RouteProp } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { Feather } from "@expo/vector-icons";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -36,6 +37,7 @@ import { Colors, FontSize, Radius, Spacing } from "../theme";
 import type { TransactionsStackParamList } from "../navigation/TransactionsNavigator";
 
 type Nav = NativeStackNavigationProp<TransactionsStackParamList, "TransactionsList">;
+type Route = RouteProp<TransactionsStackParamList, "TransactionsList">;
 
 const KIND_LABELS: Record<TransactionKind, string> = {
   all: "Todo",
@@ -113,10 +115,22 @@ function TransactionRow({
 
 export function TransactionsScreen() {
   const nav = useNavigation<Nav>();
+  const route = useRoute<Route>();
   const qc = useQueryClient();
 
   const [filters, setFilters] = useState<TransactionFilters>(DEFAULT_FILTERS);
   const [accountPickerOpen, setAccountPickerOpen] = useState(false);
+
+  // Handoff from chat ("movimientos sin cuenta"): apply the Sin cuenta filter
+  // once, then clear the param so a re-focus doesn't re-apply it.
+  useEffect(() => {
+    if (route.params?.filterNoAccount) {
+      setFilters((f) => ({ ...f, noAccount: true, accountId: null }));
+      setAccountPickerOpen(false);
+      nav.setParams({ filterNoAccount: undefined });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route.params?.filterNoAccount]);
 
   const { data: accounts } = useQuery({
     queryKey: ["accounts", { archived: false }],
@@ -146,12 +160,18 @@ export function TransactionsScreen() {
     setFilters((f) => ({ ...f, kind }));
 
   const setAccount = (id: string | null) => {
-    setFilters((f) => ({ ...f, accountId: id }));
+    setFilters((f) => ({ ...f, accountId: id, noAccount: false }));
+    setAccountPickerOpen(false);
+  };
+
+  const setNoAccount = () => {
+    setFilters((f) => ({ ...f, accountId: null, noAccount: true }));
     setAccountPickerOpen(false);
   };
 
   const activeAccount = accounts?.find((a) => a.id === filters.accountId);
-  const hasActiveFilter = filters.kind !== "all" || filters.accountId != null;
+  const hasActiveFilter =
+    filters.kind !== "all" || filters.accountId != null || filters.noAccount;
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -161,7 +181,11 @@ export function TransactionsScreen() {
           <Text style={styles.headerTitle}>Movimientos</Text>
           {!isLoading && (
             <Text style={styles.headerSub}>
-              {hasActiveFilter ? "Filtros activos" : "Todos los movimientos"}
+              {filters.noAccount
+                ? "Sin cuenta"
+                : hasActiveFilter
+                  ? "Filtros activos"
+                  : "Todos los movimientos"}
             </Text>
           )}
         </View>
@@ -224,6 +248,14 @@ export function TransactionsScreen() {
             </Text>
           </View>
         )}
+        {filters.noAccount && (
+          <View style={styles.accountChip}>
+            <Feather name="alert-circle" size={11} color={Colors.accent} />
+            <Text style={styles.accountChipLabel} numberOfLines={1}>
+              Sin cuenta
+            </Text>
+          </View>
+        )}
       </View>
 
       {/* ── account picker ───────────────────────────────────────────────── */}
@@ -238,17 +270,38 @@ export function TransactionsScreen() {
               onPress={() => setAccount(null)}
               style={({ pressed }) => [
                 styles.accountOption,
-                filters.accountId == null && styles.accountOptionActive,
+                filters.accountId == null &&
+                  !filters.noAccount &&
+                  styles.accountOptionActive,
                 pressed && { opacity: 0.7 },
               ]}
             >
               <Text
                 style={[
                   styles.accountOptionLabel,
-                  filters.accountId == null && styles.accountOptionLabelActive,
+                  filters.accountId == null &&
+                    !filters.noAccount &&
+                    styles.accountOptionLabelActive,
                 ]}
               >
                 Todas
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setNoAccount()}
+              style={({ pressed }) => [
+                styles.accountOption,
+                filters.noAccount && styles.accountOptionActive,
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.accountOptionLabel,
+                  filters.noAccount && styles.accountOptionLabelActive,
+                ]}
+              >
+                Sin cuenta
               </Text>
             </Pressable>
             {(accounts ?? []).filter((a) => !a.archived).map((a) => (
@@ -315,9 +368,11 @@ export function TransactionsScreen() {
               <Feather name="inbox" size={32} color={Colors.border} />
               <Text style={styles.emptyTitle}>Sin movimientos</Text>
               <Text style={styles.emptyBody}>
-                {hasActiveFilter
-                  ? "No hay movimientos que coincidan con los filtros."
-                  : "Registrá tu primer movimiento desde el chat."}
+                {filters.noAccount
+                  ? "No tenés movimientos sin cuenta. Todo está asignado."
+                  : hasActiveFilter
+                    ? "No hay movimientos que coincidan con los filtros."
+                    : "Registrá tu primer movimiento desde el chat."}
               </Text>
             </View>
           )

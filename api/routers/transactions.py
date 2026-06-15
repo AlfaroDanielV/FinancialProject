@@ -175,6 +175,7 @@ def _build_filters(
     max_amount: Optional[Decimal],
     q: Optional[str],
     include_archived: bool,
+    no_account: bool = False,
 ) -> list:
     filters: list = [Transaction.user_id == user_id]
     accounts_filter = []
@@ -184,6 +185,12 @@ def _build_filters(
         accounts_filter.extend(account_ids)
     if accounts_filter:
         filters.append(Transaction.account_id.in_(set(accounts_filter)))
+    if no_account:
+        # "Movimientos sin cuenta" — orphan rows (account_id IS NULL). These
+        # float: compute_account_balances excludes them, so they never show in
+        # any account's saldo. The native 'Sin cuenta' screen uses this to
+        # surface them for assignment. Composable with the other filters.
+        filters.append(Transaction.account_id.is_(None))
 
     categories_filter = []
     if category_id is not None:
@@ -310,6 +317,10 @@ async def list_transactions(
     sort_by: SortBy = Query(default="date"),
     sort_dir: SortDir = Query(default="desc"),
     include_archived: bool = Query(default=False),
+    no_account: bool = Query(
+        default=False,
+        description="Solo movimientos sin cuenta asignada (account_id IS NULL).",
+    ),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(current_user),
 ):
@@ -327,6 +338,7 @@ async def list_transactions(
         max_amount=max_amount,
         q=q,
         include_archived=include_archived,
+        no_account=no_account,
     )
 
     count_result = await db.execute(select(func.count()).where(*filters))

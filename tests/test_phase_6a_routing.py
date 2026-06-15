@@ -15,6 +15,7 @@ from api.services.llm_extractor import FixtureLLMClient, RecordedLLMResponse
 from api.services.telegram_dispatcher import ShowHelp
 from bot.clarification import ClarificationState
 from bot import pipeline
+from app.queries.dispatcher import DispatchOutcome
 
 
 @dataclass
@@ -111,10 +112,10 @@ async def test_query_dispatcher_goes_to_stub_not_telegram_dispatcher(monkeypatch
         raise AssertionError("telegram dispatcher should not receive query traffic")
 
     async def _query_handle(user_id, message_text, telegram_chat_id):
-        return f"query stub: {message_text}"
+        return DispatchOutcome(text=f"query stub: {message_text}")
 
     monkeypatch.setattr(pipeline, "dispatch", _dispatch)
-    monkeypatch.setattr(pipeline, "query_dispatcher_handle", _query_handle)
+    monkeypatch.setattr(pipeline, "run_dispatch", _query_handle)
 
     client = FixtureLLMClient(
         default=RecordedLLMResponse(
@@ -204,11 +205,11 @@ async def test_low_confidence_query_bypasses_clarification(monkeypatch):
                 "telegram_chat_id": telegram_chat_id,
             }
         )
-        return "query stub"
+        return DispatchOutcome(text="query stub")
 
     monkeypatch.setattr(pipeline, "dispatch", _dispatch)
     monkeypatch.setattr(pipeline, "save_clarification", _save_clarification)
-    monkeypatch.setattr(pipeline, "query_dispatcher_handle", _query_handle)
+    monkeypatch.setattr(pipeline, "run_dispatch", _query_handle)
 
     client = FixtureLLMClient(
         default=RecordedLLMResponse(
@@ -275,12 +276,12 @@ async def test_pending_clarification_query_reply_abandons_state(
                 "telegram_chat_id": telegram_chat_id,
             }
         )
-        return "query stub"
+        return DispatchOutcome(text="query stub")
 
     monkeypatch.setattr(pipeline, "load_clarification", _load_clarification)
     monkeypatch.setattr(pipeline, "clear_clarification", _clear_clarification)
     monkeypatch.setattr(pipeline, "dispatch", _dispatch)
-    monkeypatch.setattr(pipeline, "query_dispatcher_handle", _query_handle)
+    monkeypatch.setattr(pipeline, "run_dispatch", _query_handle)
 
     user = _FakeUser()
     with caplog.at_level("INFO", logger="bot.pipeline"):
@@ -331,7 +332,7 @@ async def test_pending_clarification_write_reply_uses_existing_dispatcher(
 
     monkeypatch.setattr(pipeline, "load_clarification", _load_clarification)
     monkeypatch.setattr(pipeline, "dispatch", _dispatch)
-    monkeypatch.setattr(pipeline, "query_dispatcher_handle", _query_handle)
+    monkeypatch.setattr(pipeline, "run_dispatch", _query_handle)
     monkeypatch.setattr(pipeline, "enqueue_insight_extraction", _enqueue)
 
     reply = await pipeline.process_message(

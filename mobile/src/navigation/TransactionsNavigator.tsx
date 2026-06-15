@@ -6,7 +6,9 @@ import { Colors, FontSize } from "../theme";
 import type { TransactionResponse } from "../api/transactions";
 
 export type TransactionsStackParamList = {
-  TransactionsList: undefined;
+  // `filterNoAccount` lets the chat hand off "movimientos sin cuenta" with the
+  // Sin cuenta filter pre-applied (consumed once, then cleared).
+  TransactionsList: { filterNoAccount?: boolean } | undefined;
   TransactionDetail: { transaction: TransactionResponse };
 };
 

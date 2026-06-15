@@ -131,7 +131,7 @@ async def test_route_extraction_wraps_dispatcher_crash(monkeypatch):
     async def _crash(*a, **k):
         raise RuntimeError("totally unexpected")
 
-    monkeypatch.setattr(pipeline, "query_dispatcher_handle", _crash)
+    monkeypatch.setattr(pipeline, "run_dispatch", _crash)
 
     class _U:
         id = __import__("uuid").uuid4()
@@ -169,10 +169,10 @@ async def test_bare_yes_without_pending_falls_through_to_query(
         return ExtractionResult(intent=Intent.QUERY, dispatcher="query", confidence=0.9)
 
     async def _fake_query(*a, **k):
-        return "Tu capacidad de ahorro es ₡X."
+        return dispatcher.DispatchOutcome(text="Tu capacidad de ahorro es ₡X.")
 
     monkeypatch.setattr(pipeline, "extract_finance_intent", _fake_extract)
-    monkeypatch.setattr(pipeline, "query_dispatcher_handle", _fake_query)
+    monkeypatch.setattr(pipeline, "run_dispatch", _fake_query)
 
     reply = await pipeline.process_message(
         user=user, text="Sí", db=session, redis=get_redis(),
@@ -180,3 +180,76 @@ async def test_bare_yes_without_pending_falls_through_to_query(
     )
     assert reply.text == "Tu capacidad de ahorro es ₡X."
     assert reply.text != messages_es.PENDING_NONE_TO_CONFIRM
+
+
+@pytest.mark.asyncio
+async def test_extractor_unexpected_exception_returns_handled_copy(
+    db_with_user, monkeypatch
+):
+    """The extractor's except only caught (LLMClientError, ValidationError); a
+    raw Anthropic SDK overload/429/529 on a follow-up ("Este mes") escaped to the
+    native chat endpoint as a 500. Now any extractor exception returns the
+    friendly EXTRACTOR_FAILED copy, never a raise."""
+    from bot import pipeline, messages_es
+    from api.redis_client import get_redis
+    from api.models.user import User
+
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    await get_redis().delete(f"telegram:pending:{user_id}")
+
+    async def _boom(*a, **k):
+        raise RuntimeError("anthropic overloaded")
+
+    monkeypatch.setattr(pipeline, "extract_finance_intent", _boom)
+
+    reply = await pipeline.process_message(
+        user=user,
+        text="¿cuál es mi patrón de gastos?",
+        db=session,
+        redis=get_redis(),
+        llm_client=object(),
+        llm_model="x",
+    )
+    assert reply.text == messages_es.EXTRACTOR_FAILED
+
+
+@pytest.mark.asyncio
+async def test_chat_endpoint_guard_returns_handled_copy_not_500(
+    db_with_user, monkeypatch
+):
+    """The native chat endpoint is the only surface that turns an uncaught
+    process_message throw into a 500 (the app shows a generic "Hubo un error").
+    The guard returns HTTP 200 with friendly Spanish copy instead."""
+    from httpx import ASGITransport, AsyncClient
+
+    import api.routers.chat as chat_router
+    from api.database import get_db
+    from api.dependencies import current_user
+    from api.main import app
+    from bot import messages_es
+
+    session, user_id = db_with_user
+
+    class _StubUser:
+        id = user_id
+        status = "active"
+
+    async def _yield_session():
+        yield session
+
+    async def _boom(*a, **k):
+        raise RuntimeError("totally unexpected")
+
+    app.dependency_overrides[current_user] = lambda: _StubUser()
+    app.dependency_overrides[get_db] = _yield_session
+    monkeypatch.setattr(chat_router, "process_message", _boom)
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await ac.post("/api/v1/chat/message", json={"text": "hola"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["reply_text"] == messages_es.CHAT_UNEXPECTED_ERROR
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        app.dependency_overrides.pop(get_db, None)

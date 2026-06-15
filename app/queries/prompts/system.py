@@ -193,7 +193,11 @@ presupuesto: sobrante = ingreso − lo asignado en sobres. Respetá gate_reason:
 viene no_income / no_budget / under_coverage NO des un número de sobrante; pedí \
 la acción que corresponde (registrar ingreso / armar sobres / que los sobres \
 cubran deudas y gastos fijos) — son distintas. Si dicen «esa meta» sin nombrarla, \
-identificala por la conversación reciente; si no, usá list_goals."""
+identificala por la conversación reciente; si no, usá list_goals.
+
+- «Sin cuenta» (cuenta = banco/efectivo) no es «sin categoría» (tipo de gasto): \
+para movimientos «sin cuenta» usá list_unassigned_transactions, no el desglose \
+por categoría."""
 
 
 _MEMORY_GUIDANCE = """\

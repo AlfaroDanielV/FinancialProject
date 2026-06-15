@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.bill_occurrence import BillOccurrence
 from ..models.debt import DebtPayment
+from ..models.envelope import Envelope
 from ..models.transaction import Transaction
 from ..models.user import User
 
@@ -39,6 +40,61 @@ class UndoGuardError(Exception):
 UNDO_REASON_NOT_FOUND = "not_found"
 UNDO_REASON_WRONG_SOURCE = "wrong_source"
 UNDO_REASON_LINKED_TO_BILL = "linked_to_bill"
+
+
+# ── period expense breakdown (chat /resumen table) ────────────────────────────
+
+
+@dataclass
+class PeriodExpenseRow:
+    amount: Decimal
+    currency: str
+    category: Optional[str]
+    txn_date: date
+    envelope_name: Optional[str]
+
+
+async def period_expense_breakdown(
+    db: AsyncSession, *, user_id: uuid.UUID, start: date, end: date
+) -> list[PeriodExpenseRow]:
+    """Confirmed, non-archived expenses (amount < 0, not transfer/goal legs) in
+    [start, end] inclusive, each with its envelope name (None if unassigned),
+    newest first. Deterministic — powers the chat /resumen table."""
+    stmt = (
+        select(
+            Transaction.amount,
+            Transaction.currency,
+            Transaction.category,
+            Transaction.transaction_date,
+            Envelope.name,
+        )
+        .select_from(Transaction)
+        .outerjoin(Envelope, Transaction.envelope_id == Envelope.id)
+        .where(
+            Transaction.user_id == user_id,
+            Transaction.transaction_date >= start,
+            Transaction.transaction_date <= end,
+            Transaction.amount < 0,
+            Transaction.status == "confirmed",
+            Transaction.archived.is_(False),
+            Transaction.transfer_id.is_(None),
+            Transaction.goal_id.is_(None),
+        )
+        .order_by(
+            Transaction.transaction_date.desc(), Transaction.created_at.desc()
+        )
+    )
+    rows = (await db.execute(stmt)).all()
+    return [
+        PeriodExpenseRow(
+            amount=Decimal(str(amount)),
+            currency=currency,
+            category=category,
+            txn_date=txn_date,
+            envelope_name=envelope_name,
+        )
+        for amount, currency, category, txn_date, envelope_name in rows
+    ]
 
 
 # ── general hard delete (app "Eliminar definitivamente" + duplicate flow) ─────

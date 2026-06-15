@@ -23,7 +23,7 @@ from pydantic import ValidationError
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.queries.dispatcher import handle as query_dispatcher_handle
+from app.queries.dispatcher import run_dispatch
 from app.queries.history import append_turn as _append_query_history
 from api.models.user import User
 from api.models.lazy_detection_event import LazyDetectionEvent
@@ -148,6 +148,7 @@ _NON_WORD_RE = re.compile(r"[^\w\s]", re.UNICODE)
 _COMMAND_HELP = {"/help", "/ayuda"}
 _COMMAND_UNDO = {"/undo", "/deshacer"}
 _COMMAND_CANCEL = {"/cancel", "/cancelar"}
+_COMMAND_MENU = {"/menu", "/menú"}
 
 
 def _today_for(user: User) -> date:
@@ -264,6 +265,20 @@ async def process_message(
         await clear_clarification(user_id=user.id, redis=redis)
         await clear_account_creation(user_id=user.id, redis=redis)
         return BotReply(text=messages_es.CANCELLED)
+    if lowered in _COMMAND_MENU:
+        # Imported lazily so bot.menu can import the reply dataclasses from this
+        # module at top level without a circular import.
+        from .menu import build_menu_reply
+
+        return build_menu_reply()
+    if (
+        lowered == "/resumen"
+        or lowered.startswith("/resumen ")
+        or lowered.startswith("/resumen_")
+    ):
+        from .menu import handle_resumen
+
+        return await handle_resumen(text, user=user, db=db)
 
     # ── account-creation round-trip ──
     # Phase 6d B9: this conversational flow owns its replies while active,
@@ -417,6 +432,12 @@ async def process_message(
         )
     except (LLMClientError, ValidationError) as e:
         log.info("extractor_failure user_id=%s err=%s", user.id, type(e).__name__)
+        return BotReply(text=messages_es.EXTRACTOR_FAILED)
+    except Exception:
+        # Anything else (e.g. a raw Anthropic SDK overload/429/529/BadRequest the
+        # extractor didn't wrap as LLMClientError) must not bubble to the native
+        # chat endpoint as a raw 500. Logged with full traceback for diagnosis.
+        log.exception("extractor_unexpected_failure user_id=%s", user.id)
         return BotReply(text=messages_es.EXTRACTOR_FAILED)
 
     return await _route_extraction(
@@ -675,16 +696,25 @@ async def _route_extraction(
         # failures to Spanish copy, but anything it lets escape (budget-row
         # commit, an unforeseen path) must not surface as a raw 500 to the
         # native chat / Telegram. Always hand back a handled message.
+        # Call run_dispatch (not the str-only `handle`) so we can carry the
+        # outcome's optional open_screen handoff (e.g. → the native 'Sin cuenta'
+        # screen after listing unassigned movements). Telegram ignores it.
         try:
-            reply = await query_dispatcher_handle(
-                user.id,
-                text,
-                user.telegram_user_id,
+            outcome = await run_dispatch(
+                user_id=user.id,
+                message_text=text,
+                telegram_chat_id=user.telegram_user_id,
             )
         except Exception as e:  # noqa: BLE001 - last line of defense
             log.exception("query_dispatcher_unhandled user_id=%s", user.id)
-            reply = handle_query_error(e, user_id=user.id)
-        return BotReply(text=reply)
+            return BotReply(text=handle_query_error(e, user_id=user.id))
+        open_screen = None
+        if outcome.open_screen:
+            open_screen = OpenScreen(
+                screen=outcome.open_screen["screen"],
+                prefill=outcome.open_screen.get("prefill", {}),
+            )
+        return BotReply(text=outcome.text, open_screen=open_screen)
 
     decision = await dispatch(
         extraction=extraction, user=user, today=today, db=db

@@ -493,8 +493,30 @@ DAILY_BUDGET_HIT = (
 # ── extractor / dispatcher failures ──────────────────────────────────────────
 
 EXTRACTOR_FAILED = "Se me trabó el entendimiento. ¿Podés reescribir el mensaje más simple?"
+# Native chat endpoint last-resort guard (api/routers/chat.py): when
+# process_message raises something unexpected, the REST endpoint returns this at
+# HTTP 200 instead of a raw 500 that the app shows as a generic "Hubo un error".
+# Telegram tolerates a pipeline throw; the native chat endpoint is the only
+# surface that turns it into a user-visible crash.
+CHAT_UNEXPECTED_ERROR = (
+    "Se me complicó procesar eso. Probá de nuevo en un momento; "
+    "si sigue, avisale al admin."
+)
 CANCELLED = "Cancelado."
 CONTEXT_CLEARED = "Listo, contexto limpio."
+
+
+# ── /menu + /resumen (chat command menu) ──────────────────────────────────────
+
+MENU_INTRO = "Esto es lo que puedo hacer. Tocá una opción para enviarla:"
+# Shown in the "Sobre" column of /resumen when the gasto has no envelope.
+MENU_NO_ENVELOPE_EMOJI = "📭"
+RESUMEN_ASK_PERIOD = (
+    "¿De qué período querés el resumen?\n\n"
+    "/resumen_mes · /resumen_semana · /resumen_hoy"
+)
+RESUMEN_TABLE_HEADER = "Monto · Categoría · Fecha · Sobre"
+RESUMEN_EMPTY_TPL = "Aún no tengo registros para {period}."
 
 
 # ── /login (Phase 6f B3) ─────────────────────────────────────────────────────

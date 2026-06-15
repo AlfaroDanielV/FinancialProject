@@ -37,12 +37,16 @@ export interface TransactionFilters {
   kind: TransactionKind;
   accountId: string | null;
   includeArchived: boolean;
+  // "Movimientos sin cuenta" — when true, only orphan rows (account_id IS NULL).
+  // Mutually exclusive with accountId (orphans have no account).
+  noAccount: boolean;
 }
 
 export const DEFAULT_FILTERS: TransactionFilters = {
   kind: "all",
   accountId: null,
   includeArchived: false,
+  noAccount: false,
 };
 
 const PAGE_SIZE = 30;
@@ -59,7 +63,10 @@ export async function fetchTransactions(
   if (filters.kind !== "all") {
     params.kind = filters.kind;
   }
-  if (filters.accountId) {
+  if (filters.noAccount) {
+    // "Movimientos sin cuenta" — orphan rows. Mutually exclusive with accountId.
+    params.no_account = true;
+  } else if (filters.accountId) {
     params.account_id = filters.accountId;
   }
   if (filters.includeArchived) {

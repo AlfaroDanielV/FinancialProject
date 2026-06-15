@@ -68,13 +68,30 @@ export interface DuplicateWarningPrefill {
   matched_date: string;
 }
 
+/**
+ * Movimientos sin cuenta — emitted after the agent lists unassigned movements
+ * (`screen: "assign_account"`). The chat hands off to the Movimientos tab with
+ * the "Sin cuenta" filter applied so the user can assign each row to an account.
+ */
+export interface ReassignAccountPrefill {
+  filter: string;
+}
+
+/**
+ * `/menu` marker (`screen: "menu"`) — no prefill payload; tells the chat to keep
+ * the menu chips repeatable. The chips themselves arrive in `buttons`.
+ */
+export type MenuPrefill = Record<string, never>;
+
 export interface ChatOpenScreen {
   screen: string;
   prefill:
     | DebtPrefill
     | CardPrefill
     | AssignEnvelopePrefill
-    | DuplicateWarningPrefill;
+    | DuplicateWarningPrefill
+    | ReassignAccountPrefill
+    | MenuPrefill;
 }
 
 export interface ChatMessageResponse {

@@ -38,6 +38,18 @@ AGGREGATE_TRANSACTIONS_DESCRIPTION = (
     "mismo periodo. Las transacciones tienen granularidad diaria."
 )
 
+LIST_UNASSIGNED_TRANSACTIONS_DESCRIPTION = (
+    "Lista los MOVIMIENTOS SIN CUENTA: transacciones confirmadas que todavia no "
+    "tienen ninguna cuenta (banco/efectivo) asignada. Usala SOLO cuando el "
+    "usuario pregunta por movimientos/transacciones 'sin cuenta', 'sin asignar a "
+    "una cuenta', 'que no estan en ninguna cuenta' o 'a cuales les falta cuenta'. "
+    "IMPORTANTE: 'sin cuenta' (cuenta = banco/efectivo, p.ej. BAC, efectivo) NO es "
+    "lo mismo que 'sin categoria' (categoria = tipo de gasto, p.ej. comida); para "
+    "categorias usa aggregate_transactions. Devuelve el conteo, el monto total y "
+    "una muestra; el usuario puede asignarlas a una cuenta en la pantalla 'Sin "
+    "cuenta' del app."
+)
+
 
 async def list_transactions(
     *,
@@ -172,6 +184,74 @@ async def aggregate_transactions(
     }
 
 
+async def list_unassigned_transactions(
+    *,
+    limit: TransactionLimit = 50,
+    user_id: uuid.UUID,
+) -> dict[str, Any]:
+    """Movimientos sin cuenta — confirmed, non-archived transactions whose
+    ``account_id IS NULL``. These float: ``compute_account_balances`` excludes
+    them, so they never appear in any account's saldo. Transfer legs + goal flows
+    are excluded (they always carry an account). All-time (no period window): the
+    user wants every orphan, not a slice. Shadow rows are excluded — they aren't
+    assignable until promoted via /aprobar_shadow."""
+    limit_applied = min(limit, 200)
+    filters = [
+        Transaction.user_id == user_id,
+        Transaction.account_id.is_(None),
+        Transaction.status == "confirmed",
+        Transaction.archived.is_(False),
+        Transaction.transfer_id.is_(None),
+        Transaction.goal_id.is_(None),
+    ]
+
+    async with AsyncSessionLocal() as db:
+        currency = await _user_currency(db, user_id)
+        amount_expr = _abs_amount_expr()
+
+        total_matched_result = await db.execute(
+            select(func.count()).select_from(Transaction).where(*filters)
+        )
+        total_matched = int(total_matched_result.scalar_one() or 0)
+
+        total_amount_result = await db.execute(
+            select(func.coalesce(func.sum(amount_expr), Decimal("0")))
+            .select_from(Transaction)
+            .where(*filters)
+        )
+        total_amount = _as_decimal(total_amount_result.scalar_one())
+
+        rows_result = await db.execute(
+            select(Transaction)
+            .where(*filters)
+            .order_by(
+                Transaction.transaction_date.desc(), Transaction.created_at.desc()
+            )
+            .limit(limit_applied)
+        )
+        transactions = [
+            {
+                "transaction_date": txn.transaction_date.isoformat(),
+                "amount": _decimal_to_string(_as_decimal(txn.amount).copy_abs()),
+                "currency": currency,
+                "merchant": txn.merchant,
+                "category": txn.category,
+                "notes": txn.description,
+                "transaction_type": _transaction_type_for_amount(txn.amount),
+            }
+            for txn in rows_result.scalars().all()
+        ]
+
+    return {
+        "transactions": transactions,
+        "total_matched": total_matched,
+        "total_amount": _decimal_to_string(total_amount),
+        "currency": currency,
+        "limit_applied": limit_applied,
+        "truncated": total_matched > limit_applied,
+    }
+
+
 @dataclass
 class _PeriodAggregate:
     """Raw aggregate of a period: numbers in Decimal/int, no serialization.
@@ -269,6 +349,11 @@ def register_transaction_tools() -> None:
             name="aggregate_transactions",
             description=AGGREGATE_TRANSACTIONS_DESCRIPTION,
         )(aggregate_transactions)
+    if not is_tool_registered("list_unassigned_transactions"):
+        query_tool(
+            name="list_unassigned_transactions",
+            description=LIST_UNASSIGNED_TRANSACTIONS_DESCRIPTION,
+        )(list_unassigned_transactions)
 
 
 def _transaction_filters(

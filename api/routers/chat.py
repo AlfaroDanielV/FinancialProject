@@ -41,6 +41,7 @@ from bot.clarification import clear_clarification
 from bot.pending import clear_pending, load_pending
 from bot.pending_db import resolve_from_pending
 from bot.pipeline import process_message
+from bot import messages_es
 
 
 log = logging.getLogger("api.routers.chat")
@@ -72,6 +73,19 @@ def _build_response(reply) -> ChatMessageResponse:
     )
 
 
+def _chat_error_response() -> ChatMessageResponse:
+    """Last-resort guard for the native chat endpoints.
+
+    `process_message` is expected to handle its own failures and return a
+    `BotReply` with friendly Spanish copy. But the native chat endpoint is the
+    ONLY surface that turns an uncaught pipeline exception into a user-visible
+    HTTP 500 (the app renders it as a generic "Hubo un error"); Telegram tolerates
+    the same throw. So we wrap process_message and, on anything unexpected, return
+    this handled response instead of letting the 500 escape.
+    """
+    return ChatMessageResponse(reply_text=messages_es.CHAT_UNEXPECTED_ERROR)
+
+
 @router.post("/message", response_model=ChatMessageResponse)
 async def post_chat_message(
     payload: ChatMessageRequest,
@@ -79,14 +93,20 @@ async def post_chat_message(
     user: User = Depends(current_user),
 ) -> ChatMessageResponse:
     redis = get_redis()
-    reply = await process_message(
-        user=user,
-        text=payload.text,
-        db=db,
-        redis=redis,
-        llm_client=get_llm_client(),
-        llm_model=settings.llm_extraction_model,
-    )
+    try:
+        reply = await process_message(
+            user=user,
+            text=payload.text,
+            db=db,
+            redis=redis,
+            llm_client=get_llm_client(),
+            llm_model=settings.llm_extraction_model,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("chat_message_unhandled user_id=%s", user.id)
+        return _chat_error_response()
     return _build_response(reply)
 
 
@@ -150,15 +170,21 @@ async def post_chat_image(
         )
 
     redis = get_redis()
-    reply = await process_message(
-        user=user,
-        text="",
-        db=db,
-        redis=redis,
-        llm_client=get_llm_client(),
-        llm_model=settings.llm_extraction_model,
-        image_bytes=image_bytes,
-        image_media_type=media_type,
-        vision_model=settings.llm_query_model,
-    )
+    try:
+        reply = await process_message(
+            user=user,
+            text="",
+            db=db,
+            redis=redis,
+            llm_client=get_llm_client(),
+            llm_model=settings.llm_extraction_model,
+            image_bytes=image_bytes,
+            image_media_type=media_type,
+            vision_model=settings.llm_query_model,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("chat_image_unhandled user_id=%s", user.id)
+        return _chat_error_response()
     return _build_response(reply)

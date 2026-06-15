@@ -56,6 +56,8 @@ type Message = {
   // Duplicate detection: set when the bot reply carried a `duplicate_warning`
   // hint — renders Eliminar / Conservar chips for the likely-duplicate row.
   duplicate?: { txId: string; nudgeId: string | null; merchant: string | null };
+  // /menu reply: keep these chips repeatable (don't disable after one tap).
+  menu?: boolean;
 };
 
 let _nextId = 1;
@@ -102,6 +104,7 @@ export function ChatScreen() {
         urlButtons: data.url_buttons.length > 0 ? data.url_buttons : undefined,
         assignTxId,
         duplicate,
+        menu: screen === "menu",
       },
     ]);
     // Phase 6f debt slice: the chat hands off to a native form instead of
@@ -115,6 +118,25 @@ export function ChatScreen() {
     if (screen === "card_create") {
       nav.navigate("CardCreate", {
         prefill: data.open_screen!.prefill as CardPrefill,
+      });
+    }
+    // Movimientos sin cuenta: the agent listed unassigned movements; hand off to
+    // the Movimientos tab with the "Sin cuenta" filter so the user can assign each
+    // row to an account. Cross-tab navigate (mirrors Analytics → Chat).
+    if (screen === "assign_account") {
+      (
+        nav as unknown as {
+          navigate: (
+            tab: "Movimientos",
+            params: {
+              screen: "TransactionsList";
+              params: { filterNoAccount: true };
+            },
+          ) => void;
+        }
+      ).navigate("Movimientos", {
+        screen: "TransactionsList",
+        params: { filterNoAccount: true },
       });
     }
   };
@@ -335,8 +357,8 @@ export function ChatScreen() {
           renderItem={({ item }) => (
             <MessageBubble
               message={item}
-              chipsUsed={usedChips.has(item.id)}
-              onTapButton={(label) => send(label, item.id)}
+              chipsUsed={item.menu ? false : usedChips.has(item.id)}
+              onTapButton={(label) => send(label, item.menu ? undefined : item.id)}
               onTapAssign={
                 item.assignTxId
                   ? () => setAssigning({ messageId: item.id, txId: item.assignTxId! })
@@ -381,7 +403,7 @@ export function ChatScreen() {
           <TextInput
             value={input}
             onChangeText={setInput}
-            placeholder="Escribí un mensaje…"
+            placeholder="Escribí /menu para ver qué más puedo hacer"
             placeholderTextColor={Colors.textMuted}
             style={styles.textInput}
             multiline

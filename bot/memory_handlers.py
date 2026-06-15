@@ -564,7 +564,7 @@ async def on_mem_olv_all(cb: CallbackQuery) -> None:
 # ── /editar_memoria ─────────────────────────────────────────────────────────
 
 
-@router.message(Command("editar_memoria"))
+@router.message(Command("editar_memoria", "edit_mem"))
 async def on_editar_memoria(message: Message) -> None:
     if message.from_user is None:
         return
@@ -829,7 +829,7 @@ def _hash_text(text: str) -> str:
 # ── /recalcular_memoria (Phase 6c B10) ──────────────────────────────────────
 
 
-@router.message(Command("recalcular_memoria"))
+@router.message(Command("recalcular_memoria", "recalc_mem"))
 async def on_recalcular_memoria(message: Message) -> None:
     """User-driven trigger for the per-user nightly recompute.
 

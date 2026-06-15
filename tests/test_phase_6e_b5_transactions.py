@@ -518,3 +518,57 @@ async def test_offset_pagination_still_works_after_b5_changes(db_with_user):
             assert CSV_EXPORT_MAX_ROWS == 50_000
     finally:
         _clear()
+
+
+@pytest.mark.asyncio
+async def test_no_account_filter_returns_only_orphans(db_with_user):
+    """GET /transactions?no_account=true returns only rows with account_id IS
+    NULL (movimientos sin cuenta) — the floating rows the user assigns from the
+    native 'Sin cuenta' screen — and excludes rows that already have an account.
+    """
+    session, user_id = db_with_user
+    _override(session, user_id)
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            account = await _create_account(ac, "BAC")
+            today = date.today().isoformat()
+            # One row WITH an account…
+            await _create_txn(
+                ac,
+                amount="-1000",
+                account_id=account["id"],
+                transaction_date=today,
+                merchant="Con cuenta",
+            )
+            # …and one orphan (no account_id — TransactionCreate.account_id is
+            # Optional, so the POST accepts a null account).
+            orphan = await ac.post(
+                "/api/v1/transactions",
+                json={
+                    "amount": "-3000",
+                    "currency": "CRC",
+                    "merchant": "Sin cuenta SA",
+                    "transaction_date": today,
+                    "source": "manual",
+                },
+            )
+            assert orphan.status_code == 201, orphan.text
+            assert orphan.json()["account_id"] is None
+
+            # Default list shows both.
+            both = await ac.get("/api/v1/transactions")
+            assert both.status_code == 200, both.text
+            assert len(both.json()["items"]) == 2
+
+            # no_account=true shows only the orphan.
+            orphans = await ac.get(
+                "/api/v1/transactions", params={"no_account": "true"}
+            )
+            assert orphans.status_code == 200, orphans.text
+            items = orphans.json()["items"]
+            assert len(items) == 1
+            assert items[0]["account_id"] is None
+            assert items[0]["merchant"] == "Sin cuenta SA"
+    finally:
+        _clear()

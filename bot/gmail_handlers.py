@@ -449,7 +449,7 @@ async def _send_root_menu(
 # ── /conectar_gmail ──────────────────────────────────────────────────────────
 
 
-@router.message(Command("conectar_gmail"))
+@router.message(Command("conectar_gmail", "con_mail"))
 async def on_connect_gmail(message: Message) -> None:
     resolved = await _resolve_user(message)
     if resolved is None:
@@ -496,7 +496,7 @@ async def on_connect_gmail(message: Message) -> None:
 # ── /desconectar_gmail ───────────────────────────────────────────────────────
 
 
-@router.message(Command("desconectar_gmail"))
+@router.message(Command("desconectar_gmail", "desc_mail"))
 async def on_disconnect_gmail(message: Message) -> None:
     resolved = await _resolve_user(message)
     if resolved is None:
@@ -588,7 +588,7 @@ async def on_disconnect_callback(cb: CallbackQuery) -> None:
 # ── /estado_gmail ────────────────────────────────────────────────────────────
 
 
-@router.message(Command("estado_gmail"))
+@router.message(Command("estado_gmail", "est_mail"))
 async def on_status_gmail(message: Message) -> None:
     resolved = await _resolve_user(message)
     if resolved is None:
@@ -833,7 +833,7 @@ async def on_remove_bank_cancel(cb: CallbackQuery) -> None:
 # ── /aprobar_shadow / /rechazar_shadow (Block C.2) ───────────────────────────
 
 
-@router.message(Command("aprobar_shadow"))
+@router.message(Command("aprobar_shadow", "ok_shadow"))
 async def on_approve_shadow(message: Message) -> None:
     """Promote all of the user's gmail-source shadow rows to confirmed."""
     resolved = await _resolve_user(message)
@@ -855,7 +855,7 @@ async def on_approve_shadow(message: Message) -> None:
         await db.close()
 
 
-@router.message(Command("rechazar_shadow"))
+@router.message(Command("rechazar_shadow", "no_shadow"))
 async def on_reject_shadow_prompt(message: Message) -> None:
     """Confirm with an inline keyboard. The actual delete + mark
     happens on the callback."""
@@ -946,7 +946,7 @@ async def on_reject_shadow_callback(cb: CallbackQuery) -> None:
         await cb.answer()
 
 
-@router.message(Command("revisar_correos"))
+@router.message(Command("revisar_correos", "rev_mail"))
 async def on_manual_scan(message: Message) -> None:
     """Manual scan with a 30-minute cooldown. Runs days=2 (last 48h)."""
     resolved = await _resolve_user(message)

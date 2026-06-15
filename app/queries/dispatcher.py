@@ -55,12 +55,38 @@ class DispatchOutcome:
     tools_used: list[dict[str, Any]] = field(default_factory=list)
     duration_ms: int = 0
     error_category: Optional[str] = None  # "user_not_found"|"budget"|"iteration_cap"|"llm_error"
+    # Native-only UI handoff hint (Telegram ignores it). The dispatcher — NOT the
+    # LLM — sets this deterministically from which read tool ran. Shape:
+    # {"screen": str, "prefill": dict}. Used to offer the 'Sin cuenta' assignment
+    # screen after listing unassigned movements.
+    open_screen: Optional[dict] = None
 
 log = logging.getLogger("app.queries.dispatcher")
 
 _USER_NOT_FOUND_RESPONSE = (
     "No te encuentro en el sistema. Reintentá en un momento."
 )
+
+# Deterministic native handoff: when the orphan-listing read tool ran, offer the
+# 'Sin cuenta' assignment screen. The LLM never sets this — the dispatcher does,
+# by inspecting which tool was used. Telegram ignores open_screen.
+_ORPHAN_TOOL = "list_unassigned_transactions"
+_ASSIGN_ACCOUNT_OPEN_SCREEN = {
+    "screen": "assign_account",
+    "prefill": {"filter": "no_account"},
+}
+
+
+def _handoff_open_screen(tools_used: list | None) -> Optional[dict]:
+    """Deterministic native handoff: offer the 'Sin cuenta' assignment screen
+    when the orphan-listing read tool ran. The LLM never decides this — it's
+    derived from which tool was used. Returns None for every other answer."""
+    used = {
+        (t.get("name") if isinstance(t, dict) else t) for t in (tools_used or [])
+    }
+    if _ORPHAN_TOOL in used:
+        return dict(_ASSIGN_ACCOUNT_OPEN_SCREEN)
+    return None
 
 _query_client: Optional[AnthropicQueryClient] = None
 
@@ -305,6 +331,9 @@ async def run_dispatch(
         return DispatchOutcome(
             text=text,
             dispatch_id=row.id,
+            # Deterministic UI handoff (not the LLM): offer the 'Sin cuenta'
+            # assignment screen when the orphan-listing tool ran.
+            open_screen=_handoff_open_screen(result.tools_used),
             total_iterations=result.total_iterations,
             total_input_tokens=result.total_input_tokens,
             total_output_tokens=result.total_output_tokens,
