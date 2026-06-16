@@ -160,6 +160,30 @@ export function TransferModal({ visible, onClose, initialToAccountId }: Props) {
     toAccount != null &&
     fromAccount.currency !== toAccount.currency;
 
+  // "Cancelar de contado" — the credit destination's owed balance, offered as a
+  // one-tap fill so the user doesn't type it. Card debt = current_balance < 0;
+  // the magnitude matches the "Debés ₡X" on the account detail (computed live,
+  // no drift). Null when the card has no debt or the destination isn't credit.
+  const payInFull = (() => {
+    if (!isCardPayment || toAccount?.current_balance == null) return null;
+    const owedRaw = parseFloat(toAccount.current_balance);
+    if (!Number.isFinite(owedRaw) || owedRaw >= 0) return null;
+    return {
+      // Exact magnitude string ("-125000.00" → "125000.00") — no float rebuild.
+      amountStr: toAccount.current_balance.replace("-", ""),
+      label: formatMoney(Math.abs(owedRaw), toAccount.currency),
+    };
+  })();
+
+  const fillPayInFull = () => {
+    if (!payInFull || !toAccount) return;
+    setAmount(payInFull.amountStr);
+    // Interpret the prefilled amount in the card's currency (Mode A — "abonás X
+    // al crédito"); harmless when same-currency, correct when cross-currency.
+    setInputCurrency(toAccount.currency);
+    setError(null);
+  };
+
   // Effective input currency: the funding (from) currency unless the user
   // toggled to the destination currency on a cross-currency transfer.
   const inputCcy = !fromAccount
@@ -328,6 +352,20 @@ export function TransferModal({ visible, onClose, initialToAccountId }: Props) {
                 placeholder="0"
                 placeholderTextColor={Colors.textMuted}
               />
+              {payInFull != null && (
+                <Pressable
+                  onPress={fillPayInFull}
+                  style={({ pressed }) => [
+                    styles.payInFull,
+                    pressed && { opacity: 0.7 },
+                  ]}
+                >
+                  <Feather name="zap" size={13} color={Colors.accent} />
+                  <Text style={styles.payInFullText}>
+                    Cancelar de contado (Debés {payInFull.label})
+                  </Text>
+                </Pressable>
+              )}
             </View>
             <View style={styles.field}>
               <Text style={styles.fieldLabel}>Fecha</Text>
@@ -494,6 +532,18 @@ const styles = StyleSheet.create({
   },
   toggleOptText: { fontSize: FontSize.md, color: Colors.textSecondary },
   toggleOptTextActive: { color: Colors.accent, fontWeight: "600" },
+  payInFull: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.xs,
+    marginTop: Spacing.xs,
+    paddingVertical: 2,
+  },
+  payInFullText: {
+    fontSize: FontSize.sm,
+    color: Colors.accent,
+    fontWeight: "600",
+  },
   preview: {
     fontSize: FontSize.sm,
     color: Colors.textSecondary,
