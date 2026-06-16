@@ -29,6 +29,11 @@ _VISION_PROMPT = (
     "El usuario adjuntó una foto de un recibo. "
     "Extraé los detalles de la transacción de la imagen usando la herramienta "
     "extract_finance_intent. "
+    "Si es un comprobante de transferencia (SINPE Móvil, transferencia bancaria) "
+    "que nombra a un tercero, seguí la regla de comprobantes: poné "
+    "is_transfer_receipt=true y llená sender_name/sender_phone (quien envía) y "
+    "recipient_name/recipient_phone (quien recibe) tal cual aparecen, sin decidir "
+    "si es ingreso o gasto. "
     "Si la imagen no es un recibo o no podés leer el monto, "
     "usá intent='unknown' y confidence=0."
 )

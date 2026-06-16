@@ -65,6 +65,17 @@ class ExtractionResult(BaseModel):
     # the dispatcher clarifies the missing side deterministically.
     transfer_from_hint: Optional[str] = Field(default=None, max_length=100)
     transfer_to_hint: Optional[str] = Field(default=None, max_length=100)
+    # SINPE Móvil / bank-transfer RECEIPT parties (a 3rd-party comprobante, e.g.
+    # an uploaded photo). The LLM extracts the RAW parties; a deterministic rule
+    # (api/services/dispatch/transfer_direction.py) derives income/expense/
+    # internal by comparing them to the user's identity — the LLM must NOT decide
+    # the direction. is_transfer_receipt=True ONLY for such a receipt naming a
+    # sender and/or recipient (NEVER for first-person "me pagaron"/"pagué").
+    is_transfer_receipt: bool = Field(default=False)
+    sender_name: Optional[str] = Field(default=None, max_length=160)
+    sender_phone: Optional[str] = Field(default=None, max_length=32)
+    recipient_name: Optional[str] = Field(default=None, max_length=160)
+    recipient_phone: Optional[str] = Field(default=None, max_length=32)
     occurred_at_hint: Optional[str] = Field(default=None, max_length=100)
     query_window: Optional[str] = Field(default=None, max_length=32)
     # Phase 6f — conversational goal creation (intent=create_goal).
@@ -141,6 +152,7 @@ class ExtractionResult(BaseModel):
         "category_hint", "account_hint", "merchant", "goal_name", "bill_name",
         "debt_name", "debt_lender", "expense_hint", "envelope_hint",
         "transfer_from_hint", "transfer_to_hint", "card_name", "card_issuer",
+        "sender_name", "recipient_name",
     )
     @classmethod
     def _normalize_strings(cls, v: Optional[str]) -> Optional[str]:

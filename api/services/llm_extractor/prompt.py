@@ -146,6 +146,12 @@ salud / ocio / vivienda / deudas / otros). Recibos de servicios → "servicios",
    - transfer_to_hint: la cuenta a DONDE llega, tal cual ("la tarjeta", "BAC Visa", "ahorros"). "Pagué la tarjeta" → transfer_to_hint="tarjeta".
    - NO uses account_hint ni merchant para transferencias; usá los campos transfer_*.
 
+16. Comprobantes de transferencia (SINPE Móvil, transferencia bancaria) — foto o texto de un RECIBO que nombra a un tercero:
+   - Un comprobante describe en TERCERA persona quién ENVÍA y quién RECIBE ("X realizó una transferencia ... a nombre de Y", "de X para Y"). NO sabés cuál de los dos es el usuario, así que NO decidás si es ingreso o gasto. El servidor lo decide comparando los nombres/teléfonos con la identidad del usuario.
+   - Poné is_transfer_receipt=true y llená las PARTES crudas: sender_name (quien envía/origen), sender_phone, recipient_name (quien recibe/destino), recipient_phone — tal cual aparecen, sin interpretar. amount = el monto.
+   - Como placeholder poné intent="log_transfer" y dispatcher="write"; el servidor reemplaza la dirección.
+   - OJO: esto es SOLO para un comprobante que nombra a un tercero. Si el usuario escribe en PRIMERA persona ("me pagaron", "me transfirieron", "pagué", "le pasé a Juan") NO es un comprobante: usá log_income / log_expense / log_transfer normal con is_transfer_receipt=false.
+
 Ejemplos:
 - Usuario: "gasté 5000 en el super"
   Tool input: {"intent":"log_expense","dispatcher":"write","amount":5000,"currency":null,"merchant":"super","category_hint":"supermercado","account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.95,"raw_notes":null}
@@ -191,6 +197,8 @@ Ejemplos:
   Tool input: {"intent":"log_transfer","dispatcher":"write","amount":50000,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"transfer_from_hint":"BCR","transfer_to_hint":"Visa","occurred_at_hint":"ayer","query_window":null,"confidence":0.92,"raw_notes":null}
 - Usuario: "pagué 12 mil de Netflix" (pago a un comercio, NO transferencia)
   Tool input: {"intent":"log_expense","dispatcher":"write","amount":12000,"currency":null,"merchant":"Netflix","category_hint":"ocio","account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.93,"raw_notes":null}
+- Comprobante (foto/texto, 3ra persona — el servidor decide la dirección): "EDGAR ALFREDO MENDOZA ORTIZ realizó una transferencia por medio de SINPE Móvil al teléfono Nº 85102997 a nombre de DANIEL ALFARO VÍQUEZ. Monto ₡16.000. Detalle: Paños."
+  Tool input: {"intent":"log_transfer","dispatcher":"write","amount":16000,"currency":"CRC","is_transfer_receipt":true,"sender_name":"EDGAR ALFREDO MENDOZA ORTIZ","sender_phone":null,"recipient_name":"DANIEL ALFARO VÍQUEZ","recipient_phone":"85102997","confidence":0.95,"raw_notes":"Paños"}
 - Usuario: "poné el recibo del ICE en el sobre Servicios"
   Tool input: {"intent":"attach_expense","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"expense_hint":"ICE","envelope_hint":"Servicios","confidence":0.93,"raw_notes":null}
 - Usuario: "meté el pago de la tarjeta en el sobre Deudas"
@@ -283,6 +291,39 @@ TOOL_DEFINITION = {
                 "description": (
                     "log_transfer only. Destination account as the user said it "
                     "('tarjeta', 'BAC Visa'). 'Pagué la tarjeta' → 'tarjeta'."
+                ),
+            },
+            "is_transfer_receipt": {
+                "type": "boolean",
+                "description": (
+                    "True ONLY for a SINPE Móvil / bank-transfer RECEIPT that names "
+                    "a third party (3rd person: 'X realizó una transferencia a nombre "
+                    "de Y'). Do NOT decide income vs expense — fill the parties below; "
+                    "the server derives the direction. False for first-person "
+                    "'me pagaron'/'pagué'."
+                ),
+            },
+            "sender_name": {
+                "type": ["string", "null"],
+                "maxLength": 160,
+                "description": "Receipt sender (who SENT the money). is_transfer_receipt only.",
+            },
+            "sender_phone": {
+                "type": ["string", "null"],
+                "maxLength": 32,
+                "description": "Sender's phone if shown. is_transfer_receipt only.",
+            },
+            "recipient_name": {
+                "type": ["string", "null"],
+                "maxLength": 160,
+                "description": "Receipt recipient (who RECEIVED the money). is_transfer_receipt only.",
+            },
+            "recipient_phone": {
+                "type": ["string", "null"],
+                "maxLength": 32,
+                "description": (
+                    "Recipient's phone if shown ('al teléfono Nº …'). "
+                    "is_transfer_receipt only."
                 ),
             },
             "occurred_at_hint": {

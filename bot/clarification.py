@@ -154,6 +154,22 @@ def merge_reply(
         merged["bill_frequency"] = freq
     elif field == "bill_name":
         merged["bill_name"] = reply
+    elif field == "transfer_direction":
+        # Transfer-receipt direction the dispatcher couldn't derive — the user
+        # picked ingreso / gasto / entre mis cuentas. Set the intent and clear
+        # the receipt flag so the re-dispatch routes directly (no re-run of the
+        # direction rule, no re-ask).
+        intent = _parse_transfer_direction_es(reply)
+        if intent is None:
+            return None
+        merged["intent"] = intent.value
+        merged["dispatcher"] = "write"
+        merged["confidence"] = 0.9
+        merged["is_transfer_receipt"] = False
+        if intent is Intent.LOG_INCOME and not merged.get("merchant"):
+            merged["merchant"] = merged.get("sender_name")
+        elif intent is Intent.LOG_EXPENSE and not merged.get("merchant"):
+            merged["merchant"] = merged.get("recipient_name")
     else:
         return None
 
@@ -262,6 +278,33 @@ def _parse_intent_es(text: str) -> Optional[Intent]:
     t = text.strip().lower()
     for intent, keywords in _INTENT_KEYWORDS.items():
         if any(kw in t for kw in keywords):
+            return intent
+    return None
+
+
+# Direction of a transfer receipt: ingreso / gasto / transferencia interna.
+# Checked transfer-first so "entre mis cuentas" wins over a stray income/expense
+# keyword.
+_TRANSFER_DIRECTION_KEYWORDS: dict[Intent, tuple[str, ...]] = {
+    Intent.LOG_TRANSFER: (
+        "entre mis", "mis cuentas", "entre cuentas", "interna", "propias",
+        "transferencia entre",
+    ),
+    Intent.LOG_INCOME: (
+        "ingreso", "recib", "me transfir", "me pagaron", "entró", "entro",
+        "me lleg",
+    ),
+    Intent.LOG_EXPENSE: (
+        "gasto", "gasté", "gaste", "pagué", "pague", "envié", "envie",
+        "mandé", "mande", "le pasé", "le pase",
+    ),
+}
+
+
+def _parse_transfer_direction_es(text: str) -> Optional[Intent]:
+    t = text.strip().lower()
+    for intent in (Intent.LOG_TRANSFER, Intent.LOG_INCOME, Intent.LOG_EXPENSE):
+        if any(kw in t for kw in _TRANSFER_DIRECTION_KEYWORDS[intent]):
             return intent
     return None
 

@@ -24,6 +24,7 @@ from ..models.user import User
 from ..schemas.recurring_bills import VALID_RECURRING_BILL_CATEGORIES
 from .advice_trace import record_advice_event, verdict_from
 from .dispatch.lazy_detection import classify_hint_type, match_account_hint
+from .dispatch.transfer_direction import classify_transfer_direction
 from .accounts import resolve_account, list_active
 from .amortization import compute_french_payment
 from .envelopes import match_envelopes_by_name, match_obligations_by_name
@@ -217,6 +218,17 @@ async def dispatch(
 
     intent = extraction.intent
 
+    # SINPE Móvil / transfer-receipt direction. The LLM extracted the raw parties
+    # but must NOT decide the direction (it can't know which party is the user).
+    # A deterministic rule compares them to the user's identity and overrides the
+    # placeholder intent — or asks when neither side is identifiable.
+    if extraction.is_transfer_receipt:
+        resolved = _resolve_transfer_direction(extraction, user)
+        if isinstance(resolved, AskClarification):
+            return resolved
+        extraction = resolved
+        intent = extraction.intent
+
     # Structural intents short-circuit before any confidence check: a user
     # typing "sí" doesn't need 0.9 confidence to mean yes.
     if intent is Intent.CONFIRM_YES:
@@ -302,6 +314,51 @@ async def dispatch(
 
     # Defensive fallback — should be unreachable given the enum.
     return ShowHelp()
+
+
+_TRANSFER_DIRECTION_INTENT = {
+    "income": Intent.LOG_INCOME,
+    "expense": Intent.LOG_EXPENSE,
+    "internal": Intent.LOG_TRANSFER,
+}
+
+
+def _resolve_transfer_direction(
+    extraction: ExtractionResult, user: User
+) -> Union[ExtractionResult, AskClarification]:
+    """Pick income / expense / internal for a transfer receipt by comparing its
+    parties to the user's identity — or ask when neither side is identifiable.
+    Overriding the placeholder intent is HOW "the rules decide the direction";
+    the LLM never does."""
+    direction = classify_transfer_direction(extraction, user)
+    if direction == "unknown":
+        return AskClarification(
+            question_es=(
+                "No me queda claro de quién a quién va esta transferencia. "
+                "¿Es un ingreso que recibiste, un gasto que hiciste, o una "
+                "transferencia entre tus propias cuentas?"
+            ),
+            awaiting_field="transfer_direction",
+            partial=extraction.model_dump(mode="json"),
+            options=["Ingreso", "Gasto", "Entre mis cuentas"],
+        )
+
+    new_intent = _TRANSFER_DIRECTION_INTENT[direction]
+    updates: dict[str, Any] = {
+        "intent": new_intent,
+        # Deterministic verdict — bump above CONFIDENCE_FLOOR so the override
+        # doesn't trip the "¿gasto, ingreso o consulta?" low-confidence question.
+        "confidence": max(extraction.confidence, 0.9),
+        # Consumed — clear so a re-dispatch (e.g. after an account clarification)
+        # doesn't re-run the rule.
+        "is_transfer_receipt": False,
+    }
+    # Surface who paid / who was paid as the merchant if the LLM left it null.
+    if new_intent is Intent.LOG_INCOME and not extraction.merchant:
+        updates["merchant"] = extraction.sender_name
+    elif new_intent is Intent.LOG_EXPENSE and not extraction.merchant:
+        updates["merchant"] = extraction.recipient_name
+    return extraction.model_copy(update=updates)
 
 
 async def _dispatch_log(
