@@ -1723,6 +1723,165 @@ green). Canonical: `docs/transaction-account-reassignment-decisions.md`; vault
   reference); preserving the original amount/currency of a converted row; the
   **at-capture** account picker (pre-commit) stays deferred (separate concern).
 
+## Movimientos Sin Cuenta + Chat Error Nets (2026-06-15)
+
+In-app chat dogfood: it 500'd on "patrón de gastos → Este mes" (the app shows a
+generic "Hubo un error"), and "movimientos sin cuenta" got confused with "sin
+categoría". **Committed to `dev` (`adcd827`); operator on-device sign-off
+pending.** No migration. `committed_outflows`/cashflow untouched (byte-lock green).
+
+- **Chat error nets (the 500).** The native chat endpoint (`api/routers/chat.py`)
+  was the ONLY surface that turns an uncaught `process_message` throw into a raw
+  500 (Telegram tolerates the same throw). `post_chat_message` + `post_chat_image`
+  now guard it: re-raise `HTTPException`, otherwise `log.exception` + return
+  `messages_es.CHAT_UNEXPECTED_ERROR` at HTTP 200. The extractor `except` in
+  `bot/pipeline.py` was broadened past `(LLMClientError, ValidationError)` to a
+  catch-all (a raw Anthropic SDK overload/429/529 on the "Este mes" follow-up was
+  the likely escape). c78336a had patched internal seams but not the endpoint.
+- **"Movimientos sin cuenta" (orphan rows, `account_id IS NULL`).** Orphans come
+  from Gmail shadow / shortcut / chat-no-match and are excluded from every account
+  balance (`compute_account_balances`). New `GET /transactions?no_account=true`
+  filter; new read-only query tool `list_unassigned_transactions`
+  (`app/queries/tools/transactions.py`, confirmed orphans only, registered before
+  the `compare_periods` cache anchor); a cuenta-vs-categoría note in the QUERY
+  system prompt (`app/queries/prompts/system.py`) — the extractor prompt is
+  unchanged.
+- **Chat → screen handoff.** When the orphan tool fires, the read path attaches
+  `open_screen={screen:"assign_account"}` — `DispatchOutcome` gained an optional
+  `open_screen`, and `bot/pipeline.py::_route_extraction` switched its query branch
+  from the str-only `handle` to `run_dispatch` to carry it (the 6 tests that
+  patched `query_dispatcher_handle` were repointed to `run_dispatch`). Native chat
+  (`Chat.tsx`) cross-navigates to a real **"Sin cuenta" filter** on
+  `TransactionsScreen` (`no_account=true`); each row reuses the existing
+  `TransactionEditModal` / `AccountPickerModal` → `PATCH /transactions/{id}`
+  account_id. No new write path.
+- **Deferred:** the `category` (text) vs `category_id` (FK) "Sin categoría"
+  mislabel (separate backfill/reconciliation).
+- **Verification:** `tests/test_unassigned_transactions.py` + extended
+  `test_query_robustness.py` / `test_phase_6a_routing.py` /
+  `test_phase_6e_b5_transactions.py`; `scripts/test_phase_7b.sh` green; mobile
+  `tsc` clean.
+
+## Chat Command Menu (/menu), /resumen & Screen Launchers (2026-06-15)
+
+Operator ask: chat placeholder → "/menu", a tappable `/menu` (commands + recommended
+prompts), a `/resumen` expense table, shorter command aliases. **`/menu`+`/resumen`
+committed (`adcd827`); the Gmail/launcher-hub extension uncommitted on `dev`;
+on-device sign-off pending.** No migration. Deterministic — NO LLM in either path.
+
+- **Where it runs.** `/menu` + `/resumen` (+ the launchers) live in
+  `process_message`'s command short-circuit (`bot/pipeline.py`, before the LLM);
+  builders in the new `bot/menu.py`. Native chips already post their label as text,
+  so a menu = a `BotReply` with chips + an `open_screen="menu"` marker that keeps
+  the chips **repeatable** (`Chat.tsx`).
+- **`/menu`** = chat commands (`/resumen`, `/deshacer`, `/cancelar`, `/help`) +
+  **screen launchers** (`/cuentas`, `/movimientos`, `/sobres`, `/gmail`,
+  `/memoria` — a `_LAUNCHERS` dict maps each to an `open_screen` value; `Chat.tsx`
+  cross-tab-navigates to the screen) + recommended example prompts. Telegram `/menu`
+  lists the commands as text (Telegram auto-links `/comandos`) + points to the real
+  Telegram commands for the screen features.
+- **`/resumen`** → period chips (`/resumen_mes|_semana|_hoy`) → a plain-text expense
+  table (monto · categoría · fecha · sobre; `📭` when unassigned), FX-totaled in the
+  user's currency, via the new deterministic
+  `api/services/transactions.py::period_expense_breakdown`. Empty →
+  "Aún no tengo registros para …".
+- **Short Telegram aliases** (additive; long names still work): `/desc_mail`,
+  `/con_mail`, `/est_mail`, `/rev_mail`, `/ok_shadow`, `/no_shadow`, `/edit_mem`,
+  `/recalc_mem`. Plus thin Telegram `/menu` + `/resumen` + `/gmail` handlers.
+- **Decision:** the menu was first scoped chat-first (prompts + chat commands, NO
+  screen launchers); reversed 2026-06-15 at operator request to a launcher hub.
+- **Verification:** `tests/test_chat_menu_resumen.py` (6); mobile `tsc` clean;
+  `scripts/test_phase_7b.sh` green.
+
+## SINPE Móvil Direction Rule — LLM Extracts Parties, Rule Decides (2026-06-15)
+
+Operator dogfood: an INCOMING SINPE Móvil receipt photo (the user is the recipient)
+was classified as an **internal transfer** (cuenta→cuenta) and hit "La cuenta origen
+y destino no pueden ser la misma." **Uncommitted on `dev`; on-device sign-off
+pending.** No migration. Reinforces the LLM-extracts-rules-decide rule — the LLM
+must NOT decide direction.
+
+Root cause (mixed): the LLM set the intent (= direction) and the dispatcher trusted
+it verbatim; the static extractor `SYSTEM_PROMPT` never receives the user's identity,
+so a 3rd-person receipt ("EDGAR … a nombre de DANIEL") → the model can't tell DANIEL
+is the user → "transferencia" → `log_transfer`; and there were no structured
+counterparty fields to feed a rule.
+
+- **Identity** (`api/services/identity.py`, no migration): `name_matches`
+  (accent/case-insensitive, ≥2-token subset), `phone_matches` (last 8 digits, CR),
+  `is_user(user, name?, phone?)` over `users.full_name` + `users.phone_number`.
+  **Operator decision:** reuse existing identity (no migration); a multi-phone SINPE
+  set is a future block.
+- **Extractor emits raw parties**: `ExtractionResult` gains `is_transfer_receipt` +
+  `sender_name/phone` + `recipient_name/phone` (+ tool schema + prompt rule #16 +
+  a 3rd-person SINPE example + a `vision.py` hint). The LLM fills the parties + a
+  `log_transfer` placeholder intent; it never decides direction.
+- **Deterministic rule** (`api/services/dispatch/transfer_direction.py`, pure):
+  `classify_transfer_direction` → recipient=user→income, sender=user→expense,
+  both→internal, neither→unknown.
+- **Dispatch**: `telegram_dispatcher.dispatch()` runs the rule when
+  `is_transfer_receipt` and **overrides the intent** (income→`LOG_INCOME` → existing
+  `_dispatch_log` asks ONE account; expense→`LOG_EXPENSE`;
+  internal→`_dispatch_log_transfer`), bumps confidence + clears the flag.
+- **Fallback = ask** (operator decision: never default in silence): unknown →
+  `AskClarification(awaiting_field="transfer_direction")` with options
+  Ingreso/Gasto/Entre mis cuentas; `bot/clarification.py::merge_reply` routes the
+  answer (`_parse_transfer_direction_es`).
+- **Verification:** `tests/test_sinpe_direction.py` (11); extractor / dispatcher /
+  transfers / vision regression + `scripts/test_phase_7b.sh` (byte-lock) green.
+
+## Reclassify Movement (Gasto ↔ Ingreso) — Chat + Native (2026-06-18)
+
+Operator ask: reclasificar un movimiento entre gasto e ingreso desde el chat y
+desde la app nativa. A movement's kind is the **sign** of `transactions.amount`;
+a misclassified capture had no fix (native edit modal preserved the sign on
+purpose; chat had no edit-existing intent). **On `dev`; operator on-device
+sign-off received 2026-06-18.** No migration — balances are computed live from `SUM(amount)`,
+so flipping the sign moves the amount between the income/expense sides for free.
+`committed_outflows`/cashflow byte-lock untouched. Decision: vault
+`Decision - Reclassify Movement (Gasto Ingreso)`.
+
+- **Shared backend** (`api/services/transactions.py`): pure
+  `reclassify_blocker(txn, to_income)` (mirrors the PATCH guards: confirmed-only /
+  no transfer leg / no goal flow / not archived / "already that kind") reused by
+  both the chat proposal builder and the commit; `reclassify_transaction(db, txn,
+  to_income)` flips the sign + **clears `envelope_id` when becoming income**
+  (sobres are expense-only), FLUSHES. `PATCH /transactions/{id}` gained a guard
+  forcing `envelope_id` NULL whenever the resulting `amount > 0`, so the native
+  toggle can't leave a stale sobre. Category left untouched (informational, not
+  kind-validated).
+- **Native** (`TransactionEditModal`): a **Tipo: Gasto / Ingreso** segmented
+  control sets the sign on save; switching to Ingreso hides + clears the Sobre
+  field. (Removes the old "switching income↔expense is out of scope here" note.)
+- **Chat — post-capture chip**: after a capture commits, an `open_screen` hint
+  drives a one-tap chip — **"Era un ingreso"** on an expense (rides the existing
+  `assign_envelope` hint) / **"Era un gasto"** on an income (new
+  `screen="reclassify"`). The chip `PATCH`es directly (tap = confirmation);
+  Telegram ignores `open_screen` (native-only). Mobile: `ReclassifyPrefill`,
+  `reclassify` descriptor + chip + `reclassifyMutation` in `Chat.tsx`.
+- **Chat — typed phrase (both channels)**: deterministic **LLM-free** recognizer
+  `_reclassify_target` in `process_message`'s short-circuit (TIGHT full-match,
+  digit-free, no bare-negation — won't hijack a capture "ingresé 5000" or a query
+  "¿cuál fue mi último ingreso?"; strips a leading discourse "no," but not a bare
+  "no era…") proposes flipping the **last** committed movement (`last_action`
+  handle, same as `/undo`) with a **Sí/No** confirm. New `reclassify`
+  `PendingAction` action_type committed by `bot/commit.py::_commit_reclassify`
+  (re-fetches + re-guards; updates `last_action` to the new kind so `/undo` still
+  works). **The LLM never decides a reclassification** — reinforces
+  [[Decision - LLM Extracts Rules Decide]].
+- **Operator-approved scope (AskUserQuestion):** chat reclassifies the **last
+  movement only** (arbitrary older movements → native app); trigger = **phrase +
+  post-capture chip**.
+- **Verification:** `tests/test_chat_reclassify.py` (4: recognizer table,
+  expense→income flow, already-that-kind + no-recent-movement refusals);
+  `tests/test_envelopes.py::test_patch_reclassify_to_income_clears_envelope`;
+  `tests/test_phase_6f_chat_assign_envelope.py` updated (income now carries a
+  `reclassify` hint, never `assign_envelope`); chat-write/dispatch/transfer/SINPE/
+  menu + cashflow byte-lock regression green; mobile `tsc --noEmit` clean;
+  production files ruff-clean. No migration. **Deferred:** reclassifying an
+  arbitrary (non-last) movement from chat; auto-clearing the category on a flip;
+  to/from transfer (separate primitive).
+
 ## CR Salary Calculator + Ingresos CRUD (post-7a, 2026-06-09)
 
 Deterministic Costa Rican net-pay calculator + full Ingresos CRUD. Backend +
