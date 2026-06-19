@@ -9,6 +9,7 @@ wiring. New evaluator → import + append.
 """
 from .base import BaseNudgeEvaluator, NudgeCandidate
 from .duplicate_transaction import DuplicateTransactionEvaluator
+from .envelope_near_limit import EnvelopeNearLimitEvaluator
 from .missing_income import MissingIncomeEvaluator
 from .over_commitment import OverCommitmentEvaluator
 from .stale_pending import StalePendingEvaluator
@@ -21,12 +22,14 @@ ALL_EVALUATORS: list[BaseNudgeEvaluator] = [
     UpcomingBillEvaluator(),
     OverCommitmentEvaluator(),
     DuplicateTransactionEvaluator(),
+    EnvelopeNearLimitEvaluator(),
 ]
 
 __all__ = [
     "BaseNudgeEvaluator",
     "NudgeCandidate",
     "DuplicateTransactionEvaluator",
+    "EnvelopeNearLimitEvaluator",
     "MissingIncomeEvaluator",
     "StalePendingEvaluator",
     "UpcomingBillEvaluator",

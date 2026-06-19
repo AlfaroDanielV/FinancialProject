@@ -36,6 +36,17 @@ class Settings(BaseSettings):
     telegram_webhook_secret: str = ""
     telegram_webhook_url: str = ""
 
+    # Nudge scheduler — drives the Phase 5d proactive-messaging pipeline
+    # (evaluate → deliver) on an interval so nudges actually fire without an
+    # external cron. The in-process loop lives in the API lifespan; the same
+    # fan-out also runs standalone via `python -m workers.nudges_daily`
+    # (prod ACA Job / manual). Anti-saturation (rate limit, silence, quiet
+    # hours, dedup) makes a frequent interval safe. Don't enable BOTH the loop
+    # and an external cron against the worker — idempotent, just wasteful.
+    nudge_scheduler_enabled: bool = True
+    nudge_scheduler_interval_s: int = 21600  # 6h
+    nudge_scheduler_initial_delay_s: int = 60  # let boot settle before tick 1
+
     # App
     environment: str = "development"
     secret_key: str = "change-me"

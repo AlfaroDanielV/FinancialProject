@@ -112,6 +112,22 @@ def render_nudge_text(nudge_type: str, payload: dict[str, Any]) -> str:
             "que ya tenés. ¿Lo elimino o lo dejo?"
         )
 
+    if nudge_type == "envelope_near_limit":
+        name = payload.get("name") or "un sobre"
+        currency = payload.get("currency") or "CRC"
+        pct = payload.get("pct", 0)
+        if payload.get("stage") == "over":
+            limit = _money(currency, payload.get("limit_amount"))
+            return (
+                f"Te pasaste del sobre «{name}»: vas en {pct}% de {limit}. "
+                "¿Querés revisarlo?"
+            )
+        disponible = _money(currency, payload.get("available"))
+        return (
+            f"Ya casi gastás el sobre «{name}» ({pct}%). Te quedan "
+            f"{disponible}. ¿Querés revisarlo?"
+        )
+
     return "Tenés una notificación pendiente."
 
 

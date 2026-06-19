@@ -71,6 +71,13 @@ UPCOMING_BILL_HIGH_PRIORITY_HOURS = 24
 # (a chronic state, not a timed emergency).
 OVER_COMMITMENT_RATIO = 0.85
 
+# envelope_near_limit: fire when a spending-cap envelope's rolled-up spend
+# reaches >= this fraction of its limit — the "almost spent" heads-up. A second
+# stage fires once the envelope goes over its limit (pct >= 1.0). Both are
+# computed live from compute_envelope_summary so the alert can't drift from the
+# bar the user sees. Once per envelope per stage per calendar month (dedup).
+ENVELOPE_NEAR_LIMIT_RATIO = 0.90
+
 
 # ── Silence reasons (string enum, free-form) ─────────────────────────────────
 REASON_AUTO_DISMISSED_2X = "auto_dismissed_2x"

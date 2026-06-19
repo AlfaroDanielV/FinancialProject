@@ -149,6 +149,8 @@ def build_user_prompt(nudge_type: str, payload: dict[str, Any]) -> str:
         return _prompt_over_commitment(payload)
     if nudge_type == "duplicate_transaction":
         return _prompt_duplicate_transaction(payload)
+    if nudge_type == "envelope_near_limit":
+        return _prompt_envelope_near_limit(payload)
     return (
         "Escribí un recordatorio breve al usuario. "
         f"Contexto raw: {payload!r}"
@@ -252,4 +254,47 @@ def _prompt_duplicate_transaction(payload: dict[str, Any]) -> str:
         "Escribí un aviso breve: (1) decile que este gasto parece repetido, "
         "(2) preguntale si lo elimina o lo deja. No afirmes que ES un "
         "duplicado seguro; usá solo las cifras del contexto, sin inventar."
+    )
+
+
+def _prompt_envelope_near_limit(payload: dict[str, Any]) -> str:
+    currency = payload.get("currency") or "CRC"
+    name = payload.get("name") or "un sobre"
+    pct = payload.get("pct", 0)
+    stage = payload.get("stage", "near")
+
+    def _fmt(key: str) -> str:
+        raw = payload.get(key)
+        try:
+            return f"{currency} {float(raw):,.0f}"
+        except (TypeError, ValueError):
+            return "monto desconocido"
+
+    if stage == "over":
+        situacion = (
+            f"el usuario ya se PASÓ del límite de su sobre \"{name}\": lleva "
+            f"gastado {_fmt('spent')} de un límite de {_fmt('limit_amount')} "
+            f"({pct}%)."
+        )
+        instruccion = (
+            "Escribí un aviso breve y directo, sin regañar: (1) decile que se "
+            "pasó de ese sobre y por cuánto va, (2) preguntale si quiere "
+            "revisarlo."
+        )
+    else:
+        situacion = (
+            f"el usuario ya casi gasta todo su sobre \"{name}\": lleva "
+            f"{_fmt('spent')} de un límite de {_fmt('limit_amount')} ({pct}%), "
+            f"le quedan {_fmt('available')}."
+        )
+        instruccion = (
+            "Escribí un aviso breve y amable: (1) decile que ya casi gasta ese "
+            "sobre y cuánto le queda, (2) preguntale si quiere revisarlo."
+        )
+
+    return (
+        f"Contexto: {situacion}\n"
+        "\n"
+        f"{instruccion} No des consejo numérico ni inventés montos; usá solo "
+        "las cifras del contexto."
     )

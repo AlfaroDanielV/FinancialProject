@@ -106,6 +106,14 @@ _BUTTONS: dict[str, list[NudgeButton]] = {
         NudgeButton("Eliminar", "act"),
         NudgeButton("Conservar", "dismiss"),
     ],
+    # Envelope-near-limit alert: `act` ("Ver sobre") just marks acted_on for
+    # now; a future native feed can route it to the envelope screen. `later`
+    # hides it this pass; `dismiss` silences the type after 2 (policy rule 2).
+    "envelope_near_limit": [
+        NudgeButton("Ver sobre", "act"),
+        NudgeButton("Más tarde", "later"),
+        NudgeButton("No mostrar más", "dismiss"),
+    ],
 }
 
 

@@ -70,7 +70,17 @@ async def lifespan(app: FastAPI):
         logging.getLogger("api.main").exception(
             "Telegram bot failed to start — continuing without it."
         )
+    # Phase 5d proactive messaging: start the in-process nudge scheduler AFTER
+    # the bot so telegram_send_fn can reach the aiogram Bot singleton. Gated on
+    # settings.nudge_scheduler_enabled; a no-op when disabled.
+    from .services.nudges.scheduler import (
+        start_nudge_scheduler,
+        stop_nudge_scheduler,
+    )
+
+    start_nudge_scheduler()
     yield
+    await stop_nudge_scheduler()
     await stop_bot()
     await close_redis()
 
