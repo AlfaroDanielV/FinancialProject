@@ -107,7 +107,10 @@ async def test_committed_expense_carries_assign_envelope_hint(db_with_user):
 
 
 @pytest.mark.asyncio
-async def test_committed_income_has_no_assign_envelope_hint(db_with_user):
+async def test_committed_income_carries_reclassify_hint_not_envelope(db_with_user):
+    """Income never gets an `assign_envelope` hint (caps are spending-only), but
+    it DOES carry a `reclassify` hint so the chat can offer an "Era un gasto"
+    chip on the just-created row."""
     session, user_id = db_with_user
     from api.services.llm_extractor import FixtureLLMClient
     from tests.fixtures.extractor_responses import BASIC_INCOME_CRC
@@ -122,6 +125,19 @@ async def test_committed_income_has_no_assign_envelope_hint(db_with_user):
             assert propose.status_code == 200, propose.text
             confirm = await _chat(ac, messages_es.CONFIRM_BUTTONS_YES, token)
             assert confirm.status_code == 200, confirm.text
-            assert confirm.json()["open_screen"] is None
+            body = confirm.json()
+
+        open_screen = body["open_screen"]
+        assert open_screen is not None
+        assert open_screen["screen"] == "reclassify"
+
+        rows = (
+            await session.execute(
+                select(Transaction).where(Transaction.user_id == user_id)
+            )
+        ).scalars().all()
+        assert len(rows) == 1
+        assert open_screen["prefill"]["transaction_id"] == str(rows[0].id)
+        assert open_screen["prefill"]["currency"] == "CRC"
     finally:
         _clear_db_override()

@@ -729,6 +729,15 @@ async def update_transaction(
             update_data["amount"] = converted
             txn.currency = account.currency
 
+    # Reclassification guard (gasto ↔ ingreso): a movement that ends up as
+    # income (amount > 0) cannot carry a spending-cap envelope. Force it null
+    # regardless of what the client sent — the native edit modal flips the kind
+    # by sending a sign-flipped `amount`, and balances recompute live from the
+    # sign, so no stored balance changes.
+    resulting_amount = update_data.get("amount", txn.amount)
+    if resulting_amount is not None and Decimal(str(resulting_amount)) > 0:
+        update_data["envelope_id"] = None
+
     for field, value in update_data.items():
         setattr(txn, field, value)
 

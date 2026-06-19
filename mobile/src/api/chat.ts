@@ -78,6 +78,19 @@ export interface ReassignAccountPrefill {
 }
 
 /**
+ * Reclassify gasto ↔ ingreso — emitted after an INCOME commits
+ * (`screen: "reclassify"`). The chat offers an in-chat "Era un gasto" chip for
+ * the just-created row. The EXPENSE path reuses its `assign_envelope` hint to
+ * offer the inverse "Era un ingreso" chip, so both share this shape.
+ */
+export interface ReclassifyPrefill {
+  transaction_id: string;
+  amount: string;
+  currency: string;
+  merchant: string | null;
+}
+
+/**
  * `/menu` marker (`screen: "menu"`) — no prefill payload; tells the chat to keep
  * the menu chips repeatable. The chips themselves arrive in `buttons`.
  */
@@ -91,6 +104,7 @@ export interface ChatOpenScreen {
     | AssignEnvelopePrefill
     | DuplicateWarningPrefill
     | ReassignAccountPrefill
+    | ReclassifyPrefill
     | MenuPrefill;
 }
 

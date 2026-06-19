@@ -45,6 +45,10 @@ export interface ShadowConfirmItem {
   // FK to a user_categories row, set alongside `category` (name) by the review
   // picker. Backend validates it belongs to the caller and is active.
   category_id?: string | null;
+  // FK to one of the caller's active accounts. The scan pre-fills a best-effort
+  // guess on the row; the review screen lets the user correct it. Omitted = keep
+  // the row's current (guessed) account. Backend validates owner/active/currency.
+  account_id?: string | null;
   transaction_date?: string;
 }
 

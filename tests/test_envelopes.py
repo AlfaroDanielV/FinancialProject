@@ -409,3 +409,43 @@ async def test_transaction_patch_envelope_assignment(db_with_user):
             assert bad.json()["detail"] == "Sobre inválido."
     finally:
         _clear()
+
+
+@pytest.mark.asyncio
+async def test_patch_reclassify_to_income_clears_envelope(db_with_user):
+    """Flipping an expense to income (amount > 0) via PATCH drops its
+    spending-cap envelope — income is never envelope-assignable."""
+    session, user_id = db_with_user
+    _override(session, user_id)
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            env = await _create_envelope(ac)
+            tx = await ac.post(
+                "/api/v1/transactions",
+                json={
+                    "amount": -8000,
+                    "currency": "CRC",
+                    "merchant": "Súper",
+                    "transaction_date": _this_month_day(),
+                    "source": "manual",
+                },
+            )
+            tx_id = tx.json()["id"]
+            assigned = await ac.patch(
+                f"/api/v1/transactions/{tx_id}",
+                json={"envelope_id": env["id"]},
+            )
+            assert assigned.json()["envelope_id"] == env["id"]
+
+            # Reclassify gasto → ingreso: send the sign-flipped amount.
+            flipped = await ac.patch(
+                f"/api/v1/transactions/{tx_id}",
+                json={"amount": 8000},
+            )
+            assert flipped.status_code == 200, flipped.text
+            body = flipped.json()
+            assert body["amount"] == 8000
+            assert body["envelope_id"] is None
+    finally:
+        _clear()

@@ -30,8 +30,10 @@ import {
   fetchShadow,
   type ShadowConfirmItem,
 } from "../api/gmail";
+import { fetchAccounts, type AccountResponse } from "../api/accounts";
 import type { TransactionResponse } from "../api/transactions";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
+import { AccountPickerModal } from "../components/AccountPickerModal";
 import { CategoryPickerModal } from "../components/CategoryPickerModal";
 
 type Decision = "keep" | "discard";
@@ -54,6 +56,15 @@ export function GmailReviewScreen() {
   const shadowQ = useQuery({ queryKey: ["gmailShadow"], queryFn: fetchShadow });
   const rows = shadowQ.data ?? [];
 
+  // Account names for the per-row guess display (shared cache with the picker).
+  const accountsQ = useQuery({
+    queryKey: ["accounts", "active"],
+    queryFn: () => fetchAccounts(false),
+  });
+  const accountById = new Map<string, AccountResponse>(
+    (accountsQ.data ?? []).map((a) => [a.id, a]),
+  );
+
   // Refetch every time the screen gains focus — so returning here after a scan
   // (or after fixing the Gmail connection) shows fresh results instead of a
   // stale cache.
@@ -66,8 +77,15 @@ export function GmailReviewScreen() {
   const [decisions, setDecisions] = useState<Record<string, Decision>>({});
   const [drafts, setDrafts] = useState<Record<string, Partial<ShadowConfirmItem>>>({});
   const [editing, setEditing] = useState<TransactionResponse | null>(null);
+  const [accountPickerFor, setAccountPickerFor] = useState<TransactionResponse | null>(null);
 
   const decisionFor = (id: string): Decision => decisions[id] ?? "keep";
+
+  // The scan pre-fills r.account_id with its best-effort guess; a draft override
+  // wins. The picker runs with allowClear off, so a draft account_id is real.
+  const effectiveAccountId = (r: TransactionResponse): string | null =>
+    drafts[r.id]?.account_id ?? r.account_id ?? null;
+  const guessedCount = rows.filter((r) => r.account_id).length;
   const keepIds = rows.filter((r) => decisionFor(r.id) === "keep").map((r) => r.id);
   const discardIds = rows.filter((r) => decisionFor(r.id) === "discard").map((r) => r.id);
 
@@ -131,6 +149,13 @@ export function GmailReviewScreen() {
                 ? "Nada pendiente por revisar."
                 : `${rows.length} encontrado(s) · Confirmar ${keepIds.length} · Descartar ${discardIds.length}`}
         </Text>
+        {guessedCount > 0 && (
+          <Text style={styles.guessNote}>
+            Adiviné la cuenta de {guessedCount}{" "}
+            {guessedCount === 1 ? "movimiento" : "movimientos"} — revisá que estén
+            bien antes de confirmar.
+          </Text>
+        )}
       </View>
 
       <FlatList
@@ -148,6 +173,10 @@ export function GmailReviewScreen() {
           const dec = decisionFor(item.id);
           const v = draftView(item);
           const edited = Boolean(drafts[item.id]);
+          const effId = effectiveAccountId(item);
+          const acct = effId ? accountById.get(effId) : undefined;
+          const acctOverridden = drafts[item.id]?.account_id != null;
+          const acctGuessed = !acctOverridden && Boolean(item.account_id);
           return (
             <View style={[styles.row, dec === "discard" && styles.rowDiscard]}>
               <Pressable onPress={() => toggle(item.id)} hitSlop={6} style={styles.check}>
@@ -167,6 +196,24 @@ export function GmailReviewScreen() {
                   {edited ? "  ·  editado" : ""}
                 </Text>
                 <Text style={styles.rowDate}>{item.transaction_date}</Text>
+                <Pressable
+                  onPress={() => setAccountPickerFor(item)}
+                  hitSlop={4}
+                  style={styles.acctChip}
+                >
+                  <Feather
+                    name="credit-card"
+                    size={12}
+                    color={acct ? Colors.textSecondary : Colors.warning}
+                  />
+                  <Text
+                    style={[styles.acctText, !acct && styles.acctMissing]}
+                    numberOfLines={1}
+                  >
+                    {acct ? acct.name : "Sin cuenta — elegí"}
+                  </Text>
+                  {acctGuessed && acct && <Text style={styles.acctTag}>adivinada</Text>}
+                </Pressable>
               </View>
               <Pressable onPress={() => setEditing(item)} hitSlop={6}>
                 <Feather name="edit-2" size={16} color={Colors.accent} />
@@ -232,6 +279,26 @@ export function GmailReviewScreen() {
         onSave={(id, patch) => {
           setDrafts((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
           setEditing(null);
+        }}
+      />
+
+      <AccountPickerModal
+        visible={accountPickerFor !== null}
+        currentAccountId={
+          accountPickerFor ? effectiveAccountId(accountPickerFor) : null
+        }
+        currencyFilter={accountPickerFor?.currency}
+        allowClear={false}
+        onClose={() => setAccountPickerFor(null)}
+        onSelect={(acc) => {
+          if (acc && accountPickerFor) {
+            const rowId = accountPickerFor.id;
+            setDrafts((prev) => ({
+              ...prev,
+              [rowId]: { ...prev[rowId], account_id: acc.id },
+            }));
+          }
+          setAccountPickerFor(null);
         }}
       />
     </SafeAreaView>
@@ -382,6 +449,21 @@ const styles = StyleSheet.create({
   struck: { textDecorationLine: "line-through" },
   rowMeta: { fontSize: FontSize.sm, color: Colors.textSecondary },
   rowDate: { fontSize: FontSize.xs, color: Colors.textMuted },
+  guessNote: {
+    fontSize: FontSize.xs,
+    color: Colors.textSecondary,
+    marginTop: Spacing.xs,
+    lineHeight: 16,
+  },
+  acctChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 2,
+  },
+  acctText: { fontSize: FontSize.xs, color: Colors.textSecondary, flexShrink: 1 },
+  acctMissing: { color: Colors.warning },
+  acctTag: { fontSize: 10, color: Colors.textMuted, fontStyle: "italic" },
   emptyBox: {
     alignItems: "center",
     gap: Spacing.sm,

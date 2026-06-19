@@ -33,6 +33,24 @@ from .pipeline import BotReply, ConfirmButton, OpenScreen
 # Items posted verbatim when tapped. Commands route through process_message's
 # short-circuit; prompts go to the LLM like any typed question.
 _MENU_COMMANDS: list[str] = ["/resumen", "/deshacer", "/cancelar", "/help"]
+
+# Native screen launchers: command → (open_screen value, reply text). Tapping a
+# chip posts the command; the native chat opens the matching screen. Telegram has
+# no screens, so build_menu_text lists these as app-only (+ the Telegram commands
+# that have equivalents: Gmail, memoria).
+_LAUNCHERS: dict[str, tuple[str, str]] = {
+    "/cuentas": ("accounts", "Te abro tus cuentas."),
+    "/movimientos": ("transactions", "Te abro tus movimientos."),
+    "/sobres": ("home", "Te abro tus sobres en la pantalla de inicio."),
+    "/gmail": (
+        "gmail",
+        "Te abro Gmail para conectar tu correo y revisar los movimientos "
+        "que llegan por ahí.",
+    ),
+    "/memoria": ("memory", "Te abro lo que tengo guardado sobre vos (memoria)."),
+}
+LAUNCHER_COMMANDS = frozenset(_LAUNCHERS)
+
 _MENU_PROMPTS: list[str] = [
     "¿Cuánto gasté esta semana?",
     "¿Cuánto me queda en mis sobres?",
@@ -62,7 +80,11 @@ def _inert(label: str) -> ConfirmButton:
 
 def build_menu_reply() -> BotReply:
     """Native chat menu: short intro + tappable chips + the `menu` marker."""
-    buttons = [_inert(c) for c in _MENU_COMMANDS] + [_inert(p) for p in _MENU_PROMPTS]
+    buttons = (
+        [_inert(c) for c in _MENU_COMMANDS]
+        + [_inert(c) for c in _LAUNCHERS]
+        + [_inert(p) for p in _MENU_PROMPTS]
+    )
     return BotReply(
         text=messages_es.MENU_INTRO,
         buttons=buttons,
@@ -78,8 +100,17 @@ def build_menu_text() -> str:
     return (
         f"{messages_es.MENU_INTRO}\n\n"
         f"Comandos:\n{commands}\n\n"
+        "En la app, desde el menú: Cuentas · Movimientos · Sobres · Gmail · "
+        "Memoria.\nPor acá: Gmail /conectar_gmail · Memoria /memoria\n\n"
         f"Ejemplos (escribilos):\n{prompts}"
     )
+
+
+def build_launcher_reply(command: str) -> BotReply:
+    """Hand off to a native screen (Cuentas / Movimientos / Sobres / Gmail /
+    Memoria). The native chat opens it; Telegram ignores open_screen."""
+    screen, text = _LAUNCHERS[command]
+    return BotReply(text=text, open_screen=OpenScreen(screen=screen, prefill={}))
 
 
 def _user_today(user: User) -> date:

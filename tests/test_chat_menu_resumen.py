@@ -110,3 +110,28 @@ async def test_resumen_empty_period_copy(db_with_user):
     reply = await _run(user, "/resumen semana", session)
 
     assert reply.text == "Aún no tengo registros para esta semana."
+
+
+@pytest.mark.asyncio
+async def test_launcher_commands_open_native_screens(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    expected = {
+        "/cuentas": "accounts",
+        "/movimientos": "transactions",
+        "/sobres": "home",
+        "/gmail": "gmail",
+        "/memoria": "memory",
+    }
+    for command, screen in expected.items():
+        reply = await _run(user, command, session)
+        assert reply.open_screen is not None, command
+        assert reply.open_screen.screen == screen, command
+
+
+def test_menu_includes_launchers():
+    from bot.menu import build_menu_reply
+
+    labels = [b.label for b in build_menu_reply().buttons]
+    for command in ("/cuentas", "/movimientos", "/sobres", "/gmail", "/memoria"):
+        assert command in labels

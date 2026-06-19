@@ -43,7 +43,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import settings
 from ..database import get_db
 from ..dependencies import current_user
+from ..models.account import Account
 from ..models.gmail_credential import GmailCredential
+from ..models.transaction import Transaction
 from ..models.user import User
 from ..models.user_category import UserCategory
 from ..redis_client import get_redis
@@ -503,6 +505,48 @@ async def confirm_shadow_transactions(
         if requested_category_ids - valid_ids:
             raise HTTPException(status_code=400, detail="Categoría inválida.")
 
+    # Any account_id override must belong to the caller, be active, and match the
+    # shadow row's currency (the native picker pre-filters to currency — this is
+    # the defensive server check). The scan already pre-fills a best-effort guess.
+    account_overrides = {
+        i.id: i.account_id for i in payload.items if i.account_id is not None
+    }
+    if account_overrides:
+        wanted = set(account_overrides.values())
+        acc_currency = dict(
+            (
+                await db.execute(
+                    select(Account.id, Account.currency).where(
+                        Account.id.in_(wanted),
+                        Account.user_id == user.id,
+                        Account.is_active.is_(True),
+                        Account.archived.is_(False),
+                    )
+                )
+            ).all()
+        )
+        if wanted - set(acc_currency):
+            raise HTTPException(status_code=400, detail="Cuenta inválida.")
+        row_currency = dict(
+            (
+                await db.execute(
+                    select(Transaction.id, Transaction.currency).where(
+                        Transaction.id.in_(account_overrides.keys()),
+                        Transaction.user_id == user.id,
+                        Transaction.status == "shadow",
+                        Transaction.source == "gmail",
+                    )
+                )
+            ).all()
+        )
+        for row_id, acc_id in account_overrides.items():
+            row_cur = row_currency.get(row_id)
+            if row_cur is not None and acc_currency.get(acc_id) != row_cur:
+                raise HTTPException(
+                    status_code=400,
+                    detail="La moneda de la cuenta no coincide con el movimiento.",
+                )
+
     items = [
         shadow_review.ShadowEdit(
             id=i.id,
@@ -511,6 +555,7 @@ async def confirm_shadow_transactions(
             description=i.description,
             category=i.category,
             category_id=i.category_id,
+            account_id=i.account_id,
             transaction_date=i.transaction_date,
         )
         for i in payload.items

@@ -4,9 +4,11 @@
  * Edits amount / merchant / description / category / date on a confirmed,
  * non-archived, non-transfer transaction via PATCH /transactions/{id}. The
  * backend rejects shadow rows, transfer legs, and archived rows with 409; we
- * surface that detail in an Alert. The amount field edits magnitude only and
- * preserves the original sign (expense stays expense) — switching income↔
- * expense is rare and out of scope here. Category is chosen from the Categorías
+ * surface that detail in an Alert. The amount field edits magnitude; the Tipo
+ * (Gasto / Ingreso) segmented control sets the sign, so a misclassified
+ * movement can be reclassified here. When it becomes income the Sobre field is
+ * hidden and cleared (spending-cap sobres are expense-only; the backend also
+ * forces envelope_id null on income). Category is chosen from the Categorías
  * screen (user_categories) via a picker — see CategoryPickerModal. We send both
  * `category` (name, what the list/detail screens display) and `category_id`
  * (FK) so the displayed string and the FK stay in sync. A transaction captured
@@ -72,7 +74,9 @@ function Field({
 }
 
 export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
-  const isExpense = tx.amount < 0;
+  // Tipo is editable: flipping it reclassifies the movement gasto ↔ ingreso
+  // (the sign of `amount` sent on save). Seeded from the row's current sign.
+  const [isExpense, setIsExpense] = useState(tx.amount < 0);
   const [amount, setAmount] = useState(String(Math.abs(tx.amount)));
   const [merchant, setMerchant] = useState(tx.merchant ?? "");
   const [description, setDescription] = useState(tx.description ?? "");
@@ -90,6 +94,7 @@ export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
 
   // Re-seed the form whenever a different row is opened.
   useEffect(() => {
+    setIsExpense(tx.amount < 0);
     setAmount(String(Math.abs(tx.amount)));
     setMerchant(tx.merchant ?? "");
     setDescription(tx.description ?? "");
@@ -183,6 +188,40 @@ export function TransactionEditModal({ visible, tx, onClose, onSaved }: Props) {
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
+            <Field label="Tipo">
+              <View style={styles.segment}>
+                {[
+                  { label: "Gasto", expense: true },
+                  { label: "Ingreso", expense: false },
+                ].map((opt) => {
+                  const active = isExpense === opt.expense;
+                  return (
+                    <Pressable
+                      key={opt.label}
+                      onPress={() => {
+                        if (isExpense === opt.expense) return;
+                        setIsExpense(opt.expense);
+                        // Income can't hold a spending-cap sobre.
+                        if (!opt.expense) setEnvelopeId(null);
+                      }}
+                      style={[
+                        styles.segmentBtn,
+                        active && styles.segmentBtnActive,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.segmentText,
+                          active && styles.segmentTextActive,
+                        ]}
+                      >
+                        {opt.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </Field>
             <Field label={`Monto (${tx.currency})`}>
               <AmountInput
                 value={amount}
@@ -394,6 +433,24 @@ const styles = StyleSheet.create({
     fontSize: FontSize.md,
     color: Colors.textPrimary,
   },
+  segment: {
+    flexDirection: "row",
+    gap: Spacing.xs,
+    backgroundColor: Colors.bgCard,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+    borderRadius: Radius.md,
+    padding: 3,
+  },
+  segmentBtn: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.sm,
+  },
+  segmentBtnActive: { backgroundColor: Colors.accent },
+  segmentText: { fontSize: FontSize.md, color: Colors.textSecondary, fontWeight: "500" },
+  segmentTextActive: { color: Colors.bgCard, fontWeight: "600" },
   selectRow: {
     flexDirection: "row",
     alignItems: "center",

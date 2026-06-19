@@ -31,9 +31,10 @@ import {
   type ChatUrlButton,
   type DebtPrefill,
   type DuplicateWarningPrefill,
+  type ReclassifyPrefill,
 } from "../api/chat";
 import { actOnNudge, dismissNudge } from "../api/nudges";
-import { deleteTransaction } from "../api/transactions";
+import { deleteTransaction, updateTransaction } from "../api/transactions";
 import { assignTransactionEnvelope } from "../api/envelopes";
 import { EnvelopePickerModal } from "../components/EnvelopePickerModal";
 import type { ChatStackParamList } from "../navigation/ChatNavigator";
@@ -56,6 +57,11 @@ type Message = {
   // Duplicate detection: set when the bot reply carried a `duplicate_warning`
   // hint — renders Eliminar / Conservar chips for the likely-duplicate row.
   duplicate?: { txId: string; nudgeId: string | null; merchant: string | null };
+  // Reclassify gasto ↔ ingreso: set when the bot reply carried an
+  // `assign_envelope` (→ offer "Era un ingreso") or `reclassify` (→ offer "Era
+  // un gasto") hint. `magnitude` is the absolute amount; the chip overwrites the
+  // row's amount with the signed magnitude for the target kind.
+  reclassify?: { txId: string; toIncome: boolean; magnitude: number };
   // /menu reply: keep these chips repeatable (don't disable after one tap).
   menu?: boolean;
 };
@@ -94,6 +100,19 @@ export function ChatScreen() {
         merchant: p.matched_merchant ?? p.merchant,
       };
     }
+    // Reclassify chip: an expense commit (assign_envelope) offers "Era un
+    // ingreso"; an income commit (reclassify) offers "Era un gasto". Both
+    // prefills share {transaction_id, amount}. Skip on a duplicate warning —
+    // the user resolves keep/delete first.
+    let reclassify: Message["reclassify"];
+    if (screen === "assign_envelope" || screen === "reclassify") {
+      const p = data.open_screen!.prefill as ReclassifyPrefill;
+      reclassify = {
+        txId: p.transaction_id,
+        toIncome: screen === "assign_envelope",
+        magnitude: Math.abs(Number(p.amount)),
+      };
+    }
     setMessages((prev) => [
       ...prev,
       {
@@ -104,6 +123,7 @@ export function ChatScreen() {
         urlButtons: data.url_buttons.length > 0 ? data.url_buttons : undefined,
         assignTxId,
         duplicate,
+        reclassify,
         menu: screen === "menu",
       },
     ]);
@@ -138,6 +158,23 @@ export function ChatScreen() {
         screen: "TransactionsList",
         params: { filterNoAccount: true },
       });
+    }
+    // Native screen launchers from /menu (/cuentas, /movimientos, /sobres,
+    // /gmail, /memoria). Cross-tab navigate to the matching screen.
+    const launcher: Record<string, { tab: string; screen?: string }> = {
+      gmail: { tab: "Mas", screen: "GmailHome" },
+      accounts: { tab: "Cuentas" },
+      transactions: { tab: "Movimientos", screen: "TransactionsList" },
+      home: { tab: "Inicio" },
+      memory: { tab: "Mas", screen: "MemoryScreen" },
+    };
+    if (screen && launcher[screen]) {
+      const d = launcher[screen];
+      (
+        nav as unknown as {
+          navigate: (tab: string, params?: { screen: string }) => void;
+        }
+      ).navigate(d.tab, d.screen ? { screen: d.screen } : undefined);
     }
   };
 
@@ -219,6 +256,56 @@ export function ChatScreen() {
               : action === "delete"
                 ? "No pude eliminar el movimiento. Intentá de nuevo."
                 : "No pude actualizar el movimiento. Intentá de nuevo.",
+        },
+      ]);
+    },
+  });
+
+  // Reclassify gasto ↔ ingreso: overwrite the row's amount with the signed
+  // magnitude for the target kind. Backend clears any envelope when it becomes
+  // income. Reuses the existing PATCH /transactions/{id}.
+  const reclassifyMutation = useMutation({
+    mutationFn: ({
+      txId,
+      toIncome,
+      magnitude,
+    }: {
+      txId: string;
+      toIncome: boolean;
+      magnitude: number;
+      messageId: string;
+    }) =>
+      updateTransaction(txId, {
+        amount: toIncome ? Math.abs(magnitude) : -Math.abs(magnitude),
+      }),
+    onSuccess: (_data, { toIncome, messageId }) => {
+      void qc.invalidateQueries({ queryKey: ["transactions"] });
+      void qc.invalidateQueries({ queryKey: ["dashboard"] });
+      void qc.invalidateQueries({ queryKey: ["envelopes"] });
+      setUsedChips((prev) => new Set(prev).add(messageId));
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextId(),
+          role: "bot",
+          text: toIncome
+            ? "Listo, lo cambié a ingreso."
+            : "Listo, lo cambié a gasto.",
+        },
+      ]);
+    },
+    onError: (e: unknown) => {
+      const detail = (e as { response?: { data?: { detail?: unknown } } })
+        ?.response?.data?.detail;
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextId(),
+          role: "bot",
+          text:
+            typeof detail === "string"
+              ? detail
+              : "No pude reclasificar el movimiento. Intentá de nuevo.",
         },
       ]);
     },
@@ -375,6 +462,17 @@ export function ChatScreen() {
                       })
                   : undefined
               }
+              onTapReclassify={
+                item.reclassify
+                  ? () =>
+                      reclassifyMutation.mutate({
+                        txId: item.reclassify!.txId,
+                        toIncome: item.reclassify!.toIncome,
+                        magnitude: item.reclassify!.magnitude,
+                        messageId: item.id,
+                      })
+                  : undefined
+              }
             />
           )}
           contentContainerStyle={styles.listContent}
@@ -467,6 +565,7 @@ interface MessageBubbleProps {
   onTapButton: (label: string) => void;
   onTapAssign?: () => void;
   onTapDuplicate?: (action: "delete" | "keep") => void;
+  onTapReclassify?: () => void;
 }
 
 function MessageBubble({
@@ -475,6 +574,7 @@ function MessageBubble({
   onTapButton,
   onTapAssign,
   onTapDuplicate,
+  onTapReclassify,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
 
@@ -551,6 +651,24 @@ function MessageBubble({
           >
             <Text style={[styles.chipLabel, chipsUsed && styles.chipLabelUsed]}>
               Asignar a un sobre
+            </Text>
+          </Pressable>
+        </View>
+      )}
+
+      {message.reclassify && onTapReclassify && (
+        <View style={styles.actionRow}>
+          <Pressable
+            onPress={() => !chipsUsed && onTapReclassify()}
+            disabled={chipsUsed}
+            style={({ pressed }) => [
+              styles.chip,
+              chipsUsed && styles.chipUsed,
+              !chipsUsed && pressed && { opacity: 0.7 },
+            ]}
+          >
+            <Text style={[styles.chipLabel, chipsUsed && styles.chipLabelUsed]}>
+              {message.reclassify.toIncome ? "Era un ingreso" : "Era un gasto"}
             </Text>
           </Pressable>
         </View>

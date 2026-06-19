@@ -33,6 +33,10 @@ interface Props {
   currentAccountId?: string | null;
   /** Show a "Sin cuenta" row that returns null (clears). Default true. */
   allowClear?: boolean;
+  /** When set, only accounts of this currency are listed (used by the Gmail
+   * review, where the confirm path rejects cross-currency instead of
+   * converting). Default: no filter. */
+  currencyFilter?: string;
   onClose: () => void;
   onSelect: (account: AccountResponse | null) => void;
 }
@@ -47,6 +51,7 @@ export function AccountPickerModal({
   visible,
   currentAccountId,
   allowClear = true,
+  currencyFilter,
   onClose,
   onSelect,
 }: Props) {
@@ -56,7 +61,9 @@ export function AccountPickerModal({
     enabled: visible,
   });
 
-  const accounts = (data ?? []).filter((a) => !a.archived);
+  const accounts = (data ?? []).filter(
+    (a) => !a.archived && (!currencyFilter || a.currency === currencyFilter),
+  );
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>

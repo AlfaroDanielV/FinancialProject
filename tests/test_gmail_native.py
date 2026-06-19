@@ -6,7 +6,9 @@ service here).
 """
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -14,12 +16,20 @@ from sqlalchemy import select
 
 from api.database import get_db
 from api.main import app
+from api.models.account import Account
 from api.models.gmail_credential import GmailCredential
 from api.models.gmail_ingestion_run import GmailIngestionRun
 from api.models.gmail_message_seen import GmailMessageSeen
 from api.models.gmail_sender_whitelist import GmailSenderWhitelist
 from api.models.transaction import Transaction
 from api.services.auth.magic_link import generate_link
+from api.services.extraction.email_extractor import ExtractedEmailTransaction
+from api.services.gmail.account_guess import (
+    bank_name_for_sender,
+    guess_account_id,
+    load_guess_context,
+)
+from api.services.gmail.reconciler import ReconcileOutcome, reconcile
 
 
 def _override_db(session):
@@ -74,6 +84,24 @@ async def _mk_shadow(session, user_id, gmail_id: str, *, amount=-1000.0, categor
     await session.commit()
     await session.refresh(txn)
     return txn
+
+
+async def _mk_account(
+    session, user_id, name, *, account_type="checking", currency="CRC"
+):
+    acc = Account(
+        user_id=user_id,
+        name=name,
+        account_type=account_type,
+        currency=currency,
+        initial_balance=0,
+        is_active=True,
+        archived=False,
+    )
+    session.add(acc)
+    await session.commit()
+    await session.refresh(acc)
+    return acc
 
 
 # ── senders ───────────────────────────────────────────────────────────────────
@@ -467,5 +495,197 @@ async def test_scan_status_reports_state_and_latest_run(db_with_user):
         assert body["latest_run"]["transactions_created"] == 2
         assert body["latest_run"]["running"] is False
         assert body["latest_run"]["has_errors"] is False
+    finally:
+        _clear_db_override()
+
+
+# ── account guess (deterministic) ──────────────────────────────────────────────
+
+
+def _acct(name, *, account_type="checking", currency="CRC", created=None, id_=None):
+    """In-memory (unpersisted) Account for the pure guesser tests."""
+    return Account(
+        id=id_ or uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        name=name,
+        account_type=account_type,
+        currency=currency,
+        initial_balance=0,
+        is_active=True,
+        archived=False,
+        created_at=created or datetime(2026, 1, 1),
+    )
+
+
+def test_guess_bank_name_match_beats_type_heuristic():
+    bac = _acct("BAC", account_type="checking")
+    scotia = _acct("Scotia Tarjeta", account_type="credit")
+    # transaction_type=charge would prefer the credit card, but the bank name
+    # pins it to the BAC checking account.
+    got = guess_account_id(
+        accounts=[bac, scotia], last_used={}, currency="CRC",
+        transaction_type="charge", bank_name="BAC",
+    )
+    assert got == bac.id
+
+
+def test_guess_currency_filter_blocks_other_currency():
+    crc = _acct("Colones", currency="CRC")
+    got = guess_account_id(
+        accounts=[crc], last_used={}, currency="USD",
+        transaction_type="charge", bank_name="BAC",
+    )
+    assert got is None  # no USD account → genuinely un-guessable
+
+
+def test_guess_single_account_in_currency_fallback():
+    crc = _acct("Colones", currency="CRC")
+    usd = _acct("Dólares", currency="USD")
+    got = guess_account_id(
+        accounts=[crc, usd], last_used={}, currency="USD",
+        transaction_type="withdrawal", bank_name=None,
+    )
+    assert got == usd.id
+
+
+def test_guess_type_heuristic_prefers_credit_for_charge():
+    checking = _acct("Corriente", account_type="checking")
+    credit = _acct("Tarjeta", account_type="credit")
+    got = guess_account_id(
+        accounts=[checking, credit], last_used={}, currency="CRC",
+        transaction_type="charge", bank_name=None,
+    )
+    assert got == credit.id
+
+
+def test_guess_recency_tiebreak_among_same_type():
+    a = _acct("Corriente A")
+    b = _acct("Corriente B")
+    got = guess_account_id(
+        accounts=[a, b],
+        last_used={a.id: date(2026, 3, 1), b.id: date(2026, 5, 1)},
+        currency="CRC", transaction_type="withdrawal", bank_name=None,
+    )
+    assert got == b.id  # used more recently
+
+
+def test_bank_name_for_sender_substring_match():
+    m = {"notifica@bac.cr": "BAC", "alerts@bcr.fi.cr": "BCR"}
+    assert bank_name_for_sender("BAC <notifica@bac.cr>", m) == "BAC"
+    assert bank_name_for_sender("Nadie <x@y.com>", m) is None
+    assert bank_name_for_sender(None, m) is None
+
+
+# ── reconcile attaches the guess ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_reconcile_attaches_guessed_account(db_with_user):
+    session, user_id = db_with_user
+    bac = await _mk_account(
+        session, user_id, "BAC Visa", account_type="credit", currency="CRC"
+    )
+    candidate = ExtractedEmailTransaction(
+        amount=Decimal("5000"), currency="CRC", merchant="Walmart",
+        transaction_date=date(2026, 6, 1), transaction_type="charge",
+        confidence=0.95,
+    )
+    accounts, last_used = await load_guess_context(session, user_id)
+    outcome, txn = await reconcile(
+        db=session, user_id=user_id, candidate=candidate,
+        gmail_message_id="gm-guess-1", accounts=accounts, last_used=last_used,
+        bank_name="BAC",
+    )
+    await session.commit()
+    assert outcome == ReconcileOutcome.CREATED_SHADOW
+    assert txn.account_id == bac.id
+
+
+@pytest.mark.asyncio
+async def test_reconcile_leaves_null_without_currency_account(db_with_user):
+    session, user_id = db_with_user
+    await _mk_account(session, user_id, "Colones", currency="CRC")
+    candidate = ExtractedEmailTransaction(
+        amount=Decimal("10"), currency="USD", merchant="Amazon",
+        transaction_date=date(2026, 6, 1), transaction_type="charge",
+        confidence=0.95,
+    )
+    accounts, last_used = await load_guess_context(session, user_id)
+    outcome, txn = await reconcile(
+        db=session, user_id=user_id, candidate=candidate,
+        gmail_message_id="gm-guess-2", accounts=accounts, last_used=last_used,
+        bank_name="BAC",
+    )
+    await session.commit()
+    assert outcome == ReconcileOutcome.CREATED_SHADOW
+    assert txn.account_id is None  # no USD account → stays "Sin cuenta"
+
+
+# ── confirm carries account_id ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_confirm_shadow_applies_account_override(db_with_user):
+    session, user_id = db_with_user
+    t1 = await _mk_shadow(session, user_id, "g1")  # CRC
+    acc = await _mk_account(session, user_id, "BAC", currency="CRC")
+    token = await _token(session, user_id)
+    try:
+        async with _client() as ac:
+            resp = await ac.post(
+                "/api/v1/gmail/shadow/confirm",
+                json={"items": [{"id": str(t1.id), "account_id": str(acc.id)}]},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200, resp.text
+        await session.refresh(t1)
+        assert t1.status == "confirmed"
+        assert t1.account_id == acc.id
+    finally:
+        _clear_db_override()
+
+
+@pytest.mark.asyncio
+async def test_confirm_shadow_rejects_foreign_account(db_with_user):
+    session, user_id = db_with_user
+    t1 = await _mk_shadow(session, user_id, "g1")
+    token = await _token(session, user_id)
+    try:
+        async with _client() as ac:
+            resp = await ac.post(
+                "/api/v1/gmail/shadow/confirm",
+                json={
+                    "items": [
+                        {
+                            "id": str(t1.id),
+                            "account_id": "00000000-0000-0000-0000-000000000000",
+                        }
+                    ]
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 400, resp.text
+        await session.refresh(t1)
+        assert t1.status == "shadow"  # not confirmed
+    finally:
+        _clear_db_override()
+
+
+@pytest.mark.asyncio
+async def test_confirm_shadow_rejects_wrong_currency_account(db_with_user):
+    session, user_id = db_with_user
+    t1 = await _mk_shadow(session, user_id, "g1")  # CRC
+    usd = await _mk_account(session, user_id, "Dólares", currency="USD")
+    token = await _token(session, user_id)
+    try:
+        async with _client() as ac:
+            resp = await ac.post(
+                "/api/v1/gmail/shadow/confirm",
+                json={"items": [{"id": str(t1.id), "account_id": str(usd.id)}]},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 400, resp.text
+        await session.refresh(t1)
+        assert t1.status == "shadow"
     finally:
         _clear_db_override()

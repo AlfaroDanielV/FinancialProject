@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -74,6 +75,7 @@ from .onboarding_welcome import build_onboarding_reply
 from .pending import (
     PendingAction,
     clear_pending,
+    load_last_action,
     load_pending,
     new_short_id,
     save_pending,
@@ -173,6 +175,15 @@ def _buttons_for(short_id: str) -> list[ConfirmButton]:
     ]
 
 
+def _yes_no_buttons(short_id: str) -> list[ConfirmButton]:
+    """Sí / No only (no Editar) — used by the reclassify proposal, which has
+    nothing to edit field-by-field."""
+    return [
+        ConfirmButton(messages_es.CONFIRM_BUTTONS_YES, _cb(short_id, "yes")),
+        ConfirmButton(messages_es.CONFIRM_BUTTONS_NO, _cb(short_id, "no")),
+    ]
+
+
 def _clarify_buttons(state: ClarificationState) -> list[ConfirmButton]:
     """Phase 7f — tappable clarification options (account names).
 
@@ -193,6 +204,55 @@ def _text_is_confirmation(text: str) -> Optional[bool]:
     if t in _CONFIRM_YES_WORDS:
         return True
     if t in _CONFIRM_NO_WORDS:
+        return False
+    return None
+
+
+# Reclassify recognizer (gasto ↔ ingreso of the LAST movement). Deterministic,
+# LLM-free — the LLM never decides a reclassification. Kept deliberately TIGHT
+# (full-match anchored, no bare-negation forms, digit-free) so it can't hijack a
+# new capture ("ingresé 5000") or a query ("¿cuál fue mi último ingreso?"). The
+# common corrective phrasings — "era/fue/es un ingreso", optionally led by a
+# discourse "no," or "eso/el último/en realidad", and "cambialo a ingreso" — are
+# covered; ambiguous bare negations ("no era un gasto") fall through to the LLM.
+_RECLASSIFY_PREFIX = (
+    r"(?:(?:eso|ese|esto|esa|el ultimo|la ultima|el movimiento|"
+    r"ese movimiento|en realidad)\s+)*"
+)
+_RECLASSIFY_VERB = r"(?:era|fue|es)\s+(?:un\s+)?"
+_RECLASSIFY_IMPER = (
+    r"(?:cambialo|cambiar|cambia|reclasificalo|reclasifica|marcalo|marca|"
+    r"ponelo|ponlo|pasalo)\s+(?:a|como)\s+(?:un\s+)?"
+)
+_RECLASSIFY_INCOME_RE = re.compile(
+    rf"(?:{_RECLASSIFY_PREFIX}{_RECLASSIFY_VERB}|{_RECLASSIFY_IMPER})ingreso"
+)
+_RECLASSIFY_EXPENSE_RE = re.compile(
+    rf"(?:{_RECLASSIFY_PREFIX}{_RECLASSIFY_VERB}|{_RECLASSIFY_IMPER})gasto"
+)
+
+
+def _reclassify_target(text: str) -> Optional[bool]:
+    """Return True to reclassify the last movement to INCOME, False to EXPENSE,
+    or None when the text isn't a reclassification phrase."""
+    # Normalize: strip accents, lowercase, drop a leading discourse "no," (the
+    # rejection-then-correction form — NOT a negation), replace punctuation with
+    # spaces, collapse whitespace.
+    t = "".join(
+        c
+        for c in unicodedata.normalize("NFD", text)
+        if unicodedata.category(c) != "Mn"
+    ).lower()
+    if any(ch.isdigit() for ch in t):
+        return None
+    t = re.sub(r"^\s*no\s*[,.;:!¡]+\s*", "", t)
+    t = re.sub(r"[^\w\s]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    if not t:
+        return None
+    if _RECLASSIFY_INCOME_RE.fullmatch(t):
+        return True
+    if _RECLASSIFY_EXPENSE_RE.fullmatch(t):
         return False
     return None
 
@@ -279,6 +339,13 @@ async def process_message(
         from .menu import handle_resumen
 
         return await handle_resumen(text, user=user, db=db)
+    if lowered.startswith("/"):
+        # Native screen launchers (/cuentas, /movimientos, /sobres, /gmail,
+        # /memoria). Imported lazily to avoid a circular import with bot.menu.
+        from .menu import LAUNCHER_COMMANDS, build_launcher_reply
+
+        if lowered in LAUNCHER_COMMANDS:
+            return build_launcher_reply(lowered)
 
     # ── account-creation round-trip ──
     # Phase 6d B9: this conversational flow owns its replies while active,
@@ -405,6 +472,21 @@ async def process_message(
             return await _handle_confirm(
                 user=user, yes=plain_confirm, db=db, redis=redis, source_text=text
             )
+
+    # ── reclassify gasto ↔ ingreso (last movement) ──
+    # A deterministic corrective phrase ("eso fue un ingreso") proposes flipping
+    # the sign of the LAST committed movement, with a Sí/No confirm. LLM-free —
+    # the LLM never decides a reclassification. Skipped while a proposal is in
+    # flight (that turn belongs to its own confirm). The native post-capture
+    # "Era un ingreso" chip PATCHes directly; this is the typed-phrase path,
+    # available on both channels.
+    reclassify_to_income = _reclassify_target(text)
+    if reclassify_to_income is not None and (
+        await load_pending(user_id=user.id, redis=redis) is None
+    ):
+        return await _handle_reclassify(
+            user=user, to_income=reclassify_to_income, db=db, redis=redis
+        )
 
     # ── token budget gate ──
     # Source of truth: llm_extractions + llm_query_dispatches summed
@@ -588,6 +670,38 @@ async def _handle_confirm(
             )
         )
 
+    if pending.action_type == "reclassify":
+        from api.services.transactions import (
+            RECLASSIFY_NOT_FOUND,
+            RECLASSIFY_REASON_ES,
+            ReclassifyError,
+        )
+
+        to_income = bool(pending.payload.get("to_income"))
+        try:
+            await commit_pending(user=user, pending=pending, db=db, redis=redis)
+        except ReclassifyError as exc:
+            # The row changed between proposal and confirm (deleted, became a
+            # transfer leg, etc.). Drop the stale proposal and explain.
+            await clear_pending(user_id=user.id, redis=redis)
+            return BotReply(
+                text=RECLASSIFY_REASON_ES.get(
+                    exc.reason_code, RECLASSIFY_REASON_ES[RECLASSIFY_NOT_FOUND]
+                )
+            )
+        reply = BotReply(
+            text=messages_es.RECLASSIFIED_TO_INCOME
+            if to_income
+            else messages_es.RECLASSIFIED_TO_EXPENSE
+        )
+        await _bridge_to_query_history(
+            user_id=user.id,
+            user_text=source_text,
+            assistant_text=reply.text,
+            redis=redis,
+        )
+        return reply
+
     txn_id = await commit_pending(user=user, pending=pending, db=db, redis=redis)
     amt_decimal = Decimal(pending.payload["amount"])
     currency = pending.payload["currency"]
@@ -649,7 +763,77 @@ async def _handle_confirm(
                     "merchant": pending.payload.get("merchant"),
                 },
             )
+    elif pending.action_type == "log_income":
+        # Reclassify affordance: after an INCOME commits, hand the native chat a
+        # `reclassify` hint so it can offer an in-chat "Era un gasto" chip on the
+        # just-created row (mirrors assign_envelope; Telegram ignores it). The
+        # expense path reuses its assign_envelope hint to also offer "Era un
+        # ingreso", so both directions are one tap away right after capture.
+        open_screen = OpenScreen(
+            screen="reclassify",
+            prefill={
+                "transaction_id": str(txn_id),
+                "amount": str(amt_decimal),
+                "currency": currency,
+                "merchant": pending.payload.get("merchant"),
+            },
+        )
     return BotReply(text=text, open_screen=open_screen)
+
+
+async def _handle_reclassify(
+    *, user: User, to_income: bool, db: AsyncSession, redis: Redis
+) -> BotReply:
+    """Stage a proposal to flip the LAST committed movement gasto ↔ ingreso.
+
+    Validates the target row up front with the shared guards so we refuse with
+    a clear reason (no recent movement / it's a transfer leg / already that
+    kind …) instead of staging a proposal that can't commit. On success, saves
+    a `reclassify` pending and returns the Sí/No confirm — the actual flip
+    happens in `_commit_reclassify` after the user confirms.
+    """
+    from api.models.transaction import Transaction
+    from api.services.transactions import (
+        RECLASSIFY_NOT_FOUND,
+        RECLASSIFY_REASON_ES,
+        reclassify_blocker,
+    )
+
+    entry = await load_last_action(user_id=user.id, redis=redis)
+    if not entry or entry.get("action_type") not in ("log_expense", "log_income"):
+        return BotReply(text=RECLASSIFY_REASON_ES[RECLASSIFY_NOT_FOUND])
+    try:
+        record_id = uuid.UUID(entry.get("record_id", ""))
+    except (ValueError, TypeError):
+        return BotReply(text=RECLASSIFY_REASON_ES[RECLASSIFY_NOT_FOUND])
+
+    txn = await db.get(Transaction, record_id)
+    if txn is None or txn.user_id != user.id:
+        return BotReply(text=RECLASSIFY_REASON_ES[RECLASSIFY_NOT_FOUND])
+
+    blocker = reclassify_blocker(txn, to_income=to_income)
+    if blocker is not None:
+        return BotReply(text=RECLASSIFY_REASON_ES[blocker])
+
+    magnitude = abs(Decimal(str(txn.amount)))
+    summary = messages_es.RECLASSIFY_CONFIRM.format(
+        kind="INGRESO" if to_income else "GASTO",
+        amount=format_amount(magnitude, txn.currency),
+    )
+    short_id = new_short_id()
+    pending = PendingAction(
+        short_id=short_id,
+        action_type="reclassify",
+        payload={
+            "transaction_id": str(txn.id),
+            "to_income": to_income,
+            "amount": str(magnitude),
+            "currency": txn.currency,
+        },
+        summary_es=summary,
+    )
+    await save_pending(user_id=user.id, pending=pending, redis=redis)
+    return BotReply(text=summary, buttons=_yes_no_buttons(short_id))
 
 
 # ── dev/smoke entry: skip LLM, inject a pre-baked ExtractionResult ──────────

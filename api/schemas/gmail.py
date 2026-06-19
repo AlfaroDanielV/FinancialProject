@@ -78,6 +78,11 @@ class ShadowConfirmItem(BaseModel):
     # FK to a user_categories row (the Categorías screen). Sent alongside
     # `category` (name) by the native review picker; validated in the router.
     category_id: Optional[uuid.UUID] = None
+    # FK to one of the caller's active accounts. The native review screen
+    # pre-fills this with the scan's best-effort guess; validated in the router
+    # (caller-owned, active, currency-matched). None = keep the row's current
+    # (guessed) account.
+    account_id: Optional[uuid.UUID] = None
     transaction_date: Optional[date] = None
 
 

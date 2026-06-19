@@ -273,6 +273,14 @@ async def on_resumen(message: Message) -> None:
     await message.answer(reply.text)
 
 
+@router.message(Command("gmail", "correos", "correo"))
+async def on_gmail(message: Message) -> None:
+    await message.answer(
+        "En la app, /gmail abre la pantalla de Gmail para conectar tu correo.\n"
+        "Por acá usá: /conectar_gmail · /estado_gmail · /revisar_correos"
+    )
+
+
 @router.message(Command("login", "iniciar"))
 async def on_login(message: Message) -> None:
     """Phase 6f B3 — mint a 6-character device-login code.

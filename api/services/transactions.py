@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
 
@@ -190,6 +190,99 @@ async def hard_delete_transaction(
 
     await db.delete(txn)
     await db.flush()
+
+
+# ── reclassify gasto ↔ ingreso (chat + app native) ───────────────────────────
+
+RECLASSIFY_NOT_FOUND = "not_found"
+RECLASSIFY_SHADOW = "shadow"
+RECLASSIFY_TRANSFER_LEG = "transfer_leg"
+RECLASSIFY_GOAL_FLOW = "goal_flow"
+RECLASSIFY_ARCHIVED = "archived"
+RECLASSIFY_ALREADY = "already_target"
+
+# Voseo CR copy, shared by the chat reclassify surface. The native app flips a
+# row directly via PATCH /transactions/{id}, so it doesn't read these.
+RECLASSIFY_REASON_ES: dict[str, str] = {
+    RECLASSIFY_NOT_FOUND: (
+        "No tengo un movimiento reciente para reclasificar. "
+        "Editalo desde Movimientos."
+    ),
+    RECLASSIFY_SHADOW: (
+        "Ese movimiento está pendiente de aprobar. Aprobalo o rechazalo "
+        "desde el bot."
+    ),
+    RECLASSIFY_TRANSFER_LEG: (
+        "Ese movimiento es parte de una transferencia, no se puede "
+        "reclasificar como gasto o ingreso."
+    ),
+    RECLASSIFY_GOAL_FLOW: (
+        "Ese movimiento pertenece a una meta de ahorro. Gestionalo desde la "
+        "meta."
+    ),
+    RECLASSIFY_ARCHIVED: "Restaurá el movimiento antes de reclasificarlo.",
+    RECLASSIFY_ALREADY: "Ese movimiento ya está clasificado así.",
+}
+
+
+@dataclass
+class ReclassifyError(Exception):
+    """Raised when a gasto↔ingreso reclassification is not allowed.
+
+    `reason_code` is machine-readable so the bot picks the Spanish copy from
+    RECLASSIFY_REASON_ES without parsing human strings.
+    """
+
+    reason_code: str
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return f"reclassify_blocked:{self.reason_code}"
+
+
+def reclassify_blocker(txn: Transaction, *, to_income: bool) -> Optional[str]:
+    """Return a RECLASSIFY_* reason code if this row can't be flipped to the
+    requested kind, else None. Pure — used both by the chat proposal builder
+    (to refuse before staging) and by `reclassify_transaction` (to refuse at
+    commit). Mirrors the PATCH immutability guards.
+    """
+    if txn.status != "confirmed":
+        return RECLASSIFY_SHADOW
+    if txn.transfer_id is not None:
+        return RECLASSIFY_TRANSFER_LEG
+    if txn.goal_id is not None:
+        return RECLASSIFY_GOAL_FLOW
+    if txn.archived:
+        return RECLASSIFY_ARCHIVED
+    if (txn.amount > 0) == to_income:
+        return RECLASSIFY_ALREADY
+    return None
+
+
+async def reclassify_transaction(
+    db: AsyncSession, *, txn: Transaction, to_income: bool
+) -> Transaction:
+    """Flip a confirmed movement between expense (amount < 0) and income
+    (amount > 0) by changing only the SIGN of `amount` — magnitude is kept.
+
+    Balances are computed live from `SUM(amount)`, so flipping the sign moves
+    the row between the income and expense sides of the ledger with no stored
+    balance to update. Shares the PATCH immutability guards. When the row
+    becomes income, `envelope_id` is cleared — spending-cap sobres are
+    expense-only. The category string is left untouched (it is informational
+    and not kind-validated). FLUSHES, never commits; the caller owns the
+    transaction boundary.
+    """
+    blocker = reclassify_blocker(txn, to_income=to_income)
+    if blocker is not None:
+        raise ReclassifyError(blocker)
+
+    magnitude = abs(Decimal(str(txn.amount)))
+    txn.amount = magnitude if to_income else -magnitude
+    if to_income:
+        # Income can never carry a spending-cap envelope.
+        txn.envelope_id = None
+    await db.flush()
+    return txn
 
 
 async def create_transaction(

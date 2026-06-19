@@ -21,10 +21,16 @@ from api.models.debt import Debt
 from api.models.goal import Goal
 from api.models.recurring_bill import RecurringBill
 from api.models.recurring_income import RecurringIncome
+from api.models.transaction import Transaction
 from api.models.user import User
 from api.schemas.transfers import TransferCreate
 from api.services import recurrence
-from api.services.transactions import create_transaction
+from api.services.transactions import (
+    RECLASSIFY_NOT_FOUND,
+    ReclassifyError,
+    create_transaction,
+    reclassify_transaction,
+)
 from api.services.transfers import create_transfer_with_transactions
 
 from .pending import PendingAction, clear_pending, save_last_action
@@ -57,6 +63,11 @@ async def commit_pending(
 
     if pending.action_type == "log_transfer":
         return await _commit_transfer(user=user, pending=pending, db=db, redis=redis)
+
+    if pending.action_type == "reclassify":
+        return await _commit_reclassify(
+            user=user, pending=pending, db=db, redis=redis
+        )
 
     if pending.action_type not in ("log_expense", "log_income"):
         raise ValueError(f"unknown action_type: {pending.action_type}")
@@ -144,6 +155,49 @@ async def _commit_transfer(
         redis=redis,
     )
     return transfer_id
+
+
+async def _commit_reclassify(
+    *,
+    user: User,
+    pending: PendingAction,
+    db: AsyncSession,
+    redis: Redis,
+) -> uuid.UUID:
+    """Flip the last movement gasto ↔ ingreso from a confirmed reclassify
+    proposal. Re-fetches the row and re-checks the guards (via the shared
+    service) — it may have changed between proposal and confirm. Updates
+    last_action to the new kind so /undo and a re-reclassify still point at it.
+    Returns the (unchanged) transaction id.
+    """
+    payload = pending.payload
+    txn_id = uuid.UUID(payload["transaction_id"])
+    to_income = bool(payload["to_income"])
+    result = await db.execute(
+        select(Transaction).where(
+            Transaction.id == txn_id, Transaction.user_id == user.id
+        )
+    )
+    txn = result.scalar_one_or_none()
+    if txn is None:
+        raise ReclassifyError(RECLASSIFY_NOT_FOUND)
+
+    await reclassify_transaction(db, txn=txn, to_income=to_income)
+    await db.commit()
+
+    await resolve_from_pending(
+        session=db, pending=pending, resolution="confirmed"
+    )
+    await db.commit()
+
+    await clear_pending(user_id=user.id, redis=redis)
+    await save_last_action(
+        user_id=user.id,
+        action_type="log_income" if to_income else "log_expense",
+        record_id=txn_id,
+        redis=redis,
+    )
+    return txn_id
 
 
 async def _commit_goal(

@@ -24,17 +24,19 @@ import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 from enum import Enum
-from typing import Optional
+from typing import Mapping, Optional, Sequence
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...models.account import Account
 from ...models.transaction import Transaction
 from ..extraction.email_extractor import (
     EXPENSE_TYPES,
     INCOME_TYPES,
     ExtractedEmailTransaction,
 )
+from . import account_guess
 
 
 log = logging.getLogger("api.services.gmail.reconciler")
@@ -185,9 +187,17 @@ async def reconcile(
     gmail_message_id: str,
     email_subject: Optional[str] = None,
     email_from: Optional[str] = None,
+    accounts: Sequence[Account] = (),
+    last_used: Optional[Mapping[uuid.UUID, date]] = None,
+    bank_name: Optional[str] = None,
 ) -> tuple[ReconcileOutcome, Optional[Transaction]]:
     """Decide and act. Always commits-friendly — returns the row
     in-session; the caller commits.
+
+    `accounts` / `last_used` / `bank_name` feed the best-effort account guess
+    applied to a newly-created shadow row (the user reviews + can correct it in
+    the native review screen). When omitted, the row keeps `account_id=NULL`,
+    preserving the prior behavior.
     """
     # 1. Confidence gate.
     if candidate.confidence < RECONCILE_MIN_CONFIDENCE:
@@ -241,6 +251,23 @@ async def reconcile(
     #    docs/gmail-shadow-review.md.
     status = "shadow"
 
+    # Best-effort account guess. Deterministic and swallow-on-fail: a guess must
+    # never break ingestion, so any error just leaves account_id NULL (→ the row
+    # shows "Sin cuenta" in review, same as before this feature).
+    guessed_account_id: Optional[uuid.UUID] = None
+    try:
+        guessed_account_id = account_guess.guess_account_id(
+            accounts=accounts,
+            last_used=last_used,
+            currency=candidate.currency,
+            transaction_type=candidate.transaction_type,
+            bank_name=bank_name,
+        )
+    except Exception:  # noqa: BLE001 — a guess must never break a scan
+        log.exception(
+            "account_guess_failed user=%s msg=%s", user_id, gmail_message_id
+        )
+
     txn = Transaction(
         user_id=user_id,
         amount=signed,
@@ -253,6 +280,7 @@ async def reconcile(
         source="gmail",
         gmail_message_id=gmail_message_id,
         status=status,
+        account_id=guessed_account_id,
     )
     db.add(txn)
     await db.flush()

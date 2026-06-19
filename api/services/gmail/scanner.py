@@ -31,8 +31,8 @@ import time
 import uuid
 from html import unescape as _html_unescape
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Iterable, Literal, Optional
+from datetime import date, datetime, timezone
+from typing import Any, Iterable, Literal, Mapping, Optional, Sequence
 
 import httpx
 from pydantic import BaseModel, Field
@@ -41,6 +41,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...config import settings
+from ...models.account import Account
 from ...models.gmail_credential import GmailCredential
 from ...models.gmail_ingestion_run import GmailIngestionRun
 from ...models.gmail_message_seen import GmailMessageSeen
@@ -50,6 +51,7 @@ from ..extraction.email_extractor import (
 )
 from ..llm_extractor.client import AnthropicLLMClient, LLMClient
 from ..secrets import get_secret_store, kv_name_for_user
+from . import account_guess
 from . import oauth as oauth_svc
 from . import reconciler as reconcile_mod
 from . import whitelist as wl_svc
@@ -537,13 +539,25 @@ async def scan_user_inbox(
         return result
 
     # 3. Read whitelist. Empty → finalize, do nothing.
-    senders = [s.sender_email for s in await wl_svc.list_active(db=db, user_id=user_id)]
+    wl_rows = await wl_svc.list_active(db=db, user_id=user_id)
+    senders = [s.sender_email for s in wl_rows]
     if not senders:
         result.no_whitelist = True
         result.finished_at = datetime.now(timezone.utc)
         await _finalize_run(db=db, run=run, result=result)
         log.warning("scan_no_whitelist user=%s — nothing to query", user_id)
         return result
+
+    # 3b. Best-effort account-guess context, loaded once per scan and passed to
+    #     the reconciler so new shadow rows land pre-attached to a guessed
+    #     account (the user reviews + can correct in the native review screen).
+    #     `sender_bank` maps a bare sender email → its whitelist bank label.
+    sender_bank = {
+        s.sender_email.lower(): s.bank_name for s in wl_rows if s.sender_email
+    }
+    guess_accounts, guess_last_used = await account_guess.load_guess_context(
+        db, user_id
+    )
 
     # 4. Build query.
     query = _build_gmail_query(senders=senders, since=since, until=until)
@@ -593,6 +607,9 @@ async def scan_user_inbox(
                 stub=stub,
                 llm_client=llm,
                 result=result,
+                accounts=guess_accounts,
+                last_used=guess_last_used,
+                sender_bank=sender_bank,
             )
             result.messages_scanned += 1
 
@@ -635,6 +652,9 @@ async def _process_one_message(
     stub: _MessageStub,
     llm_client: LLMClient,
     result: ScanResult,
+    accounts: Sequence[Account] = (),
+    last_used: Optional[Mapping[uuid.UUID, date]] = None,
+    sender_bank: Optional[Mapping[str, Optional[str]]] = None,
 ) -> None:
     """One message lifecycle. Errors are caught and recorded as
     `outcome='failed'` in gmail_messages_seen so a later debugging pass
@@ -765,7 +785,9 @@ async def _process_one_message(
         await db.commit()
         return
 
-    # Hand off to reconciler.
+    # Hand off to reconciler. Resolve the sender's bank label so the reconciler
+    # can take a best-effort guess at the account for a new shadow row.
+    bank_name = account_guess.bank_name_for_sender(from_addr, sender_bank or {})
     outcome, txn = await reconcile_mod.reconcile(
         db=db,
         user_id=user_id,
@@ -773,6 +795,9 @@ async def _process_one_message(
         gmail_message_id=stub.id,
         email_subject=subject,
         email_from=from_addr,
+        accounts=accounts,
+        last_used=last_used,
+        bank_name=bank_name,
     )
 
     # Map ReconcileOutcome → gmail_messages_seen.outcome (CHECK in 0011

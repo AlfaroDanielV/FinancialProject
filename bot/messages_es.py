@@ -106,6 +106,11 @@ COMMITTED_EXPENSE = "Guardado: gasto de {amount}. Mandá /undo si te equivocaste
 COMMITTED_INCOME = "Guardado: ingreso de {amount}. Mandá /undo si te equivocaste."
 COMMITTED_DISCARDED = "Listo, no guardé nada."
 
+# Reclassify gasto ↔ ingreso (last movement) — chat phrase → confirm.
+RECLASSIFY_CONFIRM = "¿Cambio el último movimiento a {kind} {amount}?"
+RECLASSIFIED_TO_INCOME = "Listo, cambié el último movimiento a ingreso."
+RECLASSIFIED_TO_EXPENSE = "Listo, cambié el último movimiento a gasto."
+
 # Phase 7b — transfers between own accounts (card payment = transfer).
 TRANSFER_COMMITTED = (
     "Listo, registré la transferencia de {amount} de {from_name} a "
