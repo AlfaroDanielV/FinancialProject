@@ -164,9 +164,28 @@ uv run alembic upgrade head
 > referenced there and is left alone.
 
 After a full reset the upgrade already **seeded your account** from the
-`LEGACY_*` vars (email + `shortcut_token`, no Telegram link yet). To use it: pair
-Telegram via the pairing-code flow, or `/login` in the app. (`/start` would
-cold-start a *separate* new user.) Then `/setup`.
+`LEGACY_*` vars (email + `shortcut_token`) — but with **no Telegram link yet**. A
+bare `/start` in Telegram won't recognize you: it cold-starts a *separate* new
+user, and giving your real email hits *"ese email ya tiene una cuenta"* (the
+documented pairing dead-end — the pairing endpoint needs auth). Break it with a
+**pairing code**, authenticated by the `shortcut_token` already in `.env`:
+
+```bash
+# 1. Mint a pairing code (valid 5 min). Needs the API up — uvicorn on :8000.
+TOKEN=$(grep -E '^LEGACY_SHORTCUT_TOKEN=' .env | tail -1 | cut -d= -f2-)
+curl -sS -X POST http://localhost:8000/api/v1/users/me/telegram/pairing-code \
+  -H "X-Shortcut-Token: $TOKEN"
+# → {"code":"ABC123","expires_in_seconds":300}
+
+# 2. In Telegram, within 5 min, send:  /start ABC123
+```
+
+Then `/setup`. (For the native app instead, `/login` in Telegram and paste the
+code.)
+
+**Skip pairing entirely:** if you don't need to keep your real email/token, set
+`LEGACY_USER_EMAIL` to a throwaway address before the upgrade, then just `/start`
+in Telegram to cold-start a brand-new user — no pairing code needed.
 
 ---
 
