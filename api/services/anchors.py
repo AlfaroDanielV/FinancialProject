@@ -41,8 +41,9 @@ AJUSTE_DESCRIPTION = "Ajuste de reconciliación de saldo"
 
 # Anchor provenance. `migrated` = the 0035 backfill (unconfirmed real balance →
 # the "confirmá tu saldo" nudge fires); `onboarding` = set at account creation;
-# `reanchor` = a later correction.
-ANCHOR_SOURCES = ("onboarding", "reanchor", "migrated")
+# `reanchor` = a later correction; `statement` = reconciled from an uploaded bank
+# statement PDF at the fecha de corte.
+ANCHOR_SOURCES = ("onboarding", "reanchor", "migrated", "statement")
 
 
 @dataclass(frozen=True)

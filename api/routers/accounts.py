@@ -28,6 +28,11 @@ from ..schemas.card_terms import (
     CardTermsExtraction,
     CardTermsResponse,
 )
+from ..schemas.statements import (
+    StatementExtraction,
+    StatementReconcileRequest,
+    StatementReconcileResponse,
+)
 from ..services.accounts import (
     compute_account_balances,
     compute_delete_impact,
@@ -38,7 +43,12 @@ from ..services.anchors import (
     latest_anchor_sources,
     needs_balance_confirmation,
 )
-from ..services.llm_extractor import extract_card_terms
+from ..services.llm_extractor import extract_card_terms, extract_statement
+from ..services.statements import (
+    ReconcileError,
+    reconcile_products,
+    suggest_targets,
+)
 
 from bot.app import get_llm_client
 
@@ -248,6 +258,68 @@ async def set_account_anchor(
         delta=res.delta,
         ajuste_transaction_id=res.ajuste_transaction_id,
         current_balance=res.value,
+    )
+
+
+@router.post("/parse-statement", response_model=StatementExtraction)
+async def parse_statement(
+    file: UploadFile = File(..., description="Bank statement (PDF)"),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> StatementExtraction:
+    """Read every product + its closing balance from an uploaded bank-statement
+    PDF and suggest a matching account/debt per product (to pre-fill the native
+    reconcile form / the chat proposal). Does NOT write anything — the
+    deterministic reconcile path appends the anchors."""
+    media_type = file.content_type or ""
+    if media_type != _PDF_MIME_TYPE:
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                f"Unsupported document type '{media_type}'. Only PDF is "
+                "accepted."
+            ),
+        )
+    pdf_bytes = await file.read()
+    if len(pdf_bytes) > _MAX_PDF_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"PDF exceeds {_MAX_PDF_BYTES // (1024 * 1024)} MB limit.",
+        )
+
+    extraction = await extract_statement(
+        user=user,
+        pdf_bytes=pdf_bytes,
+        client=get_llm_client(),
+        haiku_model=settings.llm_extraction_model,
+        sonnet_model=settings.llm_query_model,
+        db=db,
+    )
+    return await suggest_targets(db, user=user, extraction=extraction)
+
+
+@router.post("/reconcile-statement", response_model=StatementReconcileResponse)
+async def reconcile_statement(
+    payload: StatementReconcileRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> StatementReconcileResponse:
+    """Apply a statement reconciliation: anchor each deposit/credit account to
+    its corte balance and set each loan's current_balance. Append-only (the
+    anchors), like the single-account /anchor endpoint."""
+    try:
+        results = await reconcile_products(
+            db,
+            user=user,
+            corte_date=payload.corte_date,
+            items=payload.items,
+        )
+    except ReconcileError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+    await db.commit()
+    return StatementReconcileResponse(
+        corte_date=payload.corte_date, results=results
     )
 
 

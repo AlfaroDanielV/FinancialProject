@@ -1958,6 +1958,59 @@ transfer reconstruction (SINPE/counterparty workstream); credit-account re-ancho
 chat/native; chat set_balance in the /undo chain; the live BCCR fx rate for the
 CRC-led roll-up (USD shown apart, never ₡+$ on the ₡500 placeholder).
 
+## Statement Reconciliation — PDF → Balance Anchor (2026-06-20)
+
+Operator ask: process bank-statement PDFs (e.g. a BAC "Estado de Cuenta" bundling
+4 deposit accounts + 1 loan, or a Promerica dual-currency card) so the app can do
+**balance reconciliation**. Extends [[Decision - Balance Anchor & Reconciliation]]:
+a statement is the authoritative source for the anchor. **Branch
+`feature/statement-reconciliation`; operator on-device sign-off pending.** Migration
+`0037` (CHECK widen only). `committed_outflows`/cashflow byte-lock untouched.
+Canonical: vault `Decision - Statement Reconciliation (PDF To Balance Anchor)`.
+
+- **Scope (operator):** v1 = **balance anchor only** (no movement import);
+  **deposit + credit + loan**; Telegram/WhatsApp = send PDF in chat → propose →
+  confirm; native = a form listing every product with a per-line target dropdown.
+- **Extraction** `api/services/llm_extractor/document.py::extract_statement` —
+  reuses the `_extract_document` helper (Claude `document` block, Haiku→Sonnet
+  0.65, logged to `llm_extractions` `intent="parse_statement"`, `pdf_b64` inline).
+  Schemas in `api/schemas/statements.py` (`StatementProduct{kind,last4,currency,
+  closing_balance,suggested_*}`, `StatementExtraction`, reconcile request/response).
+- **Reconcile (the only writer)** `api/services/statements.py::reconcile_products`:
+  **deposit** → `apply_anchor(value=closing_balance, source="statement",
+  today=corte_date, write_ajuste=False)`; **credit** → same but **value negated**
+  (card balance is NEGATIVE when owed — `owed = -current`, see `credit_cards.py`);
+  **loan** → set `Debt.current_balance` + audit note (the ONE sanctioned write to
+  an otherwise-immutable debt financial field; not on the PATCH whitelist).
+  `write_ajuste=False` because the corte balance IS the truth at corte (pre-corte
+  txns absorbed by strict-`>`, post-corte ride on top) — a corte-dated ajuste of
+  `S − balance_now` would be a confusing wrong line; the antes→después delta is
+  computed from a pre-reconcile snapshot. `suggest_targets` fuzzy-matches
+  (`match_account_hint`, 0.85; no IBAN column). New `source="statement"` anchor
+  provenance → migration `0037` widens `ck_account_anchors_source`.
+- **Endpoints** (`api/routers/accounts.py`): `POST /accounts/parse-statement`
+  (multipart PDF, 4MB/PDF-only 415/413, read-only, returns suggestions);
+  `POST /accounts/reconcile-statement` (applies the batch; 400 on a bad target).
+- **Native** (`mobile/`): `screens/StatementReconcileScreen.tsx` (copies the
+  `DebtCreateScreen` PDF scaffold; per-product rows with `AccountPickerModal` /
+  new `DebtPickerModal`, toggle + "Reconciliar (N)", low-confidence note),
+  `api/statements.ts`, registered in `AccountsNavigator`, entry on `AccountsScreen`
+  ("Reconciliar con estado de cuenta").
+- **Chat (Telegram now; WhatsApp inherits)** `bot/pipeline.py::handle_statement_document`
+  (channel-agnostic — caller supplies bytes): extract → `suggest_targets` →
+  propose confident matches as ONE Sí/No batch (unmatched → "usá la app"); confirm
+  via the existing `pending:` flow → `bot/commit.py::_commit_reconcile_statement` →
+  `reconcile_products`. New `PendingAction` action_type `reconcile_statement` (not in
+  /undo, like `set_balance`). aiogram `Message(F.document)` handler in
+  `bot/handlers.py` downloads the PDF. New voseo copy in `bot/messages_es.py`.
+- **Verification:** `tests/test_statement_reconcile.py` (10: extraction+audit,
+  deposit-at-corte, credit-negative, loan-balance, multi-account, foreign-reject,
+  suggest, both endpoints, chat propose→confirm) + chat/balance/cashflow-byte-lock/
+  gmail-reconciler regression (43) green; mobile `tsc --noEmit` clean; `alembic →
+  0037`. **Deferred:** transaction-level movement import; native text-trigger intent
+  (no extractor change); per-product "Es otra cuenta" chat remap; `accounts.iban`
+  for exact matching.
+
 ## CR Salary Calculator + Ingresos CRUD (post-7a, 2026-06-09)
 
 Deterministic Costa Rican net-pay calculator + full Ingresos CRUD. Backend +

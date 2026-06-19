@@ -15,6 +15,7 @@ so the _simulate endpoint can drive the same code path faithfully.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
@@ -55,6 +56,7 @@ from .pipeline import (
     handle_clarify_callback,
     handle_nudge_callback,
     handle_pending_callback,
+    handle_statement_document,
     process_message,
 )
 from .user_resolver import bind_telegram_id, user_by_telegram_id
@@ -439,6 +441,46 @@ async def on_text(message: Message) -> None:
                 redis=get_redis(),
                 llm_client=get_llm_client(),
                 llm_model=settings.llm_extraction_model,
+            )
+        await _send(message, reply)
+
+
+# ── document (bank statement PDF → reconciliation) ────────────────────────────
+
+
+@router.message(F.document)
+async def on_document(message: Message) -> None:
+    """A user sends a bank-statement PDF → we read the saldo al corte of each
+    account and propose reconciling them (Sí/No). Native users use the in-app
+    form instead; this is the Telegram/WhatsApp path."""
+    if message.from_user is None or message.document is None:
+        return
+    doc = message.document
+    if (doc.mime_type or "") != "application/pdf":
+        await message.answer(messages_es.STATEMENT_NOT_PDF)
+        return
+    if (doc.file_size or 0) > 4 * 1024 * 1024:
+        await message.answer(messages_es.STATEMENT_TOO_BIG)
+        return
+    bot = get_bot()
+    async with typing_action(bot, message.chat.id):
+        async with AsyncSessionLocal() as db:
+            user = await user_by_telegram_id(
+                telegram_user_id=message.from_user.id, db=db
+            )
+            if user is None:
+                await message.answer(messages_es.PAIR_PROMPT)
+                return
+            buf = io.BytesIO()
+            await bot.download(doc, destination=buf)
+            reply = await handle_statement_document(
+                user=user,
+                pdf_bytes=buf.getvalue(),
+                db=db,
+                redis=get_redis(),
+                llm_client=get_llm_client(),
+                haiku_model=settings.llm_extraction_model,
+                sonnet_model=settings.llm_query_model,
             )
         await _send(message, reply)
 

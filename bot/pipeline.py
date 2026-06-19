@@ -724,6 +724,27 @@ async def _handle_confirm(
         )
         return reply
 
+    if pending.action_type == "reconcile_statement":
+        # Statement reconciliation: anchor each matched account to its corte
+        # balance (+ set loan balances) in one batch. Append-only; not in /undo.
+        await commit_pending(user=user, pending=pending, db=db, redis=redis)
+        payload = pending.payload
+        n = len(payload["items"])
+        reply = BotReply(
+            text=messages_es.STATEMENT_RECONCILED.format(
+                count=n,
+                noun="saldo" if n == 1 else "saldos",
+                corte=payload["corte_date"],
+            )
+        )
+        await _bridge_to_query_history(
+            user_id=user.id,
+            user_text=source_text,
+            assistant_text=reply.text,
+            redis=redis,
+        )
+        return reply
+
     txn_id = await commit_pending(user=user, pending=pending, db=db, redis=redis)
     amt_decimal = Decimal(pending.payload["amount"])
     currency = pending.payload["currency"]
@@ -1062,6 +1083,138 @@ def _stage_lazy_detection_events(*, user: User, decision, db: AsyncSession) -> b
 
 
 # ── handler entry for inline-keyboard callbacks ──────────────────────────────
+
+
+async def handle_statement_document(
+    *,
+    user: User,
+    pdf_bytes: bytes,
+    db: AsyncSession,
+    redis: Redis,
+    llm_client,
+    haiku_model: str,
+    sonnet_model: str,
+) -> BotReply:
+    """Chat path for a bank-statement PDF (Telegram now; WhatsApp inherits when
+    P5c lands — it's channel-agnostic, the caller just supplies the bytes).
+
+    Reads the statement, fuzzy-matches each product to one of the user's
+    accounts/debts, and proposes the confident matches as ONE Sí/No batch.
+    Confirm → `reconcile_products` anchors each at the corte (same write the
+    native form uses). Products that can't be matched are listed for the app.
+    "LLM extracts; rules decide": the deterministic reconcile is the only writer.
+    """
+    from sqlalchemy import select
+
+    from api.models.account import Account
+    from api.models.debt import Debt
+    from api.services.llm_extractor import extract_statement
+    from api.services.statements import suggest_targets
+
+    try:
+        extraction = await extract_statement(
+            user=user,
+            pdf_bytes=pdf_bytes,
+            client=llm_client,
+            haiku_model=haiku_model,
+            sonnet_model=sonnet_model,
+            db=db,
+        )
+    except Exception:  # extraction must never bubble a raw error to the chat
+        log.exception("statement extraction failed")
+        return BotReply(text=messages_es.STATEMENT_PARSE_ERROR)
+
+    if not extraction.products or extraction.corte_date is None:
+        return BotReply(text=messages_es.STATEMENT_EMPTY)
+
+    extraction = await suggest_targets(db, user=user, extraction=extraction)
+    corte = extraction.corte_date
+
+    acct_ids = [
+        p.suggested_account_id
+        for p in extraction.products
+        if p.kind in ("deposit", "credit") and p.suggested_account_id
+    ]
+    debt_ids = [
+        p.suggested_debt_id
+        for p in extraction.products
+        if p.kind == "loan" and p.suggested_debt_id
+    ]
+    accounts = (
+        {
+            a.id: a
+            for a in (
+                await db.execute(select(Account).where(Account.id.in_(acct_ids)))
+            ).scalars()
+        }
+        if acct_ids
+        else {}
+    )
+    debts = (
+        {
+            d.id: d
+            for d in (
+                await db.execute(select(Debt).where(Debt.id.in_(debt_ids)))
+            ).scalars()
+        }
+        if debt_ids
+        else {}
+    )
+
+    _KIND_LABEL = {"deposit": "Cuenta", "credit": "Tarjeta", "loan": "Préstamo"}
+    items: list[dict] = []
+    lines: list[str] = []
+    unmatched: list[str] = []
+    for p in extraction.products:
+        product_label = p.label or _KIND_LABEL[p.kind]
+        if p.account_last4:
+            product_label = f"{product_label} …{p.account_last4}"
+        if p.kind == "loan":
+            target = debts.get(p.suggested_debt_id) if p.suggested_debt_id else None
+        else:
+            target = (
+                accounts.get(p.suggested_account_id)
+                if p.suggested_account_id
+                else None
+            )
+        if target is None:
+            unmatched.append(product_label)
+            continue
+        items.append(
+            {
+                "kind": p.kind,
+                "target_id": str(target.id),
+                "closing_balance": str(p.closing_balance),
+            }
+        )
+        lines.append(
+            f"• {target.name}: "
+            f"{format_amount(Decimal(str(p.closing_balance)), p.currency)}"
+        )
+
+    if not items:
+        return BotReply(
+            text=messages_es.STATEMENT_NO_MATCH.format(corte=corte.isoformat())
+        )
+
+    short_id = new_short_id()
+    summary = messages_es.STATEMENT_PROPOSAL.format(
+        bank=extraction.bank or "tu banco",
+        corte=corte.isoformat(),
+        lines="\n".join(lines),
+    )
+    if unmatched:
+        summary += messages_es.STATEMENT_UNMATCHED.format(
+            names=", ".join(unmatched)
+        )
+    pending = PendingAction(
+        short_id=short_id,
+        action_type="reconcile_statement",
+        payload={"corte_date": corte.isoformat(), "items": items},
+        summary_es=summary,
+    )
+    await save_pending(user_id=user.id, pending=pending, redis=redis)
+    return BotReply(text=summary, buttons=_yes_no_buttons(short_id))
 
 
 async def handle_pending_callback(

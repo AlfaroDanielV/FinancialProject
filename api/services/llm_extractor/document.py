@@ -28,6 +28,7 @@ from ...models.llm_extraction import LLMExtraction
 from ...models.user import User
 from ...schemas.card_terms import CardTermsExtraction
 from ...schemas.debts import DebtTermsExtraction
+from ...schemas.statements import StatementExtraction
 from .client import LLMClient, LLMClientError
 
 _CONFIDENCE_THRESHOLD = 0.65
@@ -253,6 +254,114 @@ _CARD_TERMS_TOOL = {
 }
 
 
+# ── Bank-statement reconciliation: read ending balance(s) per product ─────────
+
+_STATEMENT_SYSTEM_PROMPT = (
+    "Sos un extractor de estados de cuenta bancarios costarricenses. Tu único "
+    "trabajo es leer el estado de cuenta adjunto (PDF) y llamar la herramienta "
+    "extract_statement. No respondas con texto — siempre llamá la herramienta. "
+    "Un estado puede traer VARIOS productos en un solo documento (por ejemplo "
+    "el BAC trae varias cuentas a la vista más un crédito). Devolvé CADA "
+    "producto con su saldo al corte. Si un dato no está, dejalo en null; NO "
+    "inventes. Preferimos una extracción parcial honesta a una inventada."
+)
+
+_STATEMENT_PROMPT = (
+    "Adjunté mi estado de cuenta. Extraé cada producto con la herramienta "
+    "extract_statement. Para cada producto: kind = 'deposit' para una cuenta a "
+    "la vista / ahorro / corriente, 'credit' para una tarjeta de crédito, "
+    "'loan' para un préstamo o crédito. closing_balance = el SALDO AL CORTE de "
+    "la cuenta, o el saldo adeudado / saldo al corte de la tarjeta o préstamo, "
+    "como número POSITIVO tal como aparece impreso. account_last4 = los últimos "
+    "4 dígitos del IBAN o número de cuenta. corte_date = la fecha de corte como "
+    "YYYY-MM-DD (solo el día, sin hora). Si una tarjeta opera en colones y "
+    "dólares con saldos separados, devolvé un producto por moneda."
+)
+
+_STATEMENT_TOOL = {
+    "name": "extract_statement",
+    "description": (
+        "Extract every product (account / card / loan) and its closing balance "
+        "from the attached Costa Rican bank statement PDF. Always call this "
+        "tool; never reply in free text. A single statement may bundle several "
+        "products — return one entry per product. Leave any absent field null."
+    ),
+    "input_schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["corte_date", "products", "confidence"],
+        "properties": {
+            "bank": {
+                "type": ["string", "null"],
+                "description": "Issuing bank ('BAC', 'Promerica', 'BCR').",
+            },
+            "corte_date": {
+                "type": ["string", "null"],
+                "description": (
+                    "Fecha de corte as YYYY-MM-DD (day-level, no time)."
+                ),
+            },
+            "products": {
+                "type": "array",
+                "description": "One entry per product on the statement.",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["kind", "currency", "closing_balance"],
+                    "properties": {
+                        "label": {
+                            "type": ["string", "null"],
+                            "description": (
+                                "Human label / product name as printed "
+                                "('Cuenta a la vista', 'VISA Emerald')."
+                            ),
+                        },
+                        "account_last4": {
+                            "type": ["string", "null"],
+                            "description": (
+                                "Last 4 digits of the IBAN / account number."
+                            ),
+                        },
+                        "iban": {
+                            "type": ["string", "null"],
+                            "description": "Full IBAN if printed (optional).",
+                        },
+                        "currency": {
+                            "type": "string",
+                            "enum": ["CRC", "USD"],
+                        },
+                        "kind": {
+                            "type": "string",
+                            "enum": ["deposit", "credit", "loan"],
+                            "description": (
+                                "deposit = cuenta a la vista/ahorro/corriente; "
+                                "credit = tarjeta de crédito; loan = préstamo."
+                            ),
+                        },
+                        "closing_balance": {
+                            "type": "number",
+                            "description": (
+                                "SALDO AL CORTE (account) or saldo adeudado "
+                                "(card/loan) as a POSITIVE magnitude."
+                            ),
+                        },
+                    },
+                },
+            },
+            "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": (
+                    "How confident the extraction is. Low when the document is "
+                    "a scan, unclear, or not a bank statement."
+                ),
+            },
+        },
+    },
+}
+
+
 async def extract_debt_terms(
     *,
     user: User,
@@ -304,6 +413,34 @@ async def extract_card_terms(
         tool=_CARD_TERMS_TOOL,
         result_model=CardTermsExtraction,
         intent="parse_card_document",
+    )
+
+
+async def extract_statement(
+    *,
+    user: User,
+    pdf_bytes: bytes,
+    client: LLMClient,
+    haiku_model: str,
+    sonnet_model: str,
+    db: AsyncSession,
+) -> StatementExtraction:
+    """Read every product + its closing balance from a bank statement PDF.
+    Same Haiku-first / Sonnet-retry contract as `extract_debt_terms`. Returns a
+    validated `StatementExtraction` (does NOT write anything — the deterministic
+    reconcile path appends the anchors)."""
+    return await _extract_document(
+        user=user,
+        pdf_bytes=pdf_bytes,
+        client=client,
+        haiku_model=haiku_model,
+        sonnet_model=sonnet_model,
+        db=db,
+        system_prompt=_STATEMENT_SYSTEM_PROMPT,
+        user_prompt=_STATEMENT_PROMPT,
+        tool=_STATEMENT_TOOL,
+        result_model=StatementExtraction,
+        intent="parse_statement",
     )
 
 

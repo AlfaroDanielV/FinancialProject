@@ -117,6 +117,33 @@ BALANCE_SET = (
     "registrado quedó como ajuste de reconciliación para que cuadre con tu banco."
 )
 
+# ── Bank-statement reconciliation (PDF → balance anchor) ──────────────────────
+STATEMENT_NOT_PDF = "Mandame el estado de cuenta en PDF y lo leo por vos."
+STATEMENT_TOO_BIG = "Ese PDF pesa demasiado (máx 4 MB). Probá con uno más liviano."
+STATEMENT_PARSE_ERROR = (
+    "No pude leer ese estado de cuenta. Probá con otro PDF o reconciliá el "
+    "saldo a mano en la app (Cuentas → Reconciliar)."
+)
+STATEMENT_EMPTY = (
+    "Leí el PDF pero no encontré cuentas con saldo al corte. ¿Es un estado de "
+    "cuenta bancario?"
+)
+STATEMENT_NO_MATCH = (
+    "Leí tu estado al {corte}, pero no pude emparejar ninguna cuenta con las "
+    "tuyas automáticamente. Reconciliá desde la app: Cuentas → Reconciliar con "
+    "estado de cuenta."
+)
+STATEMENT_PROPOSAL = (
+    "Leí tu estado de {bank} al {corte}. Voy a dejar estos saldos igual que tu "
+    "banco:\n{lines}\n\n¿Los aplico?"
+)
+STATEMENT_UNMATCHED = (
+    "\n\nNo pude emparejar: {names}. Reconcilialas desde la app si querés."
+)
+STATEMENT_RECONCILED = (
+    "Listo, reconcilié {count} {noun} al {corte}. Ahora cuadran con tu banco."
+)
+
 # Phase 7b — transfers between own accounts (card payment = transfer).
 TRANSFER_COMMITTED = (
     "Listo, registré la transferencia de {amount} de {from_name} a "

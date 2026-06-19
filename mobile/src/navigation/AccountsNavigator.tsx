@@ -4,6 +4,7 @@ import { AccountsScreen } from "../screens/AccountsScreen";
 import { AccountDetailScreen } from "../screens/AccountDetailScreen";
 import { AccountCreateScreen } from "../screens/AccountCreateScreen";
 import { CardAccountCreateScreen } from "../screens/CardAccountCreateScreen";
+import { StatementReconcileScreen } from "../screens/StatementReconcileScreen";
 import type { CardPrefill } from "../api/chat";
 import { Colors, FontSize } from "../theme";
 
@@ -12,6 +13,7 @@ export type AccountsStackParamList = {
   AccountDetail: { accountId: string };
   AccountCreate: undefined;
   CardCreate: { prefill?: CardPrefill } | undefined;
+  StatementReconcile: undefined;
 };
 
 const Stack = createNativeStackNavigator<AccountsStackParamList>();
@@ -50,6 +52,11 @@ export function AccountsNavigator() {
         name="CardCreate"
         component={CardAccountCreateScreen}
         options={{ title: "Registrar tarjeta", presentation: "modal" }}
+      />
+      <Stack.Screen
+        name="StatementReconcile"
+        component={StatementReconcileScreen}
+        options={{ title: "Reconciliar con estado", presentation: "modal" }}
       />
     </Stack.Navigator>
   );

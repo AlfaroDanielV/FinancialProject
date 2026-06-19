@@ -50,7 +50,7 @@ class AccountAnchor(Base):
         String(3), nullable=False, default="CRC"
     )
     effective_date: Mapped[date] = mapped_column(Date, nullable=False)
-    # onboarding | reanchor | migrated  (CHECK below)
+    # onboarding | reanchor | migrated | statement  (CHECK below)
     source: Mapped[str] = mapped_column(String(20), nullable=False)
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -59,7 +59,7 @@ class AccountAnchor(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "source IN ('onboarding','reanchor','migrated')",
+            "source IN ('onboarding','reanchor','migrated','statement')",
             name="ck_account_anchors_source",
         ),
     )

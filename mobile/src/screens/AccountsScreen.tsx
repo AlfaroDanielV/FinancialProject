@@ -199,6 +199,18 @@ export function AccountsScreen() {
         </View>
       )}
 
+      {/* ── reconcile-from-statement entry ───────────────────────────────── */}
+      {!showArchived && !isLoading && active.length > 0 && (
+        <Pressable
+          onPress={() => nav.navigate("StatementReconcile")}
+          style={({ pressed }) => [styles.reconcileRow, pressed && { opacity: 0.7 }]}
+        >
+          <Feather name="file-text" size={15} color={Colors.accent} />
+          <Text style={styles.reconcileText}>Reconciliar con estado de cuenta</Text>
+          <Feather name="chevron-right" size={16} color={Colors.textMuted} />
+        </Pressable>
+      )}
+
       {/* ── list ────────────────────────────────────────────────────────── */}
       <ScrollView
         style={styles.scroll}
@@ -338,6 +350,27 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: Colors.textPrimary,
     fontVariant: ["tabular-nums"],
+  },
+
+  // ── reconcile entry ───────────────────────────────────────────────────────
+  reconcileRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+    marginHorizontal: Spacing.md,
+    marginTop: Spacing.sm,
+    paddingVertical: Spacing.sm + 2,
+    paddingHorizontal: Spacing.md,
+    backgroundColor: Colors.bgCard,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+  },
+  reconcileText: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    fontWeight: "600",
+    color: Colors.textPrimary,
   },
 
   // ── list ──────────────────────────────────────────────────────────────────

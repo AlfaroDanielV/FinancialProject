@@ -76,6 +76,11 @@ async def commit_pending(
             user=user, pending=pending, db=db, redis=redis
         )
 
+    if pending.action_type == "reconcile_statement":
+        return await _commit_reconcile_statement(
+            user=user, pending=pending, db=db, redis=redis
+        )
+
     if pending.action_type not in ("log_expense", "log_income"):
         raise ValueError(f"unknown action_type: {pending.action_type}")
 
@@ -250,6 +255,45 @@ async def _commit_set_balance(
 
     await clear_pending(user_id=user.id, redis=redis)
     return res.anchor_id
+
+
+async def _commit_reconcile_statement(
+    *,
+    user: User,
+    pending: PendingAction,
+    db: AsyncSession,
+    redis: Redis,
+) -> uuid.UUID:
+    """Apply a confirmed statement reconciliation (chat path). Anchors each
+    deposit/credit account to its corte balance and sets each loan's
+    current_balance through the shared `reconcile_products` — the same write the
+    native form's POST /accounts/reconcile-statement uses.
+
+    Append-only (the anchors) and NOT in the /undo chain, consistent with
+    set_balance. Returns the first target id (sentinel)."""
+    from api.schemas.statements import StatementReconcileItem
+    from api.services.statements import reconcile_products
+
+    payload = pending.payload
+    corte = date.fromisoformat(payload["corte_date"])
+    items = [
+        StatementReconcileItem(
+            kind=it["kind"],
+            target_id=uuid.UUID(it["target_id"]),
+            closing_balance=Decimal(it["closing_balance"]),
+        )
+        for it in payload["items"]
+    ]
+    await reconcile_products(db, user=user, corte_date=corte, items=items)
+    await db.commit()
+
+    await resolve_from_pending(
+        session=db, pending=pending, resolution="confirmed"
+    )
+    await db.commit()
+
+    await clear_pending(user_id=user.id, redis=redis)
+    return uuid.UUID(payload["items"][0]["target_id"])
 
 
 async def _commit_goal(
