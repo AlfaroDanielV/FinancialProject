@@ -25,7 +25,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from sqlalchemy import select
+
 from ...database import AsyncSessionLocal
+from ...models.gmail_credential import GmailCredential
 from . import notifier
 from .scanner import RunMode, ScanResult, scan_user_inbox
 
@@ -66,6 +69,27 @@ async def run_backfill(
     # (helpful for 30s+ runs), and the finish message uses a fresh
     # session in case the scan rolled back.
     async with AsyncSessionLocal() as db:
+        # Don't surface transactions from BEFORE Gmail was connected. On a fresh
+        # setup the N-day window would dredge up a pile of pre-connection emails
+        # whose effect on the (anchored) balance is non-obvious — confusing. The
+        # N-day window is the MAX lookback, not a floor: clamp `since` up to when
+        # the user connected Gmail (`activated_at`). Self-resolving — once the
+        # connection is older than N days, the full window applies again.
+        activated_at = (
+            await db.execute(
+                select(GmailCredential.activated_at).where(
+                    GmailCredential.user_id == user_id
+                )
+            )
+        ).scalar_one_or_none()
+        if activated_at is not None and activated_at > since:
+            log.info(
+                "backfill_window_clamped user=%s since=%s -> %s (gmail connected)",
+                user_id,
+                since.isoformat(),
+                activated_at.isoformat(),
+            )
+            since = activated_at
         await notifier.notify_run_started(
             user_id=user_id, days=days, mode=mode, db=db
         )

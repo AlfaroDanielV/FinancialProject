@@ -210,15 +210,18 @@ async def notify_run_started(
     if chat_id is None:
         return
 
+    # Copy intentionally avoids a specific day count: run_backfill clamps the
+    # window to the Gmail-connection time, so "los últimos 30 días" would
+    # overstate on a fresh setup. "correos recientes" is honest either way.
     if mode == "manual":
         text = (
-            f"Revisando los últimos {days} días… (corrida manual). "
-            f"Te aviso al final."
+            "Revisando tus correos recientes… (corrida manual). "
+            "Te aviso al final."
         )
     else:
         text = (
-            f"Empecé a revisar tus correos de los últimos {days} días. "
-            f"Te aviso cuando termine — puede tardar unos minutos."
+            "Empecé a revisar tus correos recientes. "
+            "Te aviso cuando termine — puede tardar unos minutos."
         )
     await _send(chat_id=chat_id, text=text)
 
