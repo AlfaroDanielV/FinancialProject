@@ -111,6 +111,12 @@ RECLASSIFY_CONFIRM = "¿Cambio el último movimiento a {kind} {amount}?"
 RECLASSIFIED_TO_INCOME = "Listo, cambié el último movimiento a ingreso."
 RECLASSIFIED_TO_EXPENSE = "Listo, cambié el último movimiento a gasto."
 
+# Re-anchor / heal-drift (bank reconciliation) — chat "corregí mi saldo".
+BALANCE_SET = (
+    "Listo, dejé «{name}» en {amount}. La diferencia con lo que tenía "
+    "registrado quedó como ajuste de reconciliación para que cuadre con tu banco."
+)
+
 # Phase 7b — transfers between own accounts (card payment = transfer).
 TRANSFER_COMMITTED = (
     "Listo, registré la transferencia de {amount} de {from_name} a "

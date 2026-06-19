@@ -4,8 +4,21 @@ import sys
 from pathlib import Path
 from logging.config import fileConfig
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 # Ensure the project root is on sys.path so `api` is importable
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(_PROJECT_ROOT))
+
+# Load .env so migrations that read os.environ DIRECTLY (e.g. migration 0006's
+# legacy-user backfill: LEGACY_USER_EMAIL / LEGACY_USER_NAME /
+# LEGACY_SHORTCUT_TOKEN) see the same vars the app does. pydantic-settings loads
+# .env into the Settings object, NOT into os.environ — so without this a
+# from-scratch `alembic upgrade head` stops at 0006 with "requires env var
+# LEGACY_USER_EMAIL". override=False keeps an explicitly-exported var
+# (CI / prod / Container Apps) authoritative over the .env file.
+from dotenv import load_dotenv
+
+load_dotenv(_PROJECT_ROOT / ".env", override=False)
 
 from alembic import context
 from sqlalchemy.ext.asyncio import async_engine_from_config

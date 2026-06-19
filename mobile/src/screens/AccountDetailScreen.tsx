@@ -34,6 +34,7 @@ import { fetchCardAnalysis, fetchCardTerms } from "../api/cardTerms";
 import { AccountDeleteConfirmModal } from "../components/AccountDeleteConfirmModal";
 import { AccountEditModal } from "../components/AccountEditModal";
 import { CardTermsEditModal } from "../components/CardTermsEditModal";
+import { ReanchorModal } from "../components/ReanchorModal";
 import { TransferModal } from "../components/TransferModal";
 import { Colors, FontSize, Radius, Spacing, CardShadow } from "../theme";
 import type { AccountsStackParamList } from "../navigation/AccountsNavigator";
@@ -99,6 +100,7 @@ export function AccountDetailScreen({ route }: Props) {
   const [editVisible, setEditVisible] = useState(false);
   const [deleteVisible, setDeleteVisible] = useState(false);
   const [termsVisible, setTermsVisible] = useState(false);
+  const [reanchorVisible, setReanchorVisible] = useState(false);
 
   const { data: account, isLoading: accountLoading, refetch: refetchAccount } = useQuery({
     queryKey: ["account", accountId],
@@ -220,6 +222,24 @@ export function AccountDetailScreen({ route }: Props) {
         }
         ListHeaderComponent={
           <>
+            {/* ── confirm-your-balance nudge (migrated accounts, A6) ───────── */}
+            {account.needs_balance_confirmation &&
+              !isCredit &&
+              !account.archived && (
+                <Pressable
+                  onPress={() => setReanchorVisible(true)}
+                  style={({ pressed }) => [
+                    styles.nudge,
+                    pressed && { opacity: 0.85 },
+                  ]}
+                >
+                  <Feather name="alert-circle" size={16} color={Colors.accent} />
+                  <Text style={styles.nudgeText}>
+                    Confirmá tu saldo real — tocá para poner el que te aparece
+                    hoy en el banco.
+                  </Text>
+                </Pressable>
+              )}
             {/* ── balance header ──────────────────────────────────────────── */}
             <View style={styles.balanceHeader}>
               <Text style={styles.accountName}>{account.name}</Text>
@@ -275,6 +295,18 @@ export function AccountDetailScreen({ route }: Props) {
                   {diffPositive ? "+" : "−"}
                   {fmt(Math.abs(diff), account.currency)} este mes
                 </Text>
+              )}
+              {!isCredit && !account.archived && (
+                <Pressable
+                  onPress={() => setReanchorVisible(true)}
+                  style={({ pressed }) => [
+                    styles.reanchorLink,
+                    pressed && { opacity: 0.7 },
+                  ]}
+                >
+                  <Feather name="edit-3" size={13} color={Colors.accent} />
+                  <Text style={styles.reanchorLinkText}>Corregí mi saldo</Text>
+                </Pressable>
               )}
               {account.archived && (
                 <View style={styles.archivedBadge}>
@@ -501,6 +533,28 @@ export function AccountDetailScreen({ route }: Props) {
           }}
         />
       )}
+      <ReanchorModal
+        visible={reanchorVisible}
+        account={account}
+        onClose={() => setReanchorVisible(false)}
+        onSaved={(delta) => {
+          setReanchorVisible(false);
+          qc.invalidateQueries({ queryKey: ["accounts"] });
+          qc.invalidateQueries({ queryKey: ["account", accountId] });
+          qc.invalidateQueries({ queryKey: ["accountTransactions", accountId] });
+          qc.invalidateQueries({ queryKey: ["dashboard"] });
+          if (delta !== 0) {
+            const sign = delta > 0 ? "+" : "−";
+            Alert.alert(
+              "Saldo actualizado",
+              `Listo. Registré una diferencia de ${sign}${fmt(
+                Math.abs(delta),
+                account.currency,
+              )} como ajuste de reconciliación para que cuadre con tu banco.`,
+            );
+          }
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -577,6 +631,34 @@ const styles = StyleSheet.create({
   monthDiff: {
     fontSize: FontSize.sm,
     fontVariant: ["tabular-nums"],
+  },
+  reanchorLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: Spacing.xs,
+  },
+  reanchorLinkText: {
+    fontSize: FontSize.sm,
+    color: Colors.accent,
+    fontWeight: "500",
+  },
+  nudge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.xs,
+    backgroundColor: Colors.accentBg,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    marginHorizontal: Spacing.md,
+    marginTop: Spacing.sm,
+  },
+  nudgeText: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    color: Colors.textPrimary,
+    lineHeight: 18,
   },
   archivedBadge: {
     flexDirection: "row",

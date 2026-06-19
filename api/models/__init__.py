@@ -1,5 +1,6 @@
 from .user import User
 from .account import Account
+from .account_anchor import AccountAnchor
 from .transaction import Transaction
 from .budget import Budget
 from .goal import Goal
@@ -38,6 +39,7 @@ from .consent import UserConsent
 __all__ = [
     "User",
     "Account",
+    "AccountAnchor",
     "Transaction",
     "Budget",
     "Goal",

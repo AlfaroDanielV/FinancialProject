@@ -8,11 +8,11 @@ from sqlalchemy import func, select
 
 from api.models.account import Account
 from api.models.transaction import Transaction
+from api.services.accounts import compute_account_balances
 
 from app.queries.session import AsyncSessionLocal
 
 from ._common import (
-    as_decimal,
     fuzzy_any,
     signed_decimal_to_string,
     user_currency,
@@ -23,9 +23,10 @@ from .base import is_tool_registered, query_tool
 GET_ACCOUNT_BALANCE_DESCRIPTION = (
     "Devuelve el saldo actual de una o todas las cuentas del usuario. "
     "Usá esto cuando el usuario pregunte cuánto tiene, cuánto le queda, "
-    "o el saldo de una cuenta específica. El balance se calcula sumando "
-    "todas las transacciones (gastos restan, ingresos suman). Cuentas de "
-    "tipo crédito pueden tener balance negativo (deuda pendiente)."
+    "o el saldo de una cuenta específica. El balance es el saldo inicial de "
+    "la cuenta más todas las transacciones confirmadas (gastos restan, "
+    "ingresos suman). Cuentas de tipo crédito pueden tener balance negativo "
+    "(deuda pendiente)."
 )
 
 LIST_ACCOUNTS_DESCRIPTION = (
@@ -48,58 +49,79 @@ async def get_account_balance(
         if account_name and account_name.strip():
             filters.append(fuzzy_any(Account.name, [account_name]))
 
-        balance_subq = (
-            select(
-                Transaction.account_id.label("acct_id"),
-                func.coalesce(func.sum(Transaction.amount), Decimal("0")).label(
-                    "balance"
-                ),
-                func.max(Transaction.transaction_date).label("last_date"),
-            )
-            .where(Transaction.user_id == user_id)
-            .group_by(Transaction.account_id)
-            .subquery()
+        accts = list(
+            (
+                await db.execute(
+                    select(
+                        Account.id,
+                        Account.name,
+                        Account.account_type,
+                        Account.is_active,
+                        Account.currency,
+                    )
+                    .where(*filters)
+                    .order_by(Account.name.asc())
+                )
+            ).all()
         )
-
-        stmt = (
-            select(
-                Account.id,
-                Account.name,
-                Account.account_type,
-                Account.is_active,
-                func.coalesce(balance_subq.c.balance, Decimal("0")).label("balance"),
-                balance_subq.c.last_date,
-            )
-            .select_from(Account)
-            .outerjoin(balance_subq, Account.id == balance_subq.c.acct_id)
-            .where(*filters)
-            .order_by(Account.name.asc())
+        ids = [a.id for a in accts]
+        # Single balance invariant: includes the account's initial_balance and
+        # excludes shadow/archived rows. The previous bespoke Σ-amount query did
+        # NEITHER, so the chat balance disagreed with the home screen (H2).
+        balances = (
+            await compute_account_balances(db, user_id=user_id, account_ids=ids)
+            if ids
+            else {}
         )
-        rows = list((await db.execute(stmt)).all())
+        last_dates: dict[uuid.UUID, Any] = {}
+        if ids:
+            last_rows = await db.execute(
+                select(
+                    Transaction.account_id,
+                    func.max(Transaction.transaction_date),
+                )
+                .where(
+                    Transaction.user_id == user_id,
+                    Transaction.account_id.in_(ids),
+                    Transaction.status == "confirmed",
+                    Transaction.archived.is_(False),
+                )
+                .group_by(Transaction.account_id)
+            )
+            last_dates = {aid: d for aid, d in last_rows.all()}
 
     accounts: list[dict[str, Any]] = []
-    total = Decimal("0")
-    for row in rows:
-        balance = as_decimal(row.balance)
-        total += balance
+    totals_by_currency: dict[str, Decimal] = {}
+    for a in accts:
+        balance = balances[a.id].current if a.id in balances else Decimal("0")
+        totals_by_currency[a.currency] = (
+            totals_by_currency.get(a.currency, Decimal("0")) + balance
+        )
+        last = last_dates.get(a.id)
         accounts.append(
             {
-                "account_name": row.name,
-                "account_type": row.account_type,
+                "account_name": a.name,
+                "account_type": a.account_type,
                 "current_balance": signed_decimal_to_string(balance),
-                "currency": currency,
-                "last_transaction_date": (
-                    row.last_date.isoformat() if row.last_date else None
-                ),
-                "is_active": bool(row.is_active),
+                "currency": a.currency,
+                "last_transaction_date": last.isoformat() if last else None,
+                "is_active": bool(a.is_active),
             }
         )
 
+    # D3: never add ₡+$ on a placeholder rate. `total_balance` is the user's
+    # display-currency subtotal; `totals_by_currency` exposes the rest so the
+    # LLM can narrate "tenés ₡X y $Y" without a fabricated conversion.
+    primary_total = totals_by_currency.get(currency, Decimal("0"))
     return {
         "accounts": accounts,
-        "total_balance": signed_decimal_to_string(total),
+        "total_balance": signed_decimal_to_string(primary_total),
         "currency": currency,
         "matched_count": len(accounts),
+        "totals_by_currency": {
+            c: signed_decimal_to_string(v)
+            for c, v in totals_by_currency.items()
+        },
     }
 
 

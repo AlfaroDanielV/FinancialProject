@@ -406,6 +406,17 @@ function DisponibleStrip() {
           + {fmt(savingsBalance, currency)} en ahorros (aparte)
         </Text>
       )}
+      {!isLoading &&
+        (summary?.other_currency_balances ?? []).map((cb) => {
+          const a = parseFloat(cb.available);
+          if (!a) return null;
+          const label = cb.currency === "USD" ? "dólares" : cb.currency;
+          return (
+            <Text key={cb.currency} style={styles.dispSavings}>
+              + {fmt(a, cb.currency)} en cuentas en {label}
+            </Text>
+          );
+        })}
     </View>
   );
 }

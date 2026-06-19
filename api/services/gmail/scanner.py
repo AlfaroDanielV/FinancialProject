@@ -809,6 +809,7 @@ async def _process_one_message(
         reconcile_mod.ReconcileOutcome.CREATED_SHADOW: "created_shadow",
         reconcile_mod.ReconcileOutcome.DUPLICATE_GMAIL: "skipped",
         reconcile_mod.ReconcileOutcome.SKIPPED_LOW_CONFIDENCE: "skipped",
+        reconcile_mod.ReconcileOutcome.SKIPPED_NO_DATE: "skipped",
     }[outcome]
 
     # Record why the reconciler skipped (low confidence / duplicate) so a later
@@ -818,6 +819,7 @@ async def _process_one_message(
     if outcome in {
         reconcile_mod.ReconcileOutcome.SKIPPED_LOW_CONFIDENCE,
         reconcile_mod.ReconcileOutcome.DUPLICATE_GMAIL,
+        reconcile_mod.ReconcileOutcome.SKIPPED_NO_DATE,
     }:
         seen_error = {
             "reason": outcome.value,

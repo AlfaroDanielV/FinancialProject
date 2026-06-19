@@ -25,6 +25,7 @@ class Intent(str, Enum):
     CREATE_DEBT = "create_debt"
     CREATE_CARD = "create_card"
     ATTACH_EXPENSE = "attach_expense"
+    SET_BALANCE = "set_balance"
     QUERY = "query"
     CONFIRM_YES = "confirm_yes"
     CONFIRM_NO = "confirm_no"

@@ -19,6 +19,8 @@ from ..schemas.account import (
     AccountHardDeleteResponse,
     AccountResponse,
     AccountUpdate,
+    AnchorRequest,
+    AnchorResponse,
 )
 from ..schemas.card_terms import (
     CardAnalysisResponse,
@@ -30,6 +32,11 @@ from ..services.accounts import (
     compute_account_balances,
     compute_delete_impact,
     hard_delete_account,
+)
+from ..services.anchors import (
+    apply_anchor,
+    latest_anchor_sources,
+    needs_balance_confirmation,
 )
 from ..services.llm_extractor import extract_card_terms
 
@@ -48,23 +55,24 @@ async def _accounts_with_balances(
     accounts: Iterable[Account],
 ) -> list[AccountResponse]:
     accounts_list = list(accounts)
+    ids = [acc.id for acc in accounts_list]
     balances = await compute_account_balances(
-        db,
-        user_id=user_id,
-        account_ids=[acc.id for acc in accounts_list],
+        db, user_id=user_id, account_ids=ids
     )
+    sources = await latest_anchor_sources(db, account_ids=ids)
     responses: list[AccountResponse] = []
     for acc in accounts_list:
         balance = balances.get(acc.id)
         response = AccountResponse.model_validate(acc)
+        update: dict = {
+            "needs_balance_confirmation": needs_balance_confirmation(
+                sources.get(acc.id)
+            ),
+        }
         if balance is not None:
-            response = response.model_copy(
-                update={
-                    "current_balance": balance.current,
-                    "month_start_balance": balance.month_start,
-                }
-            )
-        responses.append(response)
+            update["current_balance"] = balance.current
+            update["month_start_balance"] = balance.month_start
+        responses.append(response.model_copy(update=update))
     return responses
 
 
@@ -97,6 +105,11 @@ async def create_account(
             detail="Ya tenés una cuenta activa con ese nombre.",
         )
     await db.refresh(account)
+    # NOTE: a brand-new account is intentionally left ANCHORLESS — it
+    # reconstructs from `initial_balance` (so same-day captures count normally)
+    # and is not nudged (entering the balance at creation IS the confirmation).
+    # The anchor benefit (partial-import immunity) is available on demand via
+    # POST /{id}/anchor. (Pending operator decision on create-time anchoring.)
     [response] = await _accounts_with_balances(
         db, user_id=user.id, accounts=[account]
     )
@@ -187,6 +200,55 @@ async def update_account(
         db, user_id=user.id, accounts=[account]
     )
     return response
+
+
+@router.post("/{account_id}/anchor", response_model=AnchorResponse)
+async def set_account_anchor(
+    account_id: uuid.UUID,
+    payload: AnchorRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """Set/correct an account's REAL balance (bank reconciliation).
+
+    Appends a 'reanchor' anchor and records the labeled, informational ajuste
+    for the delta (excluded from the balance + income/expense; visible in
+    Movimientos). Serves both the "confirmá tu saldo" nudge (migrated accounts)
+    and AccountDetail's "corregí mi saldo". Balances are projected forward, so
+    the displayed balance becomes the stated value in one step.
+    """
+    result = await db.execute(
+        select(Account).where(
+            Account.id == account_id, Account.user_id == user.id
+        )
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=404, detail="Cuenta no encontrada.")
+    if account.archived:
+        raise HTTPException(
+            status_code=400,
+            detail="No se puede reanclar una cuenta archivada.",
+        )
+
+    res = await apply_anchor(
+        db,
+        user=user,
+        account=account,
+        value=payload.value,
+        source="reanchor",
+        note=payload.note,
+        write_ajuste=True,
+    )
+    await db.commit()
+    return AnchorResponse(
+        account_id=account.id,
+        value=res.value,
+        effective_date=res.effective_date,
+        delta=res.delta,
+        ajuste_transaction_id=res.ajuste_transaction_id,
+        current_balance=res.value,
+    )
 
 
 @router.get(

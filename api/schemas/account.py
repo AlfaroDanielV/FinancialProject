@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal, Optional
 
@@ -36,8 +36,27 @@ class AccountResponse(BaseModel):
     created_at: datetime
     current_balance: Optional[Decimal] = None
     month_start_balance: Optional[Decimal] = None
+    # True when the real balance is unconfirmed (no anchor, or only the 0035
+    # 'migrated' backfill) → the app shows a "confirmá tu saldo real" nudge.
+    needs_balance_confirmation: bool = False
 
     model_config = {"from_attributes": True}
+
+
+class AnchorRequest(BaseModel):
+    """Set or correct an account's real balance (bank reconciliation)."""
+
+    value: Decimal = Field(..., max_digits=14, decimal_places=2)
+    note: Optional[str] = Field(None, max_length=500)
+
+
+class AnchorResponse(BaseModel):
+    account_id: uuid.UUID
+    value: Decimal  # the newly anchored real balance
+    effective_date: date
+    delta: Decimal  # value − previously-projected balance (the reconciled gap)
+    ajuste_transaction_id: Optional[uuid.UUID] = None
+    current_balance: Decimal  # == value (post-anchor; no future-dated txns)
 
 
 class AccountDeleteImpactResponse(BaseModel):

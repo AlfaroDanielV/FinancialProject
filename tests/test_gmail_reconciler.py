@@ -162,6 +162,32 @@ async def test_skipped_when_amount_missing(db_with_user):
     assert txn is None
 
 
+async def test_skipped_when_no_date(db_with_user):
+    """Gate F / decision #7: an undated email must NOT be stamped with the scan
+    date (that row would land after a reconciliation anchor and double-count).
+    It is skipped(no_date), never inserted with an invented date."""
+    db, user_id = db_with_user
+    await _activate_with_window(db, user_id, days_ago=0)
+
+    candidate = ExtractedEmailTransaction(
+        transaction_type="charge",
+        confidence=0.95,
+        amount=Decimal("1000"),
+        currency="CRC",
+        transaction_date=None,
+    )
+    outcome, txn = await reconcile(
+        db=db, user_id=user_id, candidate=candidate, gmail_message_id="msg-1"
+    )
+    assert outcome == ReconcileOutcome.SKIPPED_NO_DATE
+    assert txn is None
+    # Nothing was inserted — no row with a guessed date.
+    rows = await db.execute(
+        select(Transaction).where(Transaction.user_id == user_id)
+    )
+    assert rows.scalar_one_or_none() is None
+
+
 async def test_skipped_when_type_unknown(db_with_user):
     db, user_id = db_with_user
     await _activate_with_window(db, user_id, days_ago=0)
@@ -489,3 +515,64 @@ async def test_shadow_window_is_seven_days():
 
 async def test_amount_tolerance_constant_is_one():
     assert AMOUNT_TOLERANCE == Decimal("1")
+
+
+# ── cross-email duplicate flagging (A2) ─────────────────────────────────────
+
+
+async def test_cross_email_sibling_flags_duplicate(db_with_user):
+    """Two Gmail emails for the same payment (different Message-IDs): the second
+    shadow row is FLAGGED is_duplicate=True (not skipped) so the user sees both
+    in review and discards one. Operator decision: flag, never silently drop."""
+    db, user_id = db_with_user
+    await _activate_with_window(db, user_id, days_ago=0)
+    cand = ExtractedEmailTransaction(
+        transaction_type="charge",
+        confidence=0.95,
+        amount=Decimal("5000"),
+        currency="CRC",
+        transaction_date=date.today(),
+        merchant="Auto Mercado",
+    )
+    o1, t1 = await reconcile(
+        db=db, user_id=user_id, candidate=cand, gmail_message_id="msg-A"
+    )
+    await db.commit()
+    assert o1 == ReconcileOutcome.CREATED_SHADOW
+    assert t1.is_duplicate is False
+
+    o2, t2 = await reconcile(
+        db=db, user_id=user_id, candidate=cand, gmail_message_id="msg-B"
+    )
+    await db.commit()
+    assert o2 == ReconcileOutcome.CREATED_SHADOW
+    # Flagged, not skipped — both rows survive for the user to resolve.
+    assert t2.is_duplicate is True
+    rows = await db.execute(
+        select(Transaction).where(Transaction.user_id == user_id)
+    )
+    assert len(rows.scalars().all()) == 2
+
+
+async def test_distinct_amount_not_flagged(db_with_user):
+    """A genuinely different amount on the same day is NOT a sibling dup."""
+    db, user_id = db_with_user
+    await _activate_with_window(db, user_id, days_ago=0)
+    c1 = ExtractedEmailTransaction(
+        transaction_type="charge", confidence=0.95, amount=Decimal("5000"),
+        currency="CRC", transaction_date=date.today(),
+    )
+    c2 = ExtractedEmailTransaction(
+        transaction_type="charge", confidence=0.95, amount=Decimal("9999"),
+        currency="CRC", transaction_date=date.today(),
+    )
+    _, t1 = await reconcile(
+        db=db, user_id=user_id, candidate=c1, gmail_message_id="msg-A"
+    )
+    await db.commit()
+    _, t2 = await reconcile(
+        db=db, user_id=user_id, candidate=c2, gmail_message_id="msg-B"
+    )
+    await db.commit()
+    assert t1.is_duplicate is False
+    assert t2.is_duplicate is False

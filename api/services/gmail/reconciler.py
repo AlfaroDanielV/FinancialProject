@@ -74,6 +74,11 @@ class ReconcileOutcome(str, Enum):
     CREATED_SHADOW = "created_shadow"
     DUPLICATE_GMAIL = "duplicate_gmail"
     SKIPPED_LOW_CONFIDENCE = "skipped_low_confidence"
+    # The email body carried no transaction date. We never invent one (a
+    # `date.today()` fallback would land the row after any reconciliation anchor
+    # and double-count — decision #7 / Gate F). Held as skipped for the user to
+    # add manually.
+    SKIPPED_NO_DATE = "skipped_no_date"
 
 
 def _signed_amount(candidate: ExtractedEmailTransaction) -> Optional[Decimal]:
@@ -179,6 +184,53 @@ async def _check_duplicate_gmail(
     return row.scalar_one_or_none()
 
 
+async def _find_existing_gmail_sibling(
+    *,
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    candidate: ExtractedEmailTransaction,
+    signed: Decimal,
+) -> Optional[Transaction]:
+    """A prior GMAIL-origin row that looks like the SAME payment as this
+    candidate — the cross-email duplicate case (one purchase notified by two
+    emails with different Message-IDs, e.g. a 'compra' + an 'autorización').
+
+    Distinct from `_check_duplicate_gmail` (same Message-ID) and
+    `_find_existing_match` (only matches non-gmail rows). Same signed amount
+    within tolerance + date within the match window; only `shadow`/`confirmed`
+    rows count (a previously discarded row must not re-flag). Read-only.
+
+    We FLAG, never skip (operator decision, mirroring the at-capture detector):
+    the new row is still created so the user sees both in shadow review and
+    discards one — a false positive must never silently drop a real charge.
+    """
+    cand_date = candidate.transaction_date
+    if cand_date is None or candidate.currency is None:
+        return None
+
+    date_low = cand_date - timedelta(days=MATCH_WINDOW_DAYS)
+    date_high = cand_date + timedelta(days=MATCH_WINDOW_DAYS)
+    row = await db.execute(
+        select(Transaction)
+        .where(Transaction.user_id == user_id)
+        .where(Transaction.currency == candidate.currency)
+        .where(Transaction.gmail_message_id.is_not(None))
+        .where(Transaction.status.in_(("shadow", "confirmed")))
+        .where(Transaction.transfer_id.is_(None))
+        .where(Transaction.goal_id.is_(None))
+        .where(
+            and_(
+                Transaction.transaction_date >= date_low,
+                Transaction.transaction_date <= date_high,
+            )
+        )
+        .where(func.abs(Transaction.amount - signed) <= AMOUNT_TOLERANCE)
+        .order_by(Transaction.transaction_date.desc())
+        .limit(1)
+    )
+    return row.scalar_one_or_none()
+
+
 async def reconcile(
     *,
     db: AsyncSession,
@@ -218,6 +270,19 @@ async def reconcile(
             candidate.amount,
         )
         return (ReconcileOutcome.SKIPPED_LOW_CONFIDENCE, None)
+
+    # Body-sourced date is mandatory. An undated email must NOT be stamped with
+    # the ingestion date — that would land the row after any reconciliation
+    # anchor and double-count (decision #7 / Gate F). Hold it as
+    # skipped(no_date); the user adds the date manually. NEVER invent a date.
+    if candidate.transaction_date is None:
+        log.info(
+            "reconcile_skipped_no_date user=%s type=%s amount=%s",
+            user_id,
+            candidate.transaction_type,
+            candidate.amount,
+        )
+        return (ReconcileOutcome.SKIPPED_NO_DATE, None)
 
     # 2. Already-ingested same Gmail message.
     dup = await _check_duplicate_gmail(
@@ -268,6 +333,28 @@ async def reconcile(
             "account_guess_failed user=%s msg=%s", user_id, gmail_message_id
         )
 
+    # Cross-email duplicate flag (the same payment notified by two emails). We
+    # FLAG the new row, never skip it (operator decision): both land in shadow
+    # review where the user discards one. Best-effort — a detection error must
+    # not break ingestion.
+    is_dup = False
+    try:
+        sibling = await _find_existing_gmail_sibling(
+            db=db, user_id=user_id, candidate=candidate, signed=signed
+        )
+        if sibling is not None:
+            is_dup = True
+            log.info(
+                "reconcile_gmail_sibling_dup user=%s msg=%s sibling=%s",
+                user_id,
+                gmail_message_id,
+                sibling.id,
+            )
+    except Exception:  # noqa: BLE001 — dup detection must never break a scan
+        log.exception(
+            "gmail_sibling_check_failed user=%s msg=%s", user_id, gmail_message_id
+        )
+
     txn = Transaction(
         user_id=user_id,
         amount=signed,
@@ -276,11 +363,12 @@ async def reconcile(
         description=candidate.description or _compose_description(
             email_subject, email_from
         ),
-        transaction_date=candidate.transaction_date or date.today(),
+        transaction_date=candidate.transaction_date,
         source="gmail",
         gmail_message_id=gmail_message_id,
         status=status,
         account_id=guessed_account_id,
+        is_duplicate=is_dup,
     )
     db.add(txn)
     await db.flush()

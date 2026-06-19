@@ -17,6 +17,7 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.models.account import Account
 from api.models.debt import Debt
 from api.models.goal import Goal
 from api.models.recurring_bill import RecurringBill
@@ -25,6 +26,7 @@ from api.models.transaction import Transaction
 from api.models.user import User
 from api.schemas.transfers import TransferCreate
 from api.services import recurrence
+from api.services.anchors import apply_anchor
 from api.services.transactions import (
     RECLASSIFY_NOT_FOUND,
     ReclassifyError,
@@ -66,6 +68,11 @@ async def commit_pending(
 
     if pending.action_type == "reclassify":
         return await _commit_reclassify(
+            user=user, pending=pending, db=db, redis=redis
+        )
+
+    if pending.action_type == "set_balance":
+        return await _commit_set_balance(
             user=user, pending=pending, db=db, redis=redis
         )
 
@@ -198,6 +205,51 @@ async def _commit_reclassify(
         redis=redis,
     )
     return txn_id
+
+
+async def _commit_set_balance(
+    *,
+    user: User,
+    pending: PendingAction,
+    db: AsyncSession,
+    redis: Redis,
+) -> uuid.UUID:
+    """Re-anchor an account to its stated real balance (A7 chat "corregí mi
+    saldo"). Appends an anchor + the informational ajuste via the shared
+    `apply_anchor`, so the balance heals to the stated value in one step.
+
+    Append-only and deliberately NOT added to the /undo chain (no
+    save_last_action) — a wrong re-anchor is corrected by re-anchoring again,
+    consistent with the append-only anchor model. Returns the new anchor id.
+    """
+    payload = pending.payload
+    account_id = uuid.UUID(payload["account_id"])
+    result = await db.execute(
+        select(Account).where(
+            Account.id == account_id, Account.user_id == user.id
+        )
+    )
+    account = result.scalar_one_or_none()
+    if account is None:
+        raise ValueError("account not found for set_balance")
+
+    res = await apply_anchor(
+        db,
+        user=user,
+        account=account,
+        value=Decimal(payload["value"]),
+        source="reanchor",
+        write_ajuste=True,
+    )
+    await db.commit()
+
+    await resolve_from_pending(
+        session=db, pending=pending, resolution="confirmed"
+    )
+    await db.commit()
+
+    await clear_pending(user_id=user.id, redis=redis)
+    return res.anchor_id
 
 
 async def _commit_goal(

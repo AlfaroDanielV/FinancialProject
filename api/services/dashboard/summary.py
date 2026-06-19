@@ -17,11 +17,14 @@ from ...schemas.dashboard import (
     CashFlowPoint,
     CashFlowResponse,
     CategoryBreakdownItem,
+    CurrencyBalance,
     DailyCashFlowPoint,
     DailyCashFlowResponse,
     DashboardPeriod,
     DashboardSummary,
 )
+from ..accounts import compute_account_balances
+from ..anchors import AJUSTE_CATEGORY
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,7 @@ def _zero_summary(
         balance_total=Decimal("0"),
         available_balance=Decimal("0"),
         savings_balance=Decimal("0"),
+        other_currency_balances=[],
         transaction_count=0,
         transfer_rows_excluded=0,
         accounts_count=accounts_count,
@@ -102,80 +106,45 @@ async def _active_counts(db: AsyncSession, user_id: uuid.UUID) -> tuple[int, int
     return int(accounts_result.scalar_one()), int(goals_result.scalar_one())
 
 
-async def _balance_total(db: AsyncSession, user_id: uuid.UUID) -> Decimal:
-    initial_result = await db.execute(
-        select(func.coalesce(func.sum(Account.initial_balance), 0)).where(
-            Account.user_id == user_id,
-            Account.is_active.is_(True),
-            Account.archived.is_(False),
-        )
-    )
-    movement_result = await db.execute(
-        select(func.coalesce(func.sum(Transaction.amount), 0)).where(
-            Transaction.user_id == user_id,
-            Transaction.status == "confirmed",
-            Transaction.archived.is_(False),
-        )
-    )
-    return Decimal(initial_result.scalar_one() or 0) + Decimal(
-        movement_result.scalar_one() or 0
-    )
-
-
 async def _balance_split(
     db: AsyncSession, user_id: uuid.UUID
-) -> tuple[Decimal, Decimal]:
-    """Phase 7h — split account balances into (available, savings).
+) -> dict[str, tuple[Decimal, Decimal]]:
+    """Per-currency (available, savings) balances, sourced from the SINGLE
+    balance invariant `compute_account_balances` so the home figure can never
+    drift from per-account balances (and inherits the anchor model in A5).
 
-    Savings (`account_type='savings'`) is "plata apartada" and must NOT count
-    toward the home-screen available total. Same `initial_balance + Σ confirmed
-    transactions` convention as `_balance_total`, but the movement sum is JOINed
-    to the account so it can be bucketed by type — so a checking→savings
-    transfer correctly lowers `available` and raises `savings` (transfers still
-    net across accounts). Only active, non-archived accounts count.
+    Savings (`account_type='savings'`) is "plata apartada" (Phase 7h) and is
+    excluded from `available`. Returns a `{currency: (available, savings)}` map:
+    the cross-account roll-up does NOT add ₡+$ on a placeholder fx rate (D3) —
+    each currency reconciles against its own accounts; the caller leads with the
+    display currency and shows the rest apart. Only active, non-archived
+    accounts count. A checking→savings transfer lowers `available`, raises
+    `savings` (the per-account balances already net the transfer legs).
     """
-    is_sav = Account.account_type == "savings"
-
-    initial = await db.execute(
-        select(
-            func.coalesce(
-                func.sum(case((~is_sav, Account.initial_balance), else_=0)), 0
-            ),
-            func.coalesce(
-                func.sum(case((is_sav, Account.initial_balance), else_=0)), 0
-            ),
-        ).where(
-            Account.user_id == user_id,
-            Account.is_active.is_(True),
-            Account.archived.is_(False),
+    rows = (
+        await db.execute(
+            select(Account.id, Account.currency, Account.account_type).where(
+                Account.user_id == user_id,
+                Account.is_active.is_(True),
+                Account.archived.is_(False),
+            )
         )
+    ).all()
+    if not rows:
+        return {}
+
+    balances = await compute_account_balances(
+        db, user_id=user_id, account_ids=[r.id for r in rows]
     )
-    avail_init, sav_init = initial.one()
-
-    movement = await db.execute(
-        select(
-            func.coalesce(
-                func.sum(case((~is_sav, Transaction.amount), else_=0)), 0
-            ),
-            func.coalesce(
-                func.sum(case((is_sav, Transaction.amount), else_=0)), 0
-            ),
-        )
-        .select_from(Transaction)
-        .join(Account, Transaction.account_id == Account.id)
-        .where(
-            Transaction.user_id == user_id,
-            Transaction.status == "confirmed",
-            Transaction.archived.is_(False),
-            Account.is_active.is_(True),
-            Account.archived.is_(False),
-        )
-    )
-    avail_mov, sav_mov = movement.one()
-
-    available = Decimal(avail_init or 0) + Decimal(avail_mov or 0)
-    savings = Decimal(sav_init or 0) + Decimal(sav_mov or 0)
-    return available, savings
+    out: dict[str, list[Decimal]] = {}
+    for r in rows:
+        bal = balances[r.id].current if r.id in balances else Decimal("0")
+        bucket = out.setdefault(r.currency, [Decimal("0"), Decimal("0")])
+        if r.account_type == "savings":
+            bucket[1] += bal
+        else:
+            bucket[0] += bal
+    return {ccy: (a, s) for ccy, (a, s) in out.items()}
 
 
 async def _category_breakdown(
@@ -215,6 +184,8 @@ async def _category_breakdown(
             Transaction.transfer_id.is_(None),
             # Phase 7d: goal aportes/refunds are savings flows, not spending.
             Transaction.goal_id.is_(None),
+            # Reconciliation ajustes are balance corrections, not spending.
+            Transaction.category.is_distinct_from(AJUSTE_CATEGORY),
             Transaction.archived.is_(False),
         )
         .group_by(category_label)
@@ -263,12 +234,28 @@ async def get_dashboard_summary(
     display_currency = user.display_currency or user.currency or "CRC"
     accounts_count, active_goals_count = await _active_counts(db, user.id)
     window = _period_window(period)
-    balance_total = await _balance_total(db, user.id)
-    available_balance, savings_balance = await _balance_split(db, user.id)
+    by_ccy = await _balance_split(db, user.id)
+    available_balance, savings_balance = by_ccy.get(
+        display_currency, (Decimal("0"), Decimal("0"))
+    )
+    # D3: lead with the display currency; show other currencies apart (never
+    # add ₡+$ on a placeholder fx rate). `balance_total` is now the display-
+    # currency total (= available + savings), not a cross-currency naive sum.
+    balance_total = available_balance + savings_balance
+    other_currency_balances = [
+        CurrencyBalance(currency=ccy, available=a, savings=s)
+        for ccy, (a, s) in sorted(by_ccy.items())
+        if ccy != display_currency and (a != 0 or s != 0)
+    ]
 
     # Phase 7d: goal aportes/refunds join transfer legs as "moves money but
     # is neither income nor expense" — _not_flow below excludes both.
-    _is_flow = Transaction.transfer_id.is_(None) & Transaction.goal_id.is_(None)
+    _is_flow = (
+        Transaction.transfer_id.is_(None)
+        & Transaction.goal_id.is_(None)
+        # Reconciliation ajustes are balance corrections, not income/expense.
+        & Transaction.category.is_distinct_from(AJUSTE_CATEGORY)
+    )
     result = await db.execute(
         select(
             func.coalesce(
@@ -335,6 +322,7 @@ async def get_dashboard_summary(
         balance_total=balance_total,
         available_balance=available_balance,
         savings_balance=savings_balance,
+        other_currency_balances=other_currency_balances,
         transaction_count=int(row[2] or 0),
         transfer_rows_excluded=int(row[3] or 0),
         accounts_count=accounts_count,
@@ -408,6 +396,8 @@ async def get_cash_flow(
             Transaction.transfer_id.is_(None),
             # Phase 7d: goal flows are savings movements, not cashflow.
             Transaction.goal_id.is_(None),
+            # Reconciliation ajustes are balance corrections, not cashflow.
+            Transaction.category.is_distinct_from(AJUSTE_CATEGORY),
         )
         .group_by(month_expr)
         .order_by(month_expr)
@@ -476,6 +466,8 @@ async def get_daily_cash_flow(
             Transaction.transfer_id.is_(None),
             # Phase 7d: goal flows are savings movements, not cashflow.
             Transaction.goal_id.is_(None),
+            # Reconciliation ajustes are balance corrections, not cashflow.
+            Transaction.category.is_distinct_from(AJUSTE_CATEGORY),
         )
         .group_by(Transaction.transaction_date)
         .order_by(Transaction.transaction_date)

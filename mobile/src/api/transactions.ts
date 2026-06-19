@@ -24,6 +24,9 @@ export interface TransactionResponse {
   source: string;
   status: string;
   archived: boolean;
+  // Cross-email/at-capture duplicate flag — shown as "posible duplicado" in
+  // Gmail shadow review so the user can discard one of a notified-twice pair.
+  is_duplicate: boolean;
 }
 
 export interface TransactionListResponse {

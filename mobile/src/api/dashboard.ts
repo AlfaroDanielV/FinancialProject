@@ -9,6 +9,12 @@ export interface CategoryBreakdownItem {
   net_flow: string;
 }
 
+export interface CurrencyBalance {
+  currency: string;
+  available: string;
+  savings: string;
+}
+
 export interface DashboardSummary {
   period: DashboardPeriod;
   display_currency: string;
@@ -22,6 +28,9 @@ export interface DashboardSummary {
   // separately. `balance_total` stays for back-compat.
   available_balance: string;
   savings_balance: string;
+  // D3: balances in currencies OTHER than display_currency, shown apart
+  // («(+ $Y en cuentas en dólares)»). Empty for single-currency users.
+  other_currency_balances: CurrencyBalance[];
   transaction_count: number;
   accounts_count: number;
   active_goals_count: number;

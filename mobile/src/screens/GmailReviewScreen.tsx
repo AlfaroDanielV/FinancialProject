@@ -196,6 +196,9 @@ export function GmailReviewScreen() {
                   {edited ? "  ·  editado" : ""}
                 </Text>
                 <Text style={styles.rowDate}>{item.transaction_date}</Text>
+                {item.is_duplicate && (
+                  <Text style={styles.dupBadge}>⚠ Posible duplicado</Text>
+                )}
                 <Pressable
                   onPress={() => setAccountPickerFor(item)}
                   hitSlop={4}
@@ -449,6 +452,7 @@ const styles = StyleSheet.create({
   struck: { textDecorationLine: "line-through" },
   rowMeta: { fontSize: FontSize.sm, color: Colors.textSecondary },
   rowDate: { fontSize: FontSize.xs, color: Colors.textMuted },
+  dupBadge: { fontSize: FontSize.xs, color: Colors.warning, fontWeight: "700", marginTop: 2 },
   guessNote: {
     fontSize: FontSize.xs,
     color: Colors.textSecondary,

@@ -312,6 +312,11 @@ async def dispatch(
             extraction=extraction, user=user, db=db
         )
 
+    if intent is Intent.SET_BALANCE:
+        return await _dispatch_set_balance(
+            extraction=extraction, user=user, db=db
+        )
+
     # Defensive fallback — should be unreachable given the enum.
     return ShowHelp()
 
@@ -482,6 +487,83 @@ async def _dispatch_log(
         payload=payload,
         summary_es=summary,
         telemetry_events=telemetry_events,
+    )
+
+
+async def _dispatch_set_balance(
+    *,
+    extraction: ExtractionResult,
+    user: User,
+    db: AsyncSession,
+) -> DispatcherResult:
+    """Re-anchor: state an account's REAL balance (bank reconciliation).
+
+    The LLM extracts the value (`amount`, a positive magnitude) + the account
+    (`account_hint`); the deterministic `apply_anchor` commit fixes the anchor +
+    the labeled ajuste. Fund accounts only — a card's balance is driven by its
+    movements + payments (correct it from the card screen), so a credit hint is
+    redirected. The LLM never decides the balance; it only extracts the number.
+    """
+    if extraction.amount is None or extraction.amount <= 0:
+        return AskClarification(
+            question_es=(
+                "¿Cuál es el saldo que te aparece en el banco? Decime el número "
+                "(por ejemplo '82500' o '500 mil')."
+            ),
+            awaiting_field="amount",
+            partial=extraction.model_dump(mode="json"),
+        )
+
+    accounts = await list_active(user, db)
+    account = None
+    if extraction.account_hint:
+        match = match_account_hint(extraction.account_hint, accounts)
+        if match.status == "matched":
+            account = match.account
+    if account is None and len(accounts) == 1:
+        account = accounts[0]
+
+    if account is None:
+        return AskClarification(
+            question_es=(
+                "¿De qué cuenta es ese saldo? Tocá una opción o escribime el "
+                "nombre."
+            ),
+            awaiting_field="account",
+            partial=extraction.model_dump(mode="json"),
+            options=_account_options(accounts),
+        )
+
+    if account.account_type == "credit":
+        return AskClarification(
+            question_es=(
+                "El saldo de una tarjeta se calcula con sus movimientos y pagos, "
+                "no se fija a mano. ¿De qué otra cuenta querés corregir el saldo?"
+            ),
+            awaiting_field="account",
+            partial=extraction.model_dump(mode="json"),
+            options=_account_options(
+                [a for a in accounts if a.account_type != "credit"]
+            ),
+        )
+
+    value: Decimal = extraction.amount
+    currency = account.currency
+    payload = {
+        "action_type": "set_balance",
+        "account_id": str(account.id),
+        "account_name": account.name,
+        "value": str(value),
+        "currency": currency,
+    }
+    summary = (
+        f"Voy a dejar el saldo de «{account.name}» en "
+        f"{_format_amount(value, currency)}. La diferencia con lo que tengo "
+        "registrado la anoto como ajuste de reconciliación para que cuadre con "
+        "tu banco."
+    )
+    return ProposeAction(
+        action_type="set_balance", payload=payload, summary_es=summary
     )
 
 

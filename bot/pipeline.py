@@ -702,6 +702,28 @@ async def _handle_confirm(
         )
         return reply
 
+    if pending.action_type == "set_balance":
+        # A7 re-anchor: append the anchor + the informational ajuste; the
+        # balance heals to the stated value in one step (no amount sign, no
+        # transaction deep link). Not part of the /undo chain.
+        await commit_pending(user=user, pending=pending, db=db, redis=redis)
+        payload = pending.payload
+        reply = BotReply(
+            text=messages_es.BALANCE_SET.format(
+                name=payload.get("account_name", "la cuenta"),
+                amount=format_amount(
+                    Decimal(payload["value"]), payload["currency"]
+                ),
+            )
+        )
+        await _bridge_to_query_history(
+            user_id=user.id,
+            user_text=source_text,
+            assistant_text=reply.text,
+            redis=redis,
+        )
+        return reply
+
     txn_id = await commit_pending(user=user, pending=pending, db=db, redis=redis)
     amt_decimal = Decimal(pending.payload["amount"])
     currency = pending.payload["currency"]

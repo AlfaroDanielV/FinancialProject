@@ -1882,6 +1882,82 @@ so flipping the sign moves the amount between the income/expense sides for free.
   arbitrary (non-last) movement from chat; auto-clearing the category on a flip;
   to/from transfer (separate primitive).
 
+## Balance Anchor & Reconciliation (2026-06-19)
+
+Operator ask: bottom-up balance reconstruction (`initial_balance + Σ every
+captured txn`) **drifts** because ingestion never captures every transaction —
+onboarding is painful and the shown balance ends up higher/lower than the bank.
+Inverted to **standard bank reconciliation**: the real bank balance is the
+**anchor** (source of truth), transactions are explanatory. **On `dev`; operator
+on-device sign-off pending.** Migration `0035` (live on dev). No
+`committed_outflows`/cashflow change (byte-lock green). Canonical:
+`docs/balance-anchor-reconciliation-decisions.md`; vault `Decision - Balance
+Anchor & Reconciliation`.
+
+**Invariant (the only path that turns rows into an account balance —
+`api/services/accounts.py::compute_account_balances`):**
+`balance = latest_anchor.value + Σ(confirmed, non-archived txns with
+transaction_date > anchor.effective_date)`. Strict `>` is **day-level** (rule
+#6): a txn dated ON the anchor day is pre-anchor (already in the stated
+balance). An account with **no anchor** falls back to `initial_balance + Σ(all)`
+— byte-identical to the pre-anchor behavior, so nothing changed until a user
+re-anchors.
+
+- **`account_anchors` (migration `0035`, append-only):** `(value, currency,
+  effective_date DATE, source [onboarding|reanchor|migrated], note, created_at)`
+  on `account_id` (CASCADE) + index `(account_id, effective_date DESC,
+  created_at DESC)`. Latest anchor = `DISTINCT ON (account_id)` (never a
+  correlated subquery → no N+1). A re-anchor **appends** a row; never mutates.
+  **Backfill** seeded one `migrated` anchor per existing account at
+  `value=initial_balance`, `effective_date = MIN(transaction_date) − 1 day`
+  (fallback `created_at::date` when no txns) — so the cutover reproduces every
+  current balance **byte-for-byte**.
+- **Single balance invariant (the multiple-sources-of-truth cure):** the four
+  pre-existing balance paths now all read `compute_account_balances` —
+  `dashboard/summary.py::_balance_split`/`_balance_total` and the chat tool
+  `app/queries/tools/accounts.py::get_account_balance` (which had been computing
+  `Σ amount` **without `initial_balance`** and counting shadow/archived rows — it
+  disagreed with the home screen; fixed).
+- **Re-anchor / heal-drift (B1):** state the real balance → a new `reanchor`
+  anchor + a labeled **"ajuste de reconciliación"** transaction for the delta,
+  **dated on the anchor's `effective_date`** so the strict-`>` formula excludes
+  it from the balance (no `is_summed` flag). The ajuste is **also excluded from
+  income/expense reports** (it is a balance correction, not P&L) via the
+  reserved `AJUSTE_CATEGORY` marker, NULL-safe `is_distinct_from` in the four
+  `summary.py` aggregators. Backend: `api/services/anchors.py::apply_anchor` +
+  `POST /accounts/{id}/anchor`; `AccountResponse.needs_balance_confirmation`
+  (true only for the `migrated` backfill anchor → the "confirmá tu saldo" nudge).
+- **Native (A6/A7):** account create stays anchorless ("Saldo inicial" =
+  reconstruction; same-day captures count) — **operator chose NOT to anchor at
+  create** (an anchor at `eff=today` would exclude same-day captures). Migrated
+  accounts show a **"Confirmá tu saldo real"** nudge on `AccountDetail`; a
+  **"Corregí mi saldo"** action + `ReanchorModal` heal in one step (fund
+  accounts only; credit is movement-driven). `mobile/src/components/ReanchorModal.tsx`,
+  `mobile/src/api/accounts.ts::setAccountAnchor`.
+- **Chat (A7):** `Intent.SET_BALANCE` — the LLM extracts the value (`amount`) +
+  account (`account_hint`); deterministic `_dispatch_set_balance` proposes (account
+  clarification with options; credit → redirect); on "Sí",
+  `bot/commit.py::_commit_set_balance` → `apply_anchor`. The LLM never decides the
+  balance ([[Decision - LLM Extracts Rules Decide]]). Append-only — **not in the
+  /undo chain** (re-anchor again to correct).
+- **Ingestion correctness (prerequisites, A1/A2):** the Gmail reconciler no longer
+  invents a date — an undated email is `skipped (reason=no_date)`, never stamped
+  `date.today()` (would land post-anchor + double-count); a cross-email duplicate
+  (one payment, two emails) **flags** the newer shadow row `is_duplicate=True`
+  (never silently skips — the user resolves it in review). The card-payment-received
+  → transfer-leg recognition is **deferred to the SINPE/counterparty workstream**
+  (the email extractor lacks structured parties; the shadow gate already prevents
+  un-reviewed pollution).
+
+**Verification:** `tests/test_balance_anchor.py` (10) + `tests/test_chat_set_balance.py`
+(5) + `tests/test_gmail_reconciler.py` (22, incl. no-date + sibling-flag) + the full
+balance-consumer regression (accounts/dashboard/transfers/cards/goals/envelopes/chat
+routing) + byte-locked cashflow — 104 in the consolidated slice, green; mobile
+`tsc --noEmit` clean; `alembic current → 0035 (head)`. **Deferred:** card-payment
+transfer reconstruction (SINPE/counterparty workstream); credit-account re-anchor in
+chat/native; chat set_balance in the /undo chain; the live BCCR fx rate for the
+CRC-led roll-up (USD shown apart, never ₡+$ on the ₡500 placeholder).
+
 ## CR Salary Calculator + Ingresos CRUD (post-7a, 2026-06-09)
 
 Deterministic Costa Rican net-pay calculator + full Ingresos CRUD. Backend +
@@ -2213,6 +2289,8 @@ iPhone + Expo flow end-to-end.
 - **Secret store: production is enforced to Key Vault (resolved 2026-06-05, commit `fe8db18`).** A `Settings` validator (`api/config.py::_enforce_prod_secret_store`) refuses to boot when `ENVIRONMENT=production` and `SECRET_STORE_BACKEND != azure_kv` (or `AZURE_KEY_VAULT_URL` unset), so a misconfigured prod deploy can't silently keep Gmail OAuth refresh tokens in `env`/`file` (plaintext / process env / ephemeral disk). The DB never stores the token — only the `gmail-refresh-{user_id}` Key Vault reference. `env`/`file` remain dev-only. Decision note: vault `Decision - Secrets in Key Vault (Prod-Enforced)`.
 
 - **FX rate is a hardcoded ₡500/US$ placeholder — wire the BCCR API.** `api/services/fx.py::convert` (used by envelope spend to count a USD expense against a CRC envelope) uses `FALLBACK_USD_TO_CRC = Decimal("500")`, a round placeholder, NOT a market rate. Cleanup target: a small daily worker that pulls the Banco Central de Costa Rica "Indicadores Económicos" SOAP service (`GetIndicadoresEconomicos`; indicador 317 = compra, 318 = venta), persists the rate into the existing `currency_rates` table (`base_currency`/`quote_currency`/`rate`/`as_of`, migration 0017 — already defined, currently unused), and has `convert` read the latest row (falling back to the constant when the table is empty/stale). Until then all CRC↔USD conversion in the app is at the fixed 500 rate. The `currency_rates` table has existed since Phase 6e but nothing reads or writes it yet.
+
+- **Balance anchor — follow-ups (2026-06-19).** (a) The reconciliation **ajuste** is excluded from income/expense reports via the reserved `AJUSTE_CATEGORY` string marker (`api/services/anchors.py`), filtered NULL-safely (`is_distinct_from`) in the four `summary.py` aggregators. Cleanup target: a dedicated `transactions.is_adjustment` boolean (a migration) so the exclusion isn't string-based (a user category literally named "ajuste de reconciliación" would currently be excluded too). (b) Chat `set_balance` re-anchor is **not in the /undo chain** (no `save_last_action`) — a wrong re-anchor is corrected by re-anchoring again (append-only model). (c) **Credit accounts can't be re-anchored** from chat or native (their balance is movement/payment-driven); the nudge + "Corregí mi saldo" are fund-account only. (d) The cross-account "Disponible" roll-up is **CRC-led with USD shown apart** (`DashboardSummary.other_currency_balances`) — it never adds ₡+$ on the ₡500 placeholder; single-number conversion waits for the live BCCR rate (above). (e) The card-payment-received → transfer-leg recognition is deferred to the SINPE/counterparty workstream (the Gmail email extractor lacks structured parties); the shadow gate prevents un-reviewed pollution meanwhile.
 
 ---
 

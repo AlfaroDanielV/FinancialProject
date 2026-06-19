@@ -17,6 +17,18 @@ export interface AccountResponse {
   created_at: string;
   current_balance: string | null;
   month_start_balance: string | null;
+  // True when the real balance is unconfirmed (only the 0035 'migrated'
+  // backfill anchor) → show the "confirmá tu saldo real" nudge.
+  needs_balance_confirmation: boolean;
+}
+
+export interface AnchorResponse {
+  account_id: string;
+  value: string;
+  effective_date: string;
+  delta: string;
+  ajuste_transaction_id: string | null;
+  current_balance: string;
 }
 
 export interface AccountCreate {
@@ -71,6 +83,21 @@ export async function updateAccount(
 
 export async function archiveAccount(id: string): Promise<AccountResponse> {
   const { data } = await api.delete<AccountResponse>(`/accounts/${id}`);
+  return data;
+}
+
+/** Set/correct the account's REAL balance (bank reconciliation). Appends an
+ *  anchor + an informational ajuste for the gap; the balance heals in one step.
+ *  Serves the "confirmá tu saldo" nudge and "corregí mi saldo". */
+export async function setAccountAnchor(
+  id: string,
+  value: string,
+  note?: string,
+): Promise<AnchorResponse> {
+  const { data } = await api.post<AnchorResponse>(`/accounts/${id}/anchor`, {
+    value,
+    ...(note ? { note } : {}),
+  });
   return data;
 }
 

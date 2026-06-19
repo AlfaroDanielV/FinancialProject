@@ -17,6 +17,7 @@ from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.account import Account
+from ..models.account_anchor import AccountAnchor
 from ..models.debt import Debt
 from ..models.goal import Goal
 from ..models.recurring_bill import RecurringBill
@@ -94,18 +95,27 @@ async def compute_account_balances(
     account_ids: Optional[Iterable[uuid.UUID]] = None,
     today: date | None = None,
 ) -> dict[uuid.UUID, AccountBalances]:
-    """Return per-account current and month-start balances.
+    """Return per-account current and month-start balances (anchor-based).
 
-    Both balances reuse the same convention as the dashboard:
-    `initial_balance + Σ confirmed transactions` for the user, scoped per
-    account via `transactions.account_id`. Transfers are NOT excluded — a
-    transfer's two linked transactions move balance between accounts and
-    must net out to zero across the user.
+    Balance is projected forward from the account's latest reconciliation
+    anchor (bank reconciliation, not bottom-up reconstruction)::
+
+        current     = anchor.value + Σ(txns transaction_date > effective_date)
+        month_start = anchor.value + Σ(effective_date < txn_date < month_start)
+
+    Confirmed, non-archived txns only. The strict `>` is day-level (rule #6): a
+    txn dated ON the anchor day is pre-anchor (already in the stated balance).
+    An account with NO anchor (created before onboarding wired one) falls back
+    to `initial_balance + Σ(all)` — byte-identical to the pre-anchor behavior,
+    so nothing changes until a user actually anchors/re-anchors. Transfers are
+    NOT excluded — a transfer's two legs move balance between accounts.
     """
     ids = list(account_ids) if account_ids is not None else None
     if ids is not None and not ids:
         return {}
 
+    # Per-account base value: the account's initial_balance (pre-anchor
+    # fallback), overridden by its latest anchor's value when one exists.
     base_stmt = select(
         Account.id,
         Account.initial_balance,
@@ -113,13 +123,38 @@ async def compute_account_balances(
     if ids is not None:
         base_stmt = base_stmt.where(Account.id.in_(ids))
     base_result = await db.execute(base_stmt)
-    initial_by_account: dict[uuid.UUID, Decimal] = {
+    base_by_account: dict[uuid.UUID, Decimal] = {
         account_id: Decimal(initial or 0)
         for account_id, initial in base_result.fetchall()
     }
-    if not initial_by_account:
+    if not base_by_account:
         return {}
+    scope_ids = list(base_by_account.keys())
 
+    # Latest anchor per account — DISTINCT ON (account_id) ordered by the
+    # composite index (never a correlated subquery → no N+1). The anchor value
+    # overrides the base; effective_date is the exclusive lower bound for sums.
+    anchor_stmt = (
+        select(
+            AccountAnchor.account_id,
+            AccountAnchor.value,
+            AccountAnchor.effective_date,
+        )
+        .where(AccountAnchor.account_id.in_(scope_ids))
+        .order_by(
+            AccountAnchor.account_id,
+            AccountAnchor.effective_date.desc(),
+            AccountAnchor.created_at.desc(),
+        )
+        .distinct(AccountAnchor.account_id)
+    )
+    for account_id, value, _eff in (await db.execute(anchor_stmt)).all():
+        base_by_account[account_id] = Decimal(value)
+
+    # Post-anchor sums. The per-account lower bound comes from the latest-anchor
+    # subquery join; an account with no anchor (eff IS NULL) includes every row.
+    latest_anchor = anchor_stmt.subquery()
+    eff = latest_anchor.c.effective_date
     month_start = _month_start(today)
     sums_stmt = (
         select(
@@ -138,11 +173,16 @@ async def compute_account_balances(
                 0,
             ).label("before_month"),
         )
+        .select_from(Transaction)
+        .outerjoin(
+            latest_anchor, latest_anchor.c.account_id == Transaction.account_id
+        )
         .where(
             Transaction.user_id == user_id,
-            Transaction.account_id.in_(initial_by_account.keys()),
+            Transaction.account_id.in_(scope_ids),
             Transaction.status == "confirmed",
             Transaction.archived.is_(False),
+            or_(eff.is_(None), Transaction.transaction_date > eff),
         )
         .group_by(Transaction.account_id)
     )
@@ -153,13 +193,13 @@ async def compute_account_balances(
     }
 
     balances: dict[uuid.UUID, AccountBalances] = {}
-    for account_id, initial in initial_by_account.items():
+    for account_id, base in base_by_account.items():
         total, before_month = sums_by_account.get(
             account_id, (Decimal("0"), Decimal("0"))
         )
         balances[account_id] = AccountBalances(
-            current=initial + total,
-            month_start=initial + before_month,
+            current=base + total,
+            month_start=base + before_month,
         )
     return balances
 
