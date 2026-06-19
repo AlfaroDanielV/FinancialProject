@@ -1,7 +1,9 @@
-"""Phase 6d B3 — session JWT signing for the cookie set post-exchange.
+"""Phase 6d B3 — session JWT signing for magic-link / device-code exchange.
 
 JWT HS256, exp 4h, jti = magic_link.jti (lets us revoke a session by
-checking the link's audit trail later if needed).
+checking the link's audit trail later if needed). The SPA cookie that
+originally carried this JWT was removed at Phase 6f B16; the bearer token
+returned in the exchange response body carries it now.
 """
 from __future__ import annotations
 
@@ -21,7 +23,7 @@ def issue_session_jwt(user_id: uuid.UUID, jti: uuid.UUID) -> str:
         "jti": str(jti),
         "iat": int(now.timestamp()),
         "exp": int(
-            (now + timedelta(seconds=settings.session_cookie_ttl_s)).timestamp()
+            (now + timedelta(seconds=settings.session_ttl_s)).timestamp()
         ),
     }
     return jwt.encode(payload, settings.magic_link_session_secret, algorithm="HS256")

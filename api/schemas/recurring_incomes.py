@@ -24,10 +24,18 @@ class RecurringIncomeCreate(BaseModel):
     amount: Optional[Decimal] = Field(
         None, gt=0, max_digits=14, decimal_places=2
     )
+    # Gross (pre-deduction) figure for a salary captured via the CR calculator.
+    # `amount` carries the NET; this keeps the gross for re-edit / recompute.
+    gross_monthly: Optional[Decimal] = Field(
+        None, gt=0, max_digits=14, decimal_places=2
+    )
     currency: IncomeCurrencyEnum = "CRC"
     frequency: IncomeFrequencyEnum
     next_payment_date: date
     base_salary_link_id: Optional[uuid.UUID] = None
+    # Employee hire date (fecha de incorporación) — used to prorate aguinaldo
+    # and salario escolar. Optional; unknown → full window assumed.
+    hire_date: Optional[date] = None
     notes: Optional[str] = None
 
     @model_validator(mode="after")
@@ -58,8 +66,12 @@ class RecurringIncomeUpdate(BaseModel):
     amount: Optional[Decimal] = Field(
         None, gt=0, max_digits=14, decimal_places=2
     )
+    gross_monthly: Optional[Decimal] = Field(
+        None, gt=0, max_digits=14, decimal_places=2
+    )
     frequency: Optional[IncomeFrequencyEnum] = None
     next_payment_date: Optional[date] = None
+    hire_date: Optional[date] = None
     is_active: Optional[bool] = None
     archived: Optional[bool] = None
     notes: Optional[str] = None
@@ -71,10 +83,12 @@ class RecurringIncomeResponse(BaseModel):
     name: str
     income_type: str
     amount: Optional[Decimal]
+    gross_monthly: Optional[Decimal] = None
     currency: str
     frequency: str
     next_payment_date: date
     base_salary_link_id: Optional[uuid.UUID]
+    hire_date: Optional[date] = None
     is_active: bool
     archived: bool = False
     notes: Optional[str]
@@ -82,6 +96,17 @@ class RecurringIncomeResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class CRCycleDeriveRequest(BaseModel):
+    """Optional hire date (fecha de incorporación) for proration. When
+    provided it is persisted on the base salary so a re-derive doesn't re-ask;
+    when omitted, the salary's stored hire_date (if any) is used, else the
+    full window is assumed."""
+
+    model_config = {"extra": "forbid"}
+
+    hire_date: Optional[date] = None
 
 
 class CRCycleDeriveResponse(BaseModel):

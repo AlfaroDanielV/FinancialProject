@@ -39,6 +39,7 @@ from api.services.insights.nightly_runner import (
     NightlyRunStats,
     run_nightly_for_user,
 )
+from api.services.snapshots import capture_user_snapshots
 
 
 log = logging.getLogger("workers.insights_nightly")
@@ -82,7 +83,21 @@ async def _run_one_user(*, user_id, now: datetime) -> NightlyRunStats | None:
                 stats.persisted_reinforced,
                 stats.gaps_emitted,
             )
-            return stats
+        # Phase 7e — freeze this period's envelope + cashflow figures. Own
+        # session and own try/except: a snapshot failure must never mark the
+        # insights run as failed (and vice versa).
+        try:
+            async with AsyncSessionLocal() as db:
+                user = await db.get(User, user_id)
+                if user is not None:
+                    captured = await capture_user_snapshots(db, user=user)
+                    await db.commit()
+                    log.info(
+                        "snapshots_captured user=%s %s", user_id, captured
+                    )
+        except Exception:
+            log.exception("snapshots_capture_failed user=%s", user_id)
+        return stats
     except Exception:
         log.exception("insights_nightly_user_failed user=%s", user_id)
         return None

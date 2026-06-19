@@ -31,8 +31,9 @@ class RecurringBillCreate(BaseModel):
 
     @model_validator(mode="after")
     def _validate(self):
-        if self.category not in VALID_RECURRING_BILL_CATEGORIES:
-            raise ValueError("category no está en las categorías disponibles")
+        # category is a free-text string sourced from the user's own categories
+        # (user_categories, the Categorías screen) — no fixed enum. Same contract
+        # as transactions.category. See Decision - Categories Reconciled.
         if self.frequency == BillFrequency.CUSTOM and not self.recurrence_rule:
             raise ValueError(
                 "recurrence_rule es requerido cuando frequency='custom'"
@@ -66,15 +67,11 @@ class RecurringBillUpdate(BaseModel):
     is_active: Optional[bool] = None
     notes: Optional[str] = None
     linked_loan_id: Optional[uuid.UUID] = None
+    # Fixed-expense attachment: a UUID attaches to that envelope; null detaches.
+    envelope_id: Optional[uuid.UUID] = None
 
-    @model_validator(mode="after")
-    def _validate(self):
-        if (
-            self.category is not None
-            and self.category not in VALID_RECURRING_BILL_CATEGORIES
-        ):
-            raise ValueError("category no está en las categorías disponibles")
-        return self
+    # category is free-text from the user's own categories (no enum) — see the
+    # RecurringBillCreate note + Decision - Categories Reconciled.
 
 
 class RecurringBillResponse(BaseModel):
@@ -95,6 +92,7 @@ class RecurringBillResponse(BaseModel):
     is_active: bool
     notes: Optional[str]
     linked_loan_id: Optional[uuid.UUID]
+    envelope_id: Optional[uuid.UUID] = None
     created_at: datetime
     updated_at: datetime
 

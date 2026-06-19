@@ -9,11 +9,52 @@ from __future__ import annotations
 # ── pairing ───────────────────────────────────────────────────────────────────
 
 PAIR_PROMPT = (
-    "¡Hola! Para usar este bot, pedí tu código de emparejamiento en la API:\n\n"
-    "POST /api/v1/users/me/telegram/pairing-code\n\n"
-    "Después mandame: /start <code>código</code>"
+    "Todavía no conozco esta cuenta de Telegram.\n\n"
+    "• Si sos nuevo: mandá /start y te creo la cuenta acá mismo.\n"
+    "• Si ya tenés cuenta: pedí tu código en la API "
+    "(POST /api/v1/users/me/telegram/pairing-code) y mandame "
+    "/start <code>código</code>"
 )
 PAIR_SUCCESS = "Listo, {name}. Ya podés registrar gastos e ingresos por acá."
+
+# ── Phase 8 B1 — cold-start registration ─────────────────────────────────────
+
+REGISTER_START = (
+    "¡Hola! Soy tu asistente de finanzas personales. 🇨🇷\n\n"
+    "Te creo la cuenta en un minuto. Primero: ¿cuál es tu <b>email</b>?\n\n"
+    "(Si ya tenés cuenta, mandá /start <code>código</code> en su lugar. "
+    "Podés salir con /cancel.)"
+)
+REGISTER_EMAIL_INVALID = (
+    "Ese email no se ve válido. Probá de nuevo (ej: maria@ejemplo.com)."
+)
+REGISTER_EMAIL_TAKEN = (
+    "Ese email ya tiene una cuenta. Si es tuya, vinculala con un código: "
+    "pedilo en la API (POST /api/v1/users/me/telegram/pairing-code) y "
+    "mandame /start <code>código</code>.\n\n"
+    "¿Querés usar otro email? Mandámelo. O salí con /cancel."
+)
+REGISTER_ASK_NAME = "¿Cómo te llamás? (nombre y apellido)"
+REGISTER_NAME_INVALID = "Necesito un nombre de 2 a 120 caracteres. Probá de nuevo."
+REGISTER_CONFIRM = (
+    "Listo, esto es lo que voy a crear:\n\n"
+    "👤 {name}\n"
+    "📧 {email}\n"
+    "💰 Moneda: CRC · Zona horaria: Costa Rica\n\n"
+    "Al confirmar aceptás los Términos del servicio y que use tus datos "
+    "para operar tu cuenta (podés revisar y revocar consentimientos cuando "
+    "querás).\n\n"
+    "¿Confirmo? (sí / no)"
+)
+REGISTER_CONFIRM_HINT = 'Respondé "sí" para crear la cuenta o "no" para cancelar.'
+REGISTER_CANCELLED = "Listo, no creé nada. Mandá /start cuando querás empezar."
+REGISTER_DONE = (
+    "¡Cuenta creada, {name}! 🎉 Ya quedaste vinculado a este Telegram.\n\n"
+    "Tu token para el iPhone Shortcut (guardalo, no se vuelve a mostrar):\n"
+    "<code>{token}</code>\n\n"
+    "Siguiente paso: mandá /setup para configurar tus cuentas, ingresos y "
+    "gastos fijos."
+)
 PAIR_BAD_CODE = (
     "Ese código no es válido o ya expiró. Pedí uno nuevo en la API y volvé a probar."
 )
@@ -37,7 +78,7 @@ HELP_TEXT = (
     "• Registrar ingresos: «me pagaron 400 mil»\n"
     "• Consultar: «¿cuánto gasté esta semana?»\n"
     "• Crear cuentas: «crear cuenta BAC»\n"
-    "• Abrir el setup web: /setup\n"
+    "• Configurar tu cuenta: /setup\n"
     "• Deshacer la última acción: /undo\n"
     "• Cancelar lo que estoy esperando: /cancel\n\n"
     "Siempre te pido confirmación antes de guardar nada."
@@ -57,10 +98,78 @@ PENDING_OVERWRITTEN = (
 )
 PENDING_EXPIRED = "Se me venció lo que estábamos confirmando. Mandá el mensaje de nuevo si querés."
 PENDING_NONE_TO_CONFIRM = "No tengo nada pendiente por confirmar."
+# Phase 7f — a tapped clarification option (account button) whose question
+# already expired or was replaced by a newer one.
+CLARIFY_EXPIRED = "Esa pregunta ya venció. Mandá el mensaje de nuevo si querés."
 
 COMMITTED_EXPENSE = "Guardado: gasto de {amount}. Mandá /undo si te equivocaste."
 COMMITTED_INCOME = "Guardado: ingreso de {amount}. Mandá /undo si te equivocaste."
 COMMITTED_DISCARDED = "Listo, no guardé nada."
+
+# Reclassify gasto ↔ ingreso (last movement) — chat phrase → confirm.
+RECLASSIFY_CONFIRM = "¿Cambio el último movimiento a {kind} {amount}?"
+RECLASSIFIED_TO_INCOME = "Listo, cambié el último movimiento a ingreso."
+RECLASSIFIED_TO_EXPENSE = "Listo, cambié el último movimiento a gasto."
+
+# Re-anchor / heal-drift (bank reconciliation) — chat "corregí mi saldo".
+BALANCE_SET = (
+    "Listo, dejé «{name}» en {amount}. La diferencia con lo que tenía "
+    "registrado quedó como ajuste de reconciliación para que cuadre con tu banco."
+)
+
+# ── Bank-statement reconciliation (PDF → balance anchor) ──────────────────────
+STATEMENT_NOT_PDF = "Mandame el estado de cuenta en PDF y lo leo por vos."
+STATEMENT_TOO_BIG = "Ese PDF pesa demasiado (máx 4 MB). Probá con uno más liviano."
+STATEMENT_PARSE_ERROR = (
+    "No pude leer ese estado de cuenta. Probá con otro PDF o reconciliá el "
+    "saldo a mano en la app (Cuentas → Reconciliar)."
+)
+STATEMENT_EMPTY = (
+    "Leí el PDF pero no encontré cuentas con saldo al corte. ¿Es un estado de "
+    "cuenta bancario?"
+)
+STATEMENT_NO_MATCH = (
+    "Leí tu estado al {corte}, pero no pude emparejar ninguna cuenta con las "
+    "tuyas automáticamente. Reconciliá desde la app: Cuentas → Reconciliar con "
+    "estado de cuenta."
+)
+STATEMENT_PROPOSAL = (
+    "Leí tu estado de {bank} al {corte}. Voy a dejar estos saldos igual que tu "
+    "banco:\n{lines}\n\n¿Los aplico?"
+)
+STATEMENT_UNMATCHED = (
+    "\n\nNo pude emparejar: {names}. Reconcilialas desde la app si querés."
+)
+STATEMENT_RECONCILED = (
+    "Listo, reconcilié {count} {noun} al {corte}. Ahora cuadran con tu banco."
+)
+
+# Phase 7b — transfers between own accounts (card payment = transfer).
+TRANSFER_COMMITTED = (
+    "Listo, registré la transferencia de {amount} de {from_name} a "
+    "{to_name}. Mandá /undo si te equivocaste."
+)
+CARD_PAYMENT_COMMITTED = (
+    "Listo, registré el pago de tu tarjeta {to_name}: {amount} desde "
+    "{from_name}. Mandá /undo si te equivocaste."
+)
+
+# Phase 6f — conversational goal creation.
+GOAL_CREATED = "🎯 Meta creada: {name}. La encontrás en la pestaña Metas."
+
+# Phase 6f — conversational recurring-income creation.
+INCOME_CREATED = (
+    "💵 Ingreso recurrente creado: {name}. Lo encontrás en la pestaña Ingresos."
+)
+INCOME_DERIVE_TIP = (
+    " Tip: desde Ingresos podés derivar aguinaldo y salario escolar con un toque."
+)
+
+# Phase 6f — conversational recurring-bill (gasto fijo) creation.
+BILL_CREATED = (
+    "📅 Gasto fijo creado: {name}. Lo vas a ver en la pestaña Gastos fijos con "
+    "sus próximos vencimientos."
+)
 
 EDIT_PROMPT = (
     "¿Qué campo querés cambiar? Respondé con: monto / cuenta / categoría / fecha."
@@ -302,7 +411,7 @@ GMAIL_SCAN_NO_RESULTS_MANUAL = (
 )
 GMAIL_SCAN_FINISH_SHADOW_TPL = (
     "Listo. Revisé {scanned} correos: {matched} ya estaban registradas, "
-    "{created} son nuevas en <b>modo sombra</b> esta semana. "
+    "{created} son nuevas en <b>modo sombra</b> esta semana{detail}. "
     "Mañana te mando un resumen y podés decidir si las apruebo o no."
 )
 GMAIL_SCAN_FINISH_BATCH_TPL = (
@@ -311,7 +420,20 @@ GMAIL_SCAN_FINISH_BATCH_TPL = (
 )
 GMAIL_SCAN_FINISH_QUIET_TPL = (
     "Listo. Revisé {scanned} correos: {matched} ya estaban registradas, "
-    "{created} son nuevas."
+    "{created} son nuevas{detail}."
+)
+# Fragments composed into the "{detail}" suffix of the finish templates so the
+# user sees how many emails were skipped vs errored (otherwise "0 nuevas" hides
+# the whole batch). Empty suffix when both counts are 0.
+GMAIL_SCAN_DETAIL_SKIPPED_TPL = "{n} no parecían transacciones"
+GMAIL_SCAN_DETAIL_FAILED_TPL = "{n} con errores"
+# Appended when a scan reviewed emails but produced zero matched + zero created
+# (everything was skipped). Points the user at the most likely cause: the
+# whitelisted sender isn't the one the bank sends transaction alerts from.
+GMAIL_SCAN_ALL_SKIPPED_HINT = (
+    " Ninguno parecía una notificación de transacción — puede que el "
+    "remitente que agregaste no sea el de las alertas del banco. "
+    "Revisá con /estado_gmail o agregá el correcto con /agregar_banco."
 )
 
 # Per-transaction notification (≤ batch threshold, outside shadow).
@@ -409,8 +531,43 @@ DAILY_BUDGET_HIT = (
 # ── extractor / dispatcher failures ──────────────────────────────────────────
 
 EXTRACTOR_FAILED = "Se me trabó el entendimiento. ¿Podés reescribir el mensaje más simple?"
+# Native chat endpoint last-resort guard (api/routers/chat.py): when
+# process_message raises something unexpected, the REST endpoint returns this at
+# HTTP 200 instead of a raw 500 that the app shows as a generic "Hubo un error".
+# Telegram tolerates a pipeline throw; the native chat endpoint is the only
+# surface that turns it into a user-visible crash.
+CHAT_UNEXPECTED_ERROR = (
+    "Se me complicó procesar eso. Probá de nuevo en un momento; "
+    "si sigue, avisale al admin."
+)
 CANCELLED = "Cancelado."
 CONTEXT_CLEARED = "Listo, contexto limpio."
+
+
+# ── /menu + /resumen (chat command menu) ──────────────────────────────────────
+
+MENU_INTRO = "Esto es lo que puedo hacer. Tocá una opción para enviarla:"
+# Shown in the "Sobre" column of /resumen when the gasto has no envelope.
+MENU_NO_ENVELOPE_EMOJI = "📭"
+RESUMEN_ASK_PERIOD = (
+    "¿De qué período querés el resumen?\n\n"
+    "/resumen_mes · /resumen_semana · /resumen_hoy"
+)
+RESUMEN_TABLE_HEADER = "Monto · Categoría · Fecha · Sobre"
+RESUMEN_EMPTY_TPL = "Aún no tengo registros para {period}."
+
+
+# ── /login (Phase 6f B3) ─────────────────────────────────────────────────────
+
+LOGIN_CODE_REPLY = (
+    "<b>Tu código para Ledger CR:</b>\n\n"
+    "<code>{code}</code>\n\n"
+    "Pegalo en la app antes de 5 minutos. Es de un solo uso."
+)
+
+# Phase 6f B15 — appended to LOGIN_CODE_REPLY when the native deep link mints
+# OK. Tapping it opens the app and signs in without typing the code.
+LOGIN_DEEP_LINK_SUFFIX = "\n\nO abrí la app directamente:\n{deep_link}"
 
 
 # ── /memoria, /olvidar, /editar_memoria (Phase 6c B7) ───────────────────────
@@ -518,4 +675,14 @@ NUDGE_ACK_DISMISS_HARD = (
 NUDGE_ACK_DISMISS_SOFT = "Listo, descartado."
 NUDGE_ACK_LATER = (
     "Okey. Te aviso la próxima vez que chequee, si sigue pendiente."
+)
+
+# ── duplicate-transaction warning ─────────────────────────────────────────────
+
+DUPLICATE_DELETED = "Listo, eliminé el movimiento duplicado."
+DUPLICATE_KEPT = "Perfecto, lo dejo tal cual. No era un duplicado."
+# Appended to the commit reply when the just-logged expense looks like a dupe.
+DUPLICATE_WARNING = (
+    "\n\n⚠️ Ojo: este gasto se parece a uno que ya tenés ({merchant} del "
+    "{date}). ¿Lo elimino o lo dejo?"
 )

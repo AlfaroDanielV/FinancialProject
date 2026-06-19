@@ -1,7 +1,11 @@
 """Phase 6d B6 — debt onboarding contract.
 
-The SPA uses the new `/schedule` alias from the decisions doc, while the
+The native app uses the `/schedule` alias from the decisions doc, while the
 legacy API keeps `/amortization` for existing callers.
+
+Phase 6f B16: the amortization parity guard cross-checks the lifted
+`mobile/src/lib/amortization.ts` (the live client lib after the SPA retired)
+against the backend formula.
 """
 from __future__ import annotations
 
@@ -22,7 +26,8 @@ from api.services.amortization import compute_french_payment, generate_schedule
 
 
 ROOT = Path(__file__).resolve().parent.parent
-WEB_DIR = ROOT / "web"
+MOBILE_DIR = ROOT / "mobile"
+_MOBILE_TSC = MOBILE_DIR / "node_modules/.bin/tsc"
 
 
 BANK_FIXTURES = [
@@ -183,7 +188,11 @@ def test_backend_schedule_matches_bank_calculator_reference_fixtures():
         assert schedule.rows[-1].remaining_balance == 0, fixture["case_id"]
 
 
-def test_spa_payment_preview_matches_backend_formula():
+@pytest.mark.skipif(
+    not _MOBILE_TSC.exists(),
+    reason="mobile/node_modules not installed (run npm ci in mobile/)",
+)
+def test_mobile_payment_preview_matches_backend_formula():
     cases = [
         {
             "balance": fixture["principal"],
@@ -198,7 +207,7 @@ def test_spa_payment_preview_matches_backend_formula():
     with tempfile.TemporaryDirectory() as tmp:
         subprocess.run(
             [
-                str(WEB_DIR / "node_modules/.bin/tsc"),
+                str(_MOBILE_TSC),
                 "src/lib/amortization.ts",
                 "--target",
                 "ES2022",
@@ -210,7 +219,7 @@ def test_spa_payment_preview_matches_backend_formula():
                 tmp,
                 "--skipLibCheck",
             ],
-            cwd=WEB_DIR,
+            cwd=MOBILE_DIR,
             check=True,
             capture_output=True,
             text=True,
@@ -229,7 +238,7 @@ console.log(JSON.stringify(values));
 """
         node_result = subprocess.run(
             ["node", "--input-type=module", "-e", node_code, compiled_mjs.as_uri(), json.dumps(cases)],
-            cwd=WEB_DIR,
+            cwd=MOBILE_DIR,
             check=True,
             capture_output=True,
             text=True,

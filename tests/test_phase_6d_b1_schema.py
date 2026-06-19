@@ -354,11 +354,15 @@ async def test_lazy_detection_score_null_allowed(db_with_user):
 
 
 @pytest.mark.asyncio
-async def test_migration_applied_alembic_head_is_0016(db_with_user):
+async def test_migration_at_least_0016_applied(db_with_user):
     session, _user_id = db_with_user
     result = await session.execute(text("SELECT version_num FROM alembic_version"))
     version = result.scalar_one()
-    assert version == "0016", (
-        f"Expected migration 0016 applied; alembic_version reports {version}. "
+    # Migrations are zero-padded 4-digit ("0016", "0021", …) so a lexicographic
+    # >= compare is correct. We assert 0016+ (the migration this file's schema
+    # contract was introduced by) rather than an exact head, so the test
+    # survives every later migration instead of breaking on each one.
+    assert version >= "0016", (
+        f"Expected migration 0016+ applied; alembic_version reports {version}. "
         "Run `alembic upgrade head` against the test database."
     )

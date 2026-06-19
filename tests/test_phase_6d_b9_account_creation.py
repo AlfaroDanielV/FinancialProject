@@ -141,6 +141,56 @@ async def test_happy_path_creates_account_in_four_turns(db_with_user, allow_pipe
 
 
 @pytest.mark.asyncio
+async def test_awaiting_start_abandoned_when_user_types_new_expense(
+    db_with_user, allow_pipeline
+):
+    """Regression: a stale lazy 'create account?' prompt (awaiting_start) must
+    NOT swallow a new capture. Typing a fresh expense abandons the prompt and
+    proposes the expense (instead of the 'Decime crear…' trap fallback)."""
+    from tests.fixtures.extractor_responses import BASIC_EXPENSE_CRC
+
+    session, user_id = db_with_user
+    user = await _user(session, user_id)
+    redis = _FakeRedis()
+    await save_account_creation(
+        user_id=user_id,
+        state=AccountCreationState(step="awaiting_start", name="BAC"),
+        redis=redis,
+    )
+
+    reply = await pipeline.process_message(
+        user=user,
+        text="gasté 100000 en un restaurante",
+        db=session,
+        redis=redis,
+        llm_client=FixtureLLMClient(default=BASIC_EXPENSE_CRC),
+        llm_model="claude-haiku-4-5",
+    )
+
+    assert "Decime crear" not in reply.text
+    assert reply.buttons  # an expense proposal → Sí / No / Editar
+    assert await load_account_creation(user_id=user_id, redis=redis) is None
+
+
+@pytest.mark.asyncio
+async def test_awaiting_start_affirmative_still_proceeds(db_with_user, allow_pipeline):
+    """An actual 'crear' answer to the prompt still advances the flow."""
+    session, user_id = db_with_user
+    user = await _user(session, user_id)
+    redis = _FakeRedis()
+    await save_account_creation(
+        user_id=user_id,
+        state=AccountCreationState(step="awaiting_start", name="BAC"),
+        redis=redis,
+    )
+
+    reply = await _send(user, "crear", session, redis)
+    assert "¿Qué tipo es?" in reply.text
+    state = await load_account_creation(user_id=user_id, redis=redis)
+    assert state is not None and state.step == "asking_type"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "state",
     [
@@ -207,7 +257,14 @@ async def test_expired_state_falls_back_to_idle_without_writing(
 
     reply = await _send(user, "sí", session, redis)
 
-    assert reply.text == messages_es.PENDING_NONE_TO_CONFIRM
+    # The invariant under test — an EXPIRED account-creation state writes
+    # nothing — still holds. The reply text changed with the 2026-06-13
+    # query-robustness fix: a bare "sí" with no pending write no longer
+    # dead-ends at "no tengo nada pendiente"; it falls through to the normal
+    # extract → dispatch path (here the empty FixtureLLMClient can't parse
+    # "sí", so it returns the handled EXTRACTOR_FAILED). Handled message, no
+    # account created.
+    assert reply.text == messages_es.EXTRACTOR_FAILED
     assert await _accounts(session, user_id) == []
 
 

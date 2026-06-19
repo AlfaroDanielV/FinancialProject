@@ -42,6 +42,11 @@ class User(Base):
     whatsapp_phone: Mapped[Optional[str]] = mapped_column(
         String(32), nullable=True, unique=True
     )
+    # Phase 6f B15 — schema-only prep for P8 APNs delivery. Nudges + shadow
+    # approvals stay Telegram-only during 6f; no worker reads this yet.
+    expo_push_token: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), default=datetime.utcnow

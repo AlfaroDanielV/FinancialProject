@@ -19,6 +19,7 @@ import json
 import re
 import uuid
 from dataclasses import asdict, dataclass
+from dataclasses import field as dataclass_field
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
@@ -37,11 +38,18 @@ class ClarificationState:
     `partial` is the full serialized ExtractionResult (model_dump(mode="json"))
     from that dispatch. `question_es` is re-sent verbatim when the user's
     reply can't be interpreted.
+
+    Phase 7f: `options` are tappable answers (account names) rendered as
+    buttons on both channels; `nonce` rejects stale Telegram taps
+    (`clarify:{nonce}:{idx}`). Both default empty so pre-7f states and
+    questions without options keep working.
     """
 
     partial: dict[str, Any]
     awaiting_field: str
     question_es: str
+    options: list[str] = dataclass_field(default_factory=list)
+    nonce: str = ""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -94,6 +102,12 @@ def merge_reply(
         # the user's active accounts; if the reply is nonsense it returns
         # None and the dispatcher asks again.
         merged["account_hint"] = reply
+    elif field == "transfer_from":
+        # Phase 7b transfers — raw pass-through; the dispatcher fuzzy-matches
+        # and re-asks listing the account names if the reply is nonsense.
+        merged["transfer_from_hint"] = reply
+    elif field == "transfer_to":
+        merged["transfer_to_hint"] = reply
     elif field == "amount":
         amount = _parse_amount_es(reply)
         if amount is None:
@@ -114,6 +128,48 @@ def merge_reply(
             merged["dispatcher"] = "query"
         else:
             merged["dispatcher"] = "control"
+    elif field == "goal_target_amount":
+        # Phase 6f conversational goal creation — same amount parser as the
+        # transaction amount clarification.
+        amount = _parse_amount_es(reply)
+        if amount is None:
+            return None
+        merged["goal_target_amount"] = str(amount)
+    elif field == "goal_name":
+        # Raw pass-through; the goal name is whatever the user typed.
+        merged["goal_name"] = reply
+    elif field == "income_frequency":
+        # Phase 6f conversational income creation.
+        freq = _parse_frequency_es(reply)
+        if freq is None:
+            return None
+        merged["income_frequency"] = freq
+    elif field == "income_next_date":
+        # Raw pass-through; the dispatcher re-resolves and re-asks if needed.
+        merged["income_next_date"] = reply
+    elif field == "bill_frequency":
+        freq = _parse_bill_frequency_es(reply)
+        if freq is None:
+            return None
+        merged["bill_frequency"] = freq
+    elif field == "bill_name":
+        merged["bill_name"] = reply
+    elif field == "transfer_direction":
+        # Transfer-receipt direction the dispatcher couldn't derive — the user
+        # picked ingreso / gasto / entre mis cuentas. Set the intent and clear
+        # the receipt flag so the re-dispatch routes directly (no re-run of the
+        # direction rule, no re-ask).
+        intent = _parse_transfer_direction_es(reply)
+        if intent is None:
+            return None
+        merged["intent"] = intent.value
+        merged["dispatcher"] = "write"
+        merged["confidence"] = 0.9
+        merged["is_transfer_receipt"] = False
+        if intent is Intent.LOG_INCOME and not merged.get("merchant"):
+            merged["merchant"] = merged.get("sender_name")
+        elif intent is Intent.LOG_EXPENSE and not merged.get("merchant"):
+            merged["merchant"] = merged.get("recipient_name")
     else:
         return None
 
@@ -130,6 +186,10 @@ def merge_reply(
 
 _AMOUNT_RE = re.compile(r"(-?\d+(?:[.,]\d+)*)")
 _MIL_RE = re.compile(r"^\s*(\d+(?:[.,]\d+)?)\s*(mil|k)\s*$", re.IGNORECASE)
+# "2 millones", "1,5 millón" → ×1_000_000. Disjoint from _MIL_RE ("mil"/"k").
+_MILLON_RE = re.compile(
+    r"^\s*(\d+(?:[.,]\d+)?)\s*(mill[oó]n|millones)\s*$", re.IGNORECASE
+)
 
 
 def _parse_amount_es(text: str) -> Optional[Decimal]:
@@ -137,6 +197,14 @@ def _parse_amount_es(text: str) -> Optional[Decimal]:
     for sym in ("₡", "$", "crc", "usd", "colones", "dólares", "dolares"):
         t = t.replace(sym, "")
     t = t.strip()
+
+    millon = _MILLON_RE.match(t)
+    if millon:
+        base = millon.group(1).replace(",", ".")
+        try:
+            return Decimal(base) * 1_000_000
+        except InvalidOperation:
+            return None
 
     mil = _MIL_RE.match(t)
     if mil:
@@ -211,4 +279,74 @@ def _parse_intent_es(text: str) -> Optional[Intent]:
     for intent, keywords in _INTENT_KEYWORDS.items():
         if any(kw in t for kw in keywords):
             return intent
+    return None
+
+
+# Direction of a transfer receipt: ingreso / gasto / transferencia interna.
+# Checked transfer-first so "entre mis cuentas" wins over a stray income/expense
+# keyword.
+_TRANSFER_DIRECTION_KEYWORDS: dict[Intent, tuple[str, ...]] = {
+    Intent.LOG_TRANSFER: (
+        "entre mis", "mis cuentas", "entre cuentas", "interna", "propias",
+        "transferencia entre",
+    ),
+    Intent.LOG_INCOME: (
+        "ingreso", "recib", "me transfir", "me pagaron", "entró", "entro",
+        "me lleg",
+    ),
+    Intent.LOG_EXPENSE: (
+        "gasto", "gasté", "gaste", "pagué", "pague", "envié", "envie",
+        "mandé", "mande", "le pasé", "le pase",
+    ),
+}
+
+
+def _parse_transfer_direction_es(text: str) -> Optional[Intent]:
+    t = text.strip().lower()
+    for intent in (Intent.LOG_TRANSFER, Intent.LOG_INCOME, Intent.LOG_EXPENSE):
+        if any(kw in t for kw in _TRANSFER_DIRECTION_KEYWORDS[intent]):
+            return intent
+    return None
+
+
+# Frequency keywords, checked biweekly-first so "quincenal" wins over a bare
+# "semana"/"mes" partial. Spanish → recurring_incomes enum.
+_FREQUENCY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "biweekly": ("quincenal", "quincena", "cada quincena", "bisemanal", "cada 15", "cada dos semanas"),
+    "weekly": ("semanal", "cada semana", "por semana", "semana"),
+    "monthly": ("mensual", "cada mes", "al mes", "por mes", "mes"),
+    "annual": ("anual", "cada año", "al año", "por año", "una vez al año", "año"),
+}
+
+
+def _parse_frequency_es(text: str) -> Optional[str]:
+    t = text.strip().lower()
+    for freq in ("biweekly", "weekly", "monthly", "annual"):
+        if any(kw in t for kw in _FREQUENCY_KEYWORDS[freq]):
+            return freq
+    return None
+
+
+# Recurring bills add bimonthly/quarterly/semiannual on top of the income set.
+# "monthly" is checked last (its keywords are specific — "mensual"/"cada mes" —
+# so they don't collide with bi/tri/semestral).
+_BILL_FREQUENCY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "biweekly": ("quincenal", "quincena", "cada quincena"),
+    "weekly": ("semanal", "cada semana", "por semana", "semana"),
+    "bimonthly": ("bimestral", "bimensual", "cada dos meses", "cada 2 meses"),
+    "quarterly": ("trimestral", "cada trimestre", "cada tres meses", "cada 3 meses"),
+    "semiannual": ("semestral", "cada semestre", "cada seis meses", "cada 6 meses"),
+    "annual": ("anual", "cada año", "al año", "por año", "una vez al año", "año"),
+    "monthly": ("mensual", "cada mes", "al mes", "por mes"),
+}
+
+
+def _parse_bill_frequency_es(text: str) -> Optional[str]:
+    t = text.strip().lower()
+    for freq in (
+        "biweekly", "weekly", "bimonthly", "quarterly",
+        "semiannual", "annual", "monthly",
+    ):
+        if any(kw in t for kw in _BILL_FREQUENCY_KEYWORDS[freq]):
+            return freq
     return None

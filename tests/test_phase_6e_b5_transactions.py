@@ -49,14 +49,16 @@ def _clear():
     app.dependency_overrides.pop(get_db, None)
 
 
-async def _create_account(ac: AsyncClient, name: str, currency: str = "CRC"):
+async def _create_account(
+    ac: AsyncClient, name: str, currency: str = "CRC", *, initial: str = "0"
+):
     response = await ac.post(
         "/api/v1/accounts",
         json={
             "name": name,
             "account_type": "checking",
             "currency": currency,
-            "initial_balance": "0",
+            "initial_balance": initial,
         },
     )
     assert response.status_code == 201, response.text
@@ -286,7 +288,9 @@ async def test_bulk_archive_rejects_shadow_and_transfer_legs(db_with_user):
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            primary = await _create_account(ac, "BAC")
+            # Fund the source so the 200 transfer below clears the funds guard
+            # after the -1000 confirmed row (the -500 row is a shadow).
+            primary = await _create_account(ac, "BAC", initial="5000")
             other = await _create_account(ac, "Promerica")
             today = date.today().isoformat()
 
@@ -512,5 +516,59 @@ async def test_offset_pagination_still_works_after_b5_changes(db_with_user):
             ids2 = {item["id"] for item in page2.json()["items"]}
             assert ids1.isdisjoint(ids2)
             assert CSV_EXPORT_MAX_ROWS == 50_000
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_no_account_filter_returns_only_orphans(db_with_user):
+    """GET /transactions?no_account=true returns only rows with account_id IS
+    NULL (movimientos sin cuenta) — the floating rows the user assigns from the
+    native 'Sin cuenta' screen — and excludes rows that already have an account.
+    """
+    session, user_id = db_with_user
+    _override(session, user_id)
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            account = await _create_account(ac, "BAC")
+            today = date.today().isoformat()
+            # One row WITH an account…
+            await _create_txn(
+                ac,
+                amount="-1000",
+                account_id=account["id"],
+                transaction_date=today,
+                merchant="Con cuenta",
+            )
+            # …and one orphan (no account_id — TransactionCreate.account_id is
+            # Optional, so the POST accepts a null account).
+            orphan = await ac.post(
+                "/api/v1/transactions",
+                json={
+                    "amount": "-3000",
+                    "currency": "CRC",
+                    "merchant": "Sin cuenta SA",
+                    "transaction_date": today,
+                    "source": "manual",
+                },
+            )
+            assert orphan.status_code == 201, orphan.text
+            assert orphan.json()["account_id"] is None
+
+            # Default list shows both.
+            both = await ac.get("/api/v1/transactions")
+            assert both.status_code == 200, both.text
+            assert len(both.json()["items"]) == 2
+
+            # no_account=true shows only the orphan.
+            orphans = await ac.get(
+                "/api/v1/transactions", params={"no_account": "true"}
+            )
+            assert orphans.status_code == 200, orphans.text
+            items = orphans.json()["items"]
+            assert len(items) == 1
+            assert items[0]["account_id"] is None
+            assert items[0]["merchant"] == "Sin cuenta SA"
     finally:
         _clear()

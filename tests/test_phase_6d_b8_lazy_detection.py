@@ -74,7 +74,10 @@ async def test_unknown_bank_hint_prompts_create_or_link_and_records_pending_even
 
     assert "No tengo registrada una cuenta llamada BAC" in reply.text
     assert "crear" in reply.text
-    assert "link" in reply.text
+    # B16: the "link / SPA" option was dropped (no web). The prompt now offers
+    # create-here, and the user can ignore it and continue (pipeline abandons
+    # the soft awaiting_start state on unrelated input).
+    assert "seguí" in reply.text
 
     rows = (
         await session.execute(

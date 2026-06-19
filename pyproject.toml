@@ -19,6 +19,7 @@ dependencies = [
     "rapidfuzz==3.10.1",
     "pyjwt==2.9.0",
     "bcrypt==4.2.0",
+    "python-multipart>=0.0.29",
 ]
 
 # Optional production-only deps. Install via `uv sync --extra azure` when

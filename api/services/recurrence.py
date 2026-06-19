@@ -35,6 +35,7 @@ from sqlalchemy.orm import selectinload
 
 from ..models.bill_occurrence import BillOccurrence
 from ..models.custom_event import CustomEvent
+from ..models.debt import Debt
 from ..models.enums import (
     BillFrequency,
     BillOccurrenceStatus,
@@ -417,6 +418,17 @@ def _event_snapshot(event: CustomEvent) -> dict:
     }
 
 
+def _debt_snapshot(debt: Debt, due: date) -> dict:
+    return {
+        "kind": "debt",
+        "debt_id": str(debt.id),
+        "title": debt.name,
+        "amount": float(debt.minimum_payment),
+        "currency": debt.currency,
+        "due_date": due.isoformat(),
+    }
+
+
 async def _existing_notification_keys(
     session: AsyncSession,
     *,
@@ -445,6 +457,27 @@ async def _existing_notification_keys(
         )
         for ev_id, adv in result.all():
             keys.add(("event", ev_id, adv))
+    return keys
+
+
+async def _existing_debt_notification_keys(
+    session: AsyncSession, debt_ids: list[uuid.UUID]
+) -> set[tuple[uuid.UUID, int, date]]:
+    """Existing debt-notification keys as (debt_id, advance_days, trigger_date).
+    Unlike bills (one occurrence row per due date), a projected debt cuota has no
+    per-cycle id, so dedup MUST include the trigger date — otherwise next month's
+    cuota would be skipped as a duplicate of this month's."""
+    keys: set[tuple[uuid.UUID, int, date]] = set()
+    if debt_ids:
+        result = await session.execute(
+            select(
+                NotificationEvent.debt_id,
+                NotificationEvent.advance_days,
+                NotificationEvent.trigger_date,
+            ).where(NotificationEvent.debt_id.in_(debt_ids))
+        )
+        for did, adv, trig in result.all():
+            keys.add((did, int(adv), trig))
     return keys
 
 
@@ -533,6 +566,50 @@ async def compute_pending_notifications(
             )
             existing.add(key)
 
+    # B5: projected debt-cuota notifications. Debts have no per-cycle occurrence,
+    # so we project the NEXT cuota and use the user's global_default rule (there
+    # is no per-debt notification scope). Dedup includes the trigger date so each
+    # month's cuota notifies once.
+    debt_result = await session.execute(
+        select(Debt).where(
+            Debt.user_id == user_id,
+            Debt.is_active.is_(True),
+            Debt.archived.is_(False),
+        )
+    )
+    debts = list(debt_result.scalars().all())
+    if debts:
+        debt_rule = await _resolve_global_default(session, user_id)
+        if debt_rule is not None:
+            debt_existing = await _existing_debt_notification_keys(
+                session, [d.id for d in debts]
+            )
+            anchor = today_cr()
+            horizon = anchor + relativedelta(months=2)
+            for d in debts:
+                dues = _monthly_due_dates(d.payment_due_day, anchor, horizon)
+                if not dues:
+                    continue
+                due = dues[0]  # the next cuota
+                snapshot = _debt_snapshot(d, due)
+                for adv in debt_rule.advance_days:
+                    trigger = due - timedelta(days=int(adv))
+                    key = (d.id, int(adv), trigger)
+                    if key in debt_existing:
+                        continue
+                    created_rows.append(
+                        NotificationEvent(
+                            user_id=user_id,
+                            debt_id=d.id,
+                            trigger_date=trigger,
+                            advance_days=int(adv),
+                            channel=NotificationChannel.IN_APP.value,
+                            status=NotificationStatus.PENDING.value,
+                            payload_snapshot=snapshot,
+                        )
+                    )
+                    debt_existing.add(key)
+
     for row in created_rows:
         session.add(row)
 
@@ -551,7 +628,7 @@ async def compute_pending_notifications(
 
 @dataclass
 class FeedEntry:
-    item_type: str  # "bill" | "event"
+    item_type: str  # "bill" | "event" | "debt" | "card_payment"
     id: uuid.UUID
     date: date
     title: str
@@ -562,6 +639,29 @@ class FeedEntry:
     provider: Optional[str]
     recurring_bill_id: Optional[uuid.UUID]
     is_overdue: bool
+    # B5: debt cuotas are PROJECTED at read time (no materialized row); this is
+    # the source Debt id when item_type == "debt", else None.
+    debt_id: Optional[uuid.UUID] = None
+    # Phase 7b B5: card minimums are likewise projected live; this is the
+    # credit account id when item_type == "card_payment", else None.
+    account_id: Optional[uuid.UUID] = None
+
+
+def _monthly_due_dates(day: int, from_date: date, to_date: date) -> list[date]:
+    """Day-of-month occurrences in [from_date, to_date], clamped to month-end
+    (a cuota due on the 31st falls on the 28th/30th in shorter months). Used to
+    PROJECT a debt's cuotas at read time — no materialized rows (B5)."""
+    out: list[date] = []
+    y, m = from_date.year, from_date.month
+    while True:
+        last = calendar.monthrange(y, m)[1]
+        d = date(y, m, min(day, last))
+        if d > to_date:
+            break
+        if d >= from_date:
+            out.append(d)
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return out
 
 
 async def get_upcoming_feed(
@@ -572,7 +672,8 @@ async def get_upcoming_feed(
     to_date: date,
     include_overdue: bool = True,
 ) -> list[FeedEntry]:
-    """Combine bill_occurrences and custom_events for one user."""
+    """Combine bill_occurrences, custom_events, and PROJECTED debt cuotas (B5 —
+    debts surface as fixed expenses at read time, never as RecurringBill rows)."""
     today = today_cr()
 
     occ_q = (
@@ -663,6 +764,78 @@ async def get_upcoming_feed(
                 provider=None,
                 recurring_bill_id=None,
                 is_overdue=event.event_date < today,
+            )
+        )
+
+    # Phase 7b coexistence rule: a credit_card Debt linked to an account that
+    # has card terms is superseded by the card projection below (no double
+    # count). Unlinked legacy card-debts keep projecting unchanged.
+    from .credit_cards import (
+        list_active_cards_with_terms,
+        superseded_credit_card_debt_ids,
+    )
+
+    superseded = await superseded_credit_card_debt_ids(session, user_id=user_id)
+
+    # B5: project each active debt's NEXT cuota in the window as a fixed expense.
+    # No RecurringBill row — derived from payment_due_day + minimum_payment, so a
+    # paid-off / archived debt simply stops projecting (zero cleanup).
+    debt_stmt = select(Debt).where(
+        Debt.user_id == user_id,
+        Debt.is_active.is_(True),
+        Debt.archived.is_(False),
+    )
+    if superseded:
+        debt_stmt = debt_stmt.where(Debt.id.notin_(superseded))
+    debt_result = await session.execute(debt_stmt)
+    for d in debt_result.scalars().all():
+        dues = _monthly_due_dates(d.payment_due_day, from_date, to_date)
+        if not dues:
+            continue
+        due = dues[0]  # the next cuota in the window (one entry per debt)
+        entries.append(
+            FeedEntry(
+                item_type="debt",
+                id=d.id,
+                date=due,
+                title=d.name,
+                amount=float(d.minimum_payment),
+                currency=d.currency,
+                status=None,
+                category=None,
+                provider=None,
+                recurring_bill_id=None,
+                is_overdue=due < today,
+                debt_id=d.id,
+            )
+        )
+
+    # Phase 7b B5: project each card's minimum due in the window — derived
+    # LIVE from payment_due_day + the terms formula over the current balance.
+    # A paid-down card (minimum 0) stops projecting with zero cleanup.
+    for card in await list_active_cards_with_terms(session, user_id=user_id):
+        if card.minimum_due <= 0:
+            continue
+        dues = _monthly_due_dates(
+            card.terms.payment_due_day, from_date, to_date
+        )
+        if not dues:
+            continue
+        due = dues[0]
+        entries.append(
+            FeedEntry(
+                item_type="card_payment",
+                id=card.account.id,
+                date=due,
+                title=f"Pago de tarjeta {card.account.name}",
+                amount=float(card.minimum_due),
+                currency=card.account.currency,
+                status=None,
+                category=None,
+                provider=None,
+                recurring_bill_id=None,
+                is_overdue=due < today,
+                account_id=card.account.id,
             )
         )
 

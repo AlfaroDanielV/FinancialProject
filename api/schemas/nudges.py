@@ -36,6 +36,31 @@ class NudgeListResponse(BaseModel):
     items: list[UserNudgeResponse]
 
 
+# ── native in-app feed (pull surface) ────────────────────────────────────────
+
+
+class NudgeFeedButton(BaseModel):
+    """A card action. `verb` is 'act' | 'dismiss' | 'later' — the app maps
+    act → POST /act, dismiss → POST /dismiss, later → dismiss the card
+    locally (it reappears on the next fetch)."""
+
+    label: str
+    verb: str
+
+
+class NudgeFeedItem(BaseModel):
+    id: uuid.UUID
+    nudge_type: str
+    priority: str
+    text: str
+    created_at: datetime
+    buttons: list[NudgeFeedButton] = []
+
+
+class NudgeFeedResponse(BaseModel):
+    items: list[NudgeFeedItem]
+
+
 # ── per-type candidate counts from evaluator orchestrator ────────────────────
 
 

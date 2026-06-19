@@ -29,9 +29,10 @@ import logging
 import re
 import time
 import uuid
+from html import unescape as _html_unescape
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Iterable, Literal, Optional
+from datetime import date, datetime, timezone
+from typing import Any, Iterable, Literal, Mapping, Optional, Sequence
 
 import httpx
 from pydantic import BaseModel, Field
@@ -40,6 +41,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...config import settings
+from ...models.account import Account
 from ...models.gmail_credential import GmailCredential
 from ...models.gmail_ingestion_run import GmailIngestionRun
 from ...models.gmail_message_seen import GmailMessageSeen
@@ -49,6 +51,7 @@ from ..extraction.email_extractor import (
 )
 from ..llm_extractor.client import AnthropicLLMClient, LLMClient
 from ..secrets import get_secret_store, kv_name_for_user
+from . import account_guess
 from . import oauth as oauth_svc
 from . import reconciler as reconcile_mod
 from . import whitelist as wl_svc
@@ -66,6 +69,15 @@ RunMode = Literal["backfill", "daily", "manual"]
 # but we want to record very-low-confidence as `skipped` not call out to
 # the reconciler unnecessarily.
 _MIN_SCAN_CONFIDENCE = 0.6
+
+# Below this many characters a text/plain part is treated as a stub and we fall
+# back to the stripped text/html. Some CR banks (e.g. Promerica) ship a
+# near-empty text/plain — a greeting or "activá HTML" line — with the real
+# transaction table only in the HTML part; the old unconditional plain
+# preference fed that stub to the extractor, which skipped every such email as
+# low-confidence. A real notification (merchant + amount + date) clears this
+# comfortably once flattened. Tunable.
+_MIN_BODY_CHARS = 120
 
 # Retry policy. Tuned so the worst-case scan still finishes within the
 # Container Apps Job's typical 30min wallclock.
@@ -87,6 +99,10 @@ class ScanResult(BaseModel):
     transactions_created: int = 0
     transactions_matched: int = 0
     transactions_skipped: int = 0
+    # Message-level failures (fetch / extract raised). Tracked separately
+    # from `transactions_skipped` so the notifier can tell the user how many
+    # emails errored vs how many simply didn't look like transactions.
+    transactions_failed: int = 0
     # Tracked separately so the notifier can decide between per-row
     # messages and a batch summary without re-querying the DB. UUIDs of
     # rows that the reconciler created (CREATED_NEW or CREATED_SHADOW).
@@ -300,6 +316,17 @@ async def _list_message_ids(
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"[ \t]+\n")
+# <style>/<script>/<head> bodies and HTML comments must be removed *with their
+# contents* before tag-stripping. Bank emails (e.g. Promerica) ship large inline
+# CSS + MSO conditional comments; the CSS text is not inside `< >`, so plain
+# tag-stripping leaves it in place, where it floods the body and pushes the real
+# transaction past the extractor's 4000-char trim → the email is skipped as
+# low-confidence even though the transaction text is right there.
+_STYLE_SCRIPT_RE = re.compile(
+    r"<(style|script|head)\b[^>]*>.*?</\1\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
 def _b64url_decode(data: str) -> bytes:
@@ -314,8 +341,15 @@ def _b64url_decode(data: str) -> bytes:
 def _strip_html(html: str) -> str:
     """Crude tag stripper. Good enough for bank notifications, which are
     flat tables. We deliberately don't pull in beautifulsoup — adds 5MB
-    to the install for one helper that breaks the same way on weird HTML."""
+    to the install for one helper that breaks the same way on weird HTML.
+
+    Removes <style>/<script>/<head> blocks and HTML comments *with their
+    contents* first (see _STYLE_SCRIPT_RE), then strips remaining tags and
+    unescapes entities (&nbsp; &amp; &#162; …) so amounts/merchants survive."""
+    html = _STYLE_SCRIPT_RE.sub(" ", html)
+    html = _COMMENT_RE.sub(" ", html)
     text = _TAG_RE.sub(" ", html)
+    text = _html_unescape(text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
@@ -342,11 +376,17 @@ def _extract_body(payload: dict[str, Any]) -> str:
             _walk(child)
 
     _walk(payload or {})
-    if plain:
-        return plain.strip()
-    if html:
-        return _strip_html(html)
-    return ""
+    plain_clean = plain.strip() if plain else ""
+    html_clean = _strip_html(html) if html else ""
+    # Prefer text/plain when it's substantive, but fall back to the richer
+    # stripped HTML when the plain part is a short stub (see _MIN_BODY_CHARS).
+    # `plain_clean >= html_clean` keeps the plain-only and plain-richer cases
+    # unchanged; the stub case (short plain + longer html) falls through to html.
+    if plain_clean and (
+        len(plain_clean) >= _MIN_BODY_CHARS or len(plain_clean) >= len(html_clean)
+    ):
+        return plain_clean
+    return html_clean or plain_clean
 
 
 def _header_value(payload: dict[str, Any], name: str) -> Optional[str]:
@@ -364,12 +404,18 @@ async def _already_seen(
     *, db: AsyncSession, user_id: uuid.UUID, message_id: str
 ) -> bool:
     row = await db.execute(
-        select(GmailMessageSeen.gmail_message_id).where(
+        select(GmailMessageSeen.outcome).where(
             GmailMessageSeen.user_id == user_id,
             GmailMessageSeen.gmail_message_id == message_id,
         )
     )
-    return row.scalar_one_or_none() is not None
+    outcome = row.scalar_one_or_none()
+    # A prior `failed` is TRANSIENT (revoked mid-scan, network blip, extract
+    # error) and must be retried — otherwise one bad scan buries that email
+    # forever (the cause of "recent transactions never show up after a failed
+    # scan"). Every other outcome — matched / created / created_shadow /
+    # skipped / rejected_by_user — is terminal and stays deduped.
+    return outcome is not None and outcome != "failed"
 
 
 async def _mark_seen(
@@ -382,9 +428,12 @@ async def _mark_seen(
     ingestion_run_id: Optional[uuid.UUID],
     error: Optional[dict[str, Any]] = None,
 ) -> None:
-    """Insert into gmail_messages_seen. If a row already exists (race
-    between concurrent scans) the ON CONFLICT DO NOTHING is the right
-    behavior — first writer wins."""
+    """Upsert into gmail_messages_seen.
+
+    On conflict we overwrite ONLY when the prior row was `failed` — so a
+    successful retry promotes failed → created/etc., while a concurrent
+    second writer on a terminal row is a no-op (first terminal writer wins,
+    preserving the original race-safety intent)."""
     stmt = pg_insert(GmailMessageSeen).values(
         user_id=user_id,
         gmail_message_id=message_id,
@@ -393,8 +442,16 @@ async def _mark_seen(
         ingestion_run_id=ingestion_run_id,
         error=error,
     )
-    stmt = stmt.on_conflict_do_nothing(
-        index_elements=["user_id", "gmail_message_id"]
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["user_id", "gmail_message_id"],
+        set_={
+            "outcome": stmt.excluded.outcome,
+            "transaction_id": stmt.excluded.transaction_id,
+            "ingestion_run_id": stmt.excluded.ingestion_run_id,
+            "error": stmt.excluded.error,
+            "processed_at": datetime.now(timezone.utc),
+        },
+        where=GmailMessageSeen.outcome == "failed",
     )
     await db.execute(stmt)
 
@@ -464,28 +521,43 @@ async def scan_user_inbox(
         until.isoformat() if until else "now",
     )
 
-    # 1. Resolve access token (this also marks revoked_at if invalid_grant).
+    # 1. Open the run row up front. Every scan attempt is then auditable AND
+    #    the native app's run-based polling always sees a finished run — even
+    #    when we abort below because the credential is revoked (previously this
+    #    early-returned without a run, so the app's poll hung forever).
+    run = await _create_run(db=db, user_id=user_id, mode=mode)
+    result.run_id = run.id
+
+    # 2. Resolve access token (this also marks revoked_at if invalid_grant).
     access_token = await _resolve_access_token(user_id=user_id, db=db)
     if access_token is None:
         result.revoked = True
+        result.errors.append({"phase": "auth", "error": "revoked_or_no_credential"})
         result.finished_at = datetime.now(timezone.utc)
+        await _finalize_run(db=db, run=run, result=result)
         log.warning("scan_aborted user=%s reason=no_credential_or_revoked", user_id)
         return result
 
-    # 2. Read whitelist. Empty → record run, do nothing.
-    senders = [s.sender_email for s in await wl_svc.list_active(db=db, user_id=user_id)]
+    # 3. Read whitelist. Empty → finalize, do nothing.
+    wl_rows = await wl_svc.list_active(db=db, user_id=user_id)
+    senders = [s.sender_email for s in wl_rows]
     if not senders:
-        run = await _create_run(db=db, user_id=user_id, mode=mode)
-        result.run_id = run.id
         result.no_whitelist = True
         result.finished_at = datetime.now(timezone.utc)
         await _finalize_run(db=db, run=run, result=result)
         log.warning("scan_no_whitelist user=%s — nothing to query", user_id)
         return result
 
-    # 3. Open run row.
-    run = await _create_run(db=db, user_id=user_id, mode=mode)
-    result.run_id = run.id
+    # 3b. Best-effort account-guess context, loaded once per scan and passed to
+    #     the reconciler so new shadow rows land pre-attached to a guessed
+    #     account (the user reviews + can correct in the native review screen).
+    #     `sender_bank` maps a bare sender email → its whitelist bank label.
+    sender_bank = {
+        s.sender_email.lower(): s.bank_name for s in wl_rows if s.sender_email
+    }
+    guess_accounts, guess_last_used = await account_guess.load_guess_context(
+        db, user_id
+    )
 
     # 4. Build query.
     query = _build_gmail_query(senders=senders, since=since, until=until)
@@ -535,6 +607,9 @@ async def scan_user_inbox(
                 stub=stub,
                 llm_client=llm,
                 result=result,
+                accounts=guess_accounts,
+                last_used=guess_last_used,
+                sender_bank=sender_bank,
             )
             result.messages_scanned += 1
 
@@ -577,6 +652,9 @@ async def _process_one_message(
     stub: _MessageStub,
     llm_client: LLMClient,
     result: ScanResult,
+    accounts: Sequence[Account] = (),
+    last_used: Optional[Mapping[uuid.UUID, date]] = None,
+    sender_bank: Optional[Mapping[str, Optional[str]]] = None,
 ) -> None:
     """One message lifecycle. Errors are caught and recorded as
     `outcome='failed'` in gmail_messages_seen so a later debugging pass
@@ -608,6 +686,7 @@ async def _process_one_message(
             ingestion_run_id=run_id,
             error={"reason": str(e), "status": e.last_status},
         )
+        result.transactions_failed += 1
         await db.commit()
         return
     except _RevokedError:
@@ -627,6 +706,7 @@ async def _process_one_message(
             ingestion_run_id=run_id,
             error={"reason": "revoked"},
         )
+        result.transactions_failed += 1
         await db.commit()
         result.revoked = True
         return
@@ -675,6 +755,7 @@ async def _process_one_message(
         result.errors.append(
             {"phase": "extract", "msg_id": stub.id, "error": str(e)[:200]}
         )
+        result.transactions_failed += 1
         await db.commit()
         return
 
@@ -693,13 +774,20 @@ async def _process_one_message(
             outcome="skipped",
             transaction_id=None,
             ingestion_run_id=run_id,
-            error=None,
+            error={
+                "reason": "low_confidence",
+                "conf": float(candidate.confidence),
+                "type": candidate.transaction_type,
+                "body_len": len(body),
+            },
         )
         result.transactions_skipped += 1
         await db.commit()
         return
 
-    # Hand off to reconciler.
+    # Hand off to reconciler. Resolve the sender's bank label so the reconciler
+    # can take a best-effort guess at the account for a new shadow row.
+    bank_name = account_guess.bank_name_for_sender(from_addr, sender_bank or {})
     outcome, txn = await reconcile_mod.reconcile(
         db=db,
         user_id=user_id,
@@ -707,6 +795,9 @@ async def _process_one_message(
         gmail_message_id=stub.id,
         email_subject=subject,
         email_from=from_addr,
+        accounts=accounts,
+        last_used=last_used,
+        bank_name=bank_name,
     )
 
     # Map ReconcileOutcome → gmail_messages_seen.outcome (CHECK in 0011
@@ -718,7 +809,24 @@ async def _process_one_message(
         reconcile_mod.ReconcileOutcome.CREATED_SHADOW: "created_shadow",
         reconcile_mod.ReconcileOutcome.DUPLICATE_GMAIL: "skipped",
         reconcile_mod.ReconcileOutcome.SKIPPED_LOW_CONFIDENCE: "skipped",
+        reconcile_mod.ReconcileOutcome.SKIPPED_NO_DATE: "skipped",
     }[outcome]
+
+    # Record why the reconciler skipped (low confidence / duplicate) so a later
+    # debugging pass can read it straight from gmail_messages_seen.error without
+    # re-fetching the email.
+    seen_error = None
+    if outcome in {
+        reconcile_mod.ReconcileOutcome.SKIPPED_LOW_CONFIDENCE,
+        reconcile_mod.ReconcileOutcome.DUPLICATE_GMAIL,
+        reconcile_mod.ReconcileOutcome.SKIPPED_NO_DATE,
+    }:
+        seen_error = {
+            "reason": outcome.value,
+            "conf": float(candidate.confidence),
+            "type": candidate.transaction_type,
+            "body_len": len(body),
+        }
 
     await _mark_seen(
         db=db,
@@ -727,6 +835,7 @@ async def _process_one_message(
         outcome=seen_outcome,
         transaction_id=txn.id if txn is not None else None,
         ingestion_run_id=run_id,
+        error=seen_error,
     )
 
     if outcome == reconcile_mod.ReconcileOutcome.MATCHED_EXISTING:

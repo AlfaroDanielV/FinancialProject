@@ -6,8 +6,6 @@ at registration and at rotation.
 """
 from __future__ import annotations
 
-import secrets
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -15,38 +13,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
 from ..dependencies import current_user
-from ..models.enums import NotificationScope
-from ..models.notification_rule import NotificationRule
 from ..models.user import User
 from ..schemas.users import (
     UserCreate,
     UserRegisterResponse,
     UserResponse,
 )
-from ..services.categories import ensure_default_categories
+from ..services.users import create_user_with_defaults, new_shortcut_token
 
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
-
-
-# 48 bytes → ~64 char URL-safe string. Spec asks for ≥32 bytes of entropy.
-_TOKEN_BYTES = 48
-
-
-def _new_token() -> str:
-    return secrets.token_urlsafe(_TOKEN_BYTES)
-
-
-async def _seed_global_default_rule(user: User, db: AsyncSession) -> None:
-    """Every user gets the same default advance-notice cadence at signup so
-    the notification engine has something to resolve to before they tweak
-    anything. Same shape as migration 0005's seeded row.
-    """
-    rule = NotificationRule(
-        user_id=user.id,
-        scope=NotificationScope.GLOBAL_DEFAULT.value,
-        advance_days=[7, 3, 1, 0],
-    )
-    db.add(rule)
 
 
 @router.post("/register", response_model=UserRegisterResponse, status_code=201)
@@ -54,22 +29,20 @@ async def register_user(
     payload: UserCreate,
     db: AsyncSession = Depends(get_db),
 ):
-    user = User(
-        email=payload.email,
-        full_name=payload.full_name,
-        phone_number=payload.phone_number,
-        country=payload.country,
-        timezone=payload.timezone,
-        currency=payload.currency,
-        display_currency=payload.display_currency or payload.currency[:3],
-        locale=payload.locale,
-        shortcut_token=_new_token(),
-    )
-    db.add(user)
+    # Phase 8 B1: creation (token + default rule + default categories) lives
+    # in api/services/users.py, shared with the Telegram cold-start flow.
     try:
-        await db.flush()
-        await _seed_global_default_rule(user, db)
-        await ensure_default_categories(db, user.id)
+        user = await create_user_with_defaults(
+            db,
+            email=payload.email,
+            full_name=payload.full_name,
+            phone_number=payload.phone_number,
+            country=payload.country,
+            timezone=payload.timezone,
+            currency=payload.currency,
+            display_currency=payload.display_currency,
+            locale=payload.locale,
+        )
         await db.commit()
     except IntegrityError as e:
         await db.rollback()
@@ -101,7 +74,7 @@ async def rotate_shortcut_token(
     """Issue a fresh shortcut_token. The previous one is invalidated
     immediately — any caller still holding it gets 401 on the next request.
     """
-    user.shortcut_token = _new_token()
+    user.shortcut_token = new_shortcut_token()
     await db.commit()
     await db.refresh(user)
     return user

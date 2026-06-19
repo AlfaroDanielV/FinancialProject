@@ -1,0 +1,297 @@
+"""Fixed-expense attachment (B1) — schema + write-path foundation.
+
+A recurring bill or debt can be attached to an envelope via a nullable FK; the
+reservation math (B2) and the per-item under_coverage gate (B3) build on this.
+Here we cover the FK round-trip, the attach-target validation, the
+archive-detach (soft archive must explicitly null the link — the FK SET NULL
+only fires on a real DELETE), and the explicit PATCH-detach contract
+(`envelope_id: null` clears the link; an unrelated PATCH leaves it intact —
+the `exclude_unset=True` semantics the mobile "Quitar" button relies on).
+"""
+from __future__ import annotations
+
+import uuid
+from datetime import date
+from decimal import Decimal
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
+
+from api.database import get_db
+from api.dependencies import current_user
+from api.main import app
+from api.models.debt import Debt
+from api.models.envelope import Envelope
+from api.models.recurring_bill import RecurringBill
+from api.models.user import User
+from api.services.envelopes import archive_subtree, is_valid_envelope_target
+from api.services.llm_extractor import ExtractionResult, Intent
+from api.services.telegram_dispatcher import AskClarification, ProposeAction, dispatch
+
+
+def _override(session, user_id):
+    class _StubUser:
+        def __init__(self) -> None:
+            self.id = user_id
+            self.status = "active"
+            self.currency = "CRC"
+            self.display_currency = "CRC"
+
+    async def _yield_session():
+        yield session
+
+    app.dependency_overrides[current_user] = lambda: _StubUser()
+    app.dependency_overrides[get_db] = _yield_session
+
+
+def _clear():
+    app.dependency_overrides.pop(current_user, None)
+    app.dependency_overrides.pop(get_db, None)
+
+
+def _attach_extraction(**overrides) -> ExtractionResult:
+    base = dict(intent=Intent.ATTACH_EXPENSE, dispatcher="write", confidence=0.9)
+    base.update(overrides)
+    return ExtractionResult(**base)
+
+
+def _envelope(user_id, *, name="Servicios", klass="needs", limit="200000", archived=False):
+    return Envelope(
+        user_id=user_id, name=name, envelope_class=klass,
+        limit_amount=Decimal(limit), currency="CRC", archived=archived,
+    )
+
+
+def _bill(user_id, *, name="ICE", amount="30000", envelope_id=None):
+    return RecurringBill(
+        user_id=user_id, name=name, category="servicios",
+        amount_expected=Decimal(amount), currency="CRC", frequency="monthly",
+        start_date=date.today(), envelope_id=envelope_id,
+    )
+
+
+def _debt(user_id, *, name="Préstamo", payment="100000", envelope_id=None):
+    return Debt(
+        user_id=user_id, name=name, debt_type="personal_loan",
+        original_amount=Decimal("3000000"), current_balance=Decimal("2000000"),
+        interest_rate=Decimal("0.18"), minimum_payment=Decimal(payment),
+        payment_due_day=1, envelope_id=envelope_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_attach_bill_and_debt_round_trip(db_with_user):
+    session, user_id = db_with_user
+    env = _envelope(user_id)
+    session.add(env)
+    await session.flush()
+    bill = _bill(user_id, envelope_id=env.id)
+    debt = _debt(user_id, envelope_id=env.id)
+    session.add_all([bill, debt])
+    await session.commit()
+
+    got_bill = (
+        await session.execute(select(RecurringBill).where(RecurringBill.id == bill.id))
+    ).scalar_one()
+    got_debt = (
+        await session.execute(select(Debt).where(Debt.id == debt.id))
+    ).scalar_one()
+    assert got_bill.envelope_id == env.id
+    assert got_debt.envelope_id == env.id
+
+
+@pytest.mark.asyncio
+async def test_is_valid_envelope_target(db_with_user):
+    session, user_id = db_with_user
+    env = _envelope(user_id)
+    archived = _envelope(user_id, name="Vieja", archived=True)
+    session.add_all([env, archived])
+    await session.commit()
+
+    assert await is_valid_envelope_target(session, user_id=user_id, envelope_id=env.id) is True
+    # archived → not a valid target
+    assert await is_valid_envelope_target(
+        session, user_id=user_id, envelope_id=archived.id
+    ) is False
+    # nonexistent → not a valid target
+    assert await is_valid_envelope_target(
+        session, user_id=user_id, envelope_id=uuid.uuid4()
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_cross_user_envelope_not_attachable(db_with_user):
+    session, user_id = db_with_user
+    env = _envelope(user_id)
+    session.add(env)
+    await session.commit()
+    # Same envelope, a DIFFERENT caller → not a valid target (same-user guard).
+    assert await is_valid_envelope_target(
+        session, user_id=uuid.uuid4(), envelope_id=env.id
+    ) is False
+    assert await is_valid_envelope_target(
+        session, user_id=user_id, envelope_id=env.id
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_archive_envelope_detaches_obligations(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    env = _envelope(user_id)
+    session.add(env)
+    await session.flush()
+    bill = _bill(user_id, envelope_id=env.id)
+    debt = _debt(user_id, envelope_id=env.id)
+    session.add_all([bill, debt])
+    await session.commit()
+
+    await archive_subtree(session, user=user, root=env)
+    await session.commit()
+
+    await session.refresh(bill)
+    await session.refresh(debt)
+    # Detached, NOT deleted — the obligation survives.
+    assert bill.envelope_id is None
+    assert debt.envelope_id is None
+    assert await session.get(RecurringBill, bill.id) is not None
+    assert await session.get(Debt, debt.id) is not None
+
+
+# ── PATCH detach (explicit envelope_id: null clears the link) ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_patch_detach_clears_link_and_unset_preserves_it(db_with_user):
+    session, user_id = db_with_user
+    env = _envelope(user_id)
+    session.add(env)
+    await session.flush()
+    bill = _bill(user_id, envelope_id=env.id)
+    debt = _debt(user_id, envelope_id=env.id)
+    session.add_all([bill, debt])
+    await session.commit()
+
+    _override(session, user_id)
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            # A PATCH that does NOT mention envelope_id must leave the
+            # attachment intact (exclude_unset contract).
+            untouched = await ac.patch(
+                f"/api/v1/recurring-bills/{bill.id}", json={"notes": "sin tocar"}
+            )
+            assert untouched.status_code == 200, untouched.text
+            await session.refresh(bill)
+            assert bill.envelope_id == env.id
+
+            # Explicit null detaches the bill…
+            detached = await ac.patch(
+                f"/api/v1/recurring-bills/{bill.id}", json={"envelope_id": None}
+            )
+            assert detached.status_code == 200, detached.text
+            assert detached.json()["envelope_id"] is None
+            await session.refresh(bill)
+            assert bill.envelope_id is None
+
+            # …and the debt.
+            detached_debt = await ac.patch(
+                f"/api/v1/debts/{debt.id}", json={"envelope_id": None}
+            )
+            assert detached_debt.status_code == 200, detached_debt.text
+            assert detached_debt.json()["envelope_id"] is None
+            await session.refresh(debt)
+            assert debt.envelope_id is None
+
+            # Detached, NOT deleted — both obligations survive.
+            assert await session.get(RecurringBill, bill.id) is not None
+            assert await session.get(Debt, debt.id) is not None
+    finally:
+        _clear()
+
+
+# ── chat ATTACH_EXPENSE dispatch (resolve by name → propose) ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_chat_attach_bill_proposes(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    env = _envelope(user_id, name="Servicios")
+    bill = _bill(user_id, name="ICE")
+    session.add_all([env, bill])
+    await session.commit()
+
+    decision = await dispatch(
+        extraction=_attach_extraction(expense_hint="ICE", envelope_hint="Servicios"),
+        user=user, today=date.today(), db=session,
+    )
+    assert isinstance(decision, ProposeAction)
+    assert decision.action_type == "attach_expense"
+    assert decision.payload["obligation_kind"] == "bill"
+    assert decision.payload["obligation_id"] == str(bill.id)
+    assert decision.payload["envelope_id"] == str(env.id)
+    assert "Servicios" in decision.summary_es
+
+
+@pytest.mark.asyncio
+async def test_chat_attach_debt_proposes(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    env = _envelope(user_id, name="Deudas")
+    debt = _debt(user_id, name="Préstamo carro")
+    session.add_all([env, debt])
+    await session.commit()
+
+    decision = await dispatch(
+        extraction=_attach_extraction(expense_hint="carro", envelope_hint="Deudas"),
+        user=user, today=date.today(), db=session,
+    )
+    assert isinstance(decision, ProposeAction)
+    assert decision.payload["obligation_kind"] == "debt"
+    assert decision.payload["obligation_id"] == str(debt.id)
+
+
+@pytest.mark.asyncio
+async def test_chat_attach_unknown_envelope_clarifies(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    session.add(_bill(user_id, name="ICE"))
+    await session.commit()
+    decision = await dispatch(
+        extraction=_attach_extraction(expense_hint="ICE", envelope_hint="NoExiste"),
+        user=user, today=date.today(), db=session,
+    )
+    assert isinstance(decision, AskClarification)
+    assert decision.awaiting_field == "envelope_hint"
+
+
+@pytest.mark.asyncio
+async def test_chat_attach_unknown_obligation_clarifies(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    session.add(_envelope(user_id, name="Servicios"))
+    await session.commit()
+    decision = await dispatch(
+        extraction=_attach_extraction(expense_hint="NoExiste", envelope_hint="Servicios"),
+        user=user, today=date.today(), db=session,
+    )
+    assert isinstance(decision, AskClarification)
+    assert decision.awaiting_field == "expense_hint"
+
+
+@pytest.mark.asyncio
+async def test_chat_attach_missing_hints_clarify(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    d1 = await dispatch(
+        extraction=_attach_extraction(envelope_hint="Servicios"),
+        user=user, today=date.today(), db=session,
+    )
+    assert isinstance(d1, AskClarification) and d1.awaiting_field == "expense_hint"
+    d2 = await dispatch(
+        extraction=_attach_extraction(expense_hint="ICE"),
+        user=user, today=date.today(), db=session,
+    )
+    assert isinstance(d2, AskClarification) and d2.awaiting_field == "envelope_hint"

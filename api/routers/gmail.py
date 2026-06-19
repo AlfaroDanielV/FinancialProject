@@ -29,6 +29,8 @@ NOT done here — it happens after the sample is approved (B6).
 from __future__ import annotations
 
 import logging
+import re
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -41,11 +43,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import settings
 from ..database import get_db
 from ..dependencies import current_user
+from ..models.account import Account
 from ..models.gmail_credential import GmailCredential
+from ..models.transaction import Transaction
 from ..models.user import User
+from ..models.user_category import UserCategory
 from ..redis_client import get_redis
-from ..schemas.gmail import GmailStatusResponse, OAuthStartResponse
+from ..models.gmail_ingestion_run import GmailIngestionRun
+from ..schemas.gmail import (
+    GmailRunInfo,
+    GmailScanResponse,
+    GmailScanStatusResponse,
+    GmailStatusResponse,
+    OAuthStartResponse,
+    SenderAddRequest,
+    SenderAddResponse,
+    SenderResponse,
+    ShadowConfirmRequest,
+    ShadowConfirmResponse,
+    ShadowDiscardRequest,
+    ShadowDiscardResponse,
+)
+from ..schemas.transaction import TransactionResponse
 from ..services.gmail import oauth as oauth_svc
+from ..services.gmail import shadow_review, whitelist
 from ..services.gmail.backfill import enqueue_backfill
 from ..services.secrets import get_secret_store, kv_name_for_user
 
@@ -291,3 +312,263 @@ async def gmail_status(
         last_refresh_at=cred.last_refresh_at,
         scopes=list(cred.scopes or []),
     )
+
+
+# ── native Gmail surface (Phase 6 native) ─────────────────────────────────────
+# Thin REST wrappers over the existing services so the native app reaches
+# parity with the Telegram Gmail commands. current_user (bearer) auth.
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_SENDER_SPLIT_RE = re.compile(r"[,\s]+")
+
+
+@router.post("/scan", response_model=GmailScanResponse)
+async def gmail_scan(
+    days: int = Query(default=30, ge=1, le=90),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> GmailScanResponse:
+    """Trigger a per-user Gmail backfill (same path as the daily worker).
+
+    Guards against the two silent no-op cases so the app gets immediate,
+    actionable feedback instead of "found nothing": 409 if Gmail isn't
+    connected, 400 if no senders are whitelisted (the scanner needs at least
+    one to query). On success it's fire-and-forget; the client polls
+    `GET /gmail/scan/status` for progress + result.
+    """
+    cred = (
+        await db.execute(
+            select(GmailCredential).where(GmailCredential.user_id == user.id)
+        )
+    ).scalar_one_or_none()
+    if cred is None or cred.revoked_at is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Gmail no está conectado. Conectalo primero.",
+        )
+    if await whitelist.count_active(db=db, user_id=user.id) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Agregá los remitentes de tu banco antes de escanear.",
+        )
+    enqueue_backfill(user_id=user.id, days=days, mode="manual")
+    return GmailScanResponse(queued=True, days=days)
+
+
+@router.get("/scan/status", response_model=GmailScanStatusResponse)
+async def gmail_scan_status(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> GmailScanStatusResponse:
+    """Feedback for the native scan UI: connection state, sender count, and
+    the latest ingestion run's progress/result (running → spinner; finished
+    → counts; errors → failure)."""
+    cred = (
+        await db.execute(
+            select(GmailCredential).where(GmailCredential.user_id == user.id)
+        )
+    ).scalar_one_or_none()
+    connected = cred is not None and cred.revoked_at is None
+    revoked = cred is not None and cred.revoked_at is not None
+    senders_count = await whitelist.count_active(db=db, user_id=user.id)
+
+    run_row = (
+        await db.execute(
+            select(GmailIngestionRun)
+            .where(GmailIngestionRun.user_id == user.id)
+            .order_by(GmailIngestionRun.started_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    latest = None
+    if run_row is not None:
+        latest = GmailRunInfo(
+            started_at=run_row.started_at,
+            finished_at=run_row.finished_at,
+            running=run_row.finished_at is None,
+            mode=run_row.mode,
+            messages_scanned=run_row.messages_scanned,
+            transactions_created=run_row.transactions_created,
+            transactions_matched=run_row.transactions_matched,
+            has_errors=bool(run_row.errors),
+        )
+    return GmailScanStatusResponse(
+        connected=connected,
+        revoked=revoked,
+        senders_count=senders_count,
+        latest_run=latest,
+    )
+
+
+@router.get("/senders", response_model=list[SenderResponse])
+async def list_senders(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> list[SenderResponse]:
+    rows = await whitelist.list_active(db=db, user_id=user.id)
+    return [SenderResponse.model_validate(r) for r in rows]
+
+
+@router.post("/senders", response_model=SenderAddResponse)
+async def add_senders(
+    payload: SenderAddRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> SenderAddResponse:
+    """Add one bank's senders from a comma/space/newline-separated blob.
+    Invalid / already-active emails are skipped; the 8-sender active cap is
+    enforced (further emails skipped, `at_cap=True`)."""
+    parts = [e.strip().lower() for e in _SENDER_SPLIT_RE.split(payload.emails) if e.strip()]
+    # dedupe, preserve order
+    seen: set[str] = set()
+    emails: list[str] = []
+    for e in parts:
+        if e not in seen:
+            seen.add(e)
+            emails.append(e)
+
+    existing_rows = await whitelist.list_active(db=db, user_id=user.id)
+    active: set[str] = {r.sender_email for r in existing_rows}
+    active_count = len(existing_rows)
+
+    added: list[str] = []
+    skipped: list[str] = []
+    at_cap = False
+    for e in emails:
+        if not _EMAIL_RE.match(e):
+            skipped.append(e)
+            continue
+        if e in active:
+            skipped.append(e)
+            continue
+        if active_count >= whitelist.ACTIVE_CAP:
+            at_cap = True
+            break
+        await whitelist.add_sender(
+            db=db,
+            user_id=user.id,
+            sender_email=e,
+            bank_name=payload.bank_name,
+            source=whitelist.SOURCE_IMPORTED,
+        )
+        active.add(e)
+        active_count += 1
+        added.append(e)
+
+    await db.commit()
+    return SenderAddResponse(added=added, skipped=skipped, at_cap=at_cap)
+
+
+@router.delete("/senders/{sender_id}")
+async def remove_sender(
+    sender_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    ok = await whitelist.remove_sender_by_id(
+        db=db, user_id=user.id, sender_id=sender_id
+    )
+    await db.commit()
+    if not ok:
+        raise HTTPException(status_code=404, detail="Remitente no encontrado.")
+    return {"removed": True}
+
+
+@router.get("/shadow", response_model=list[TransactionResponse])
+async def list_shadow_transactions(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> list[TransactionResponse]:
+    rows = await shadow_review.list_shadow(db, user_id=user.id)
+    return [TransactionResponse.model_validate(r) for r in rows]
+
+
+@router.post("/shadow/confirm", response_model=ShadowConfirmResponse)
+async def confirm_shadow_transactions(
+    payload: ShadowConfirmRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> ShadowConfirmResponse:
+    # Any category_id override must belong to the caller and be active
+    # (mirrors PATCH /transactions/{id} — shadow rows can't be PATCHed, so the
+    # native review applies edits here at confirm time).
+    requested_category_ids = {i.category_id for i in payload.items if i.category_id is not None}
+    if requested_category_ids:
+        valid = await db.execute(
+            select(UserCategory.id).where(
+                UserCategory.id.in_(requested_category_ids),
+                UserCategory.user_id == user.id,
+                UserCategory.archived.is_(False),
+            )
+        )
+        valid_ids = {row[0] for row in valid.fetchall()}
+        if requested_category_ids - valid_ids:
+            raise HTTPException(status_code=400, detail="Categoría inválida.")
+
+    # Any account_id override must belong to the caller, be active, and match the
+    # shadow row's currency (the native picker pre-filters to currency — this is
+    # the defensive server check). The scan already pre-fills a best-effort guess.
+    account_overrides = {
+        i.id: i.account_id for i in payload.items if i.account_id is not None
+    }
+    if account_overrides:
+        wanted = set(account_overrides.values())
+        acc_currency = dict(
+            (
+                await db.execute(
+                    select(Account.id, Account.currency).where(
+                        Account.id.in_(wanted),
+                        Account.user_id == user.id,
+                        Account.is_active.is_(True),
+                        Account.archived.is_(False),
+                    )
+                )
+            ).all()
+        )
+        if wanted - set(acc_currency):
+            raise HTTPException(status_code=400, detail="Cuenta inválida.")
+        row_currency = dict(
+            (
+                await db.execute(
+                    select(Transaction.id, Transaction.currency).where(
+                        Transaction.id.in_(account_overrides.keys()),
+                        Transaction.user_id == user.id,
+                        Transaction.status == "shadow",
+                        Transaction.source == "gmail",
+                    )
+                )
+            ).all()
+        )
+        for row_id, acc_id in account_overrides.items():
+            row_cur = row_currency.get(row_id)
+            if row_cur is not None and acc_currency.get(acc_id) != row_cur:
+                raise HTTPException(
+                    status_code=400,
+                    detail="La moneda de la cuenta no coincide con el movimiento.",
+                )
+
+    items = [
+        shadow_review.ShadowEdit(
+            id=i.id,
+            amount=i.amount,
+            merchant=i.merchant,
+            description=i.description,
+            category=i.category,
+            category_id=i.category_id,
+            account_id=i.account_id,
+            transaction_date=i.transaction_date,
+        )
+        for i in payload.items
+    ]
+    count = await shadow_review.confirm_shadow(db, user_id=user.id, items=items)
+    return ShadowConfirmResponse(confirmed=count)
+
+
+@router.post("/shadow/discard", response_model=ShadowDiscardResponse)
+async def discard_shadow_transactions(
+    payload: ShadowDiscardRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> ShadowDiscardResponse:
+    count = await shadow_review.discard_shadow(db, user_id=user.id, ids=payload.ids)
+    return ShadowDiscardResponse(discarded=count)

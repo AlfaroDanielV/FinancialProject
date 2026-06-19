@@ -257,7 +257,9 @@ async def test_create_salario_escolar_derives_from_base_salary(db_with_user):
         _clear()
     assert resp.status_code == 201, resp.text
     body = resp.json()
-    assert Decimal(body["amount"]) == Decimal("1000000")
+    # Salario escolar = 8.33% of annual gross (full window, no hire date):
+    # 1,000,000 × 12 × 0.0833 = 999,600.
+    assert Decimal(body["amount"]) == Decimal("999600.00")
 
 
 # ── GET /onboarding/status ───────────────────────────────────────────────────
@@ -387,20 +389,37 @@ async def test_list_categories_returns_managed_default_cr_list(db_with_user):
 # ── derivation service unit test ────────────────────────────────────────────
 
 
-def test_derive_amount_for_aguinaldo_equals_monthly_salary():
+def test_derive_amount_for_aguinaldo_full_window_is_one_month_gross():
     from api.services.finance.incomes import derive_amount_for
 
-    assert derive_amount_for("aguinaldo", Decimal("750000")) == Decimal("750000")
+    # No hire date → full window → one month's gross.
+    assert derive_amount_for(
+        "aguinaldo",
+        monthly_gross=Decimal("750000"),
+        hire_date=None,
+        as_of_year=2026,
+    ) == Decimal("750000.00")
 
 
-def test_derive_amount_for_salario_escolar_equals_monthly_salary():
+def test_derive_amount_for_salario_escolar_full_window():
     from api.services.finance.incomes import derive_amount_for
 
-    assert derive_amount_for("salario_escolar", Decimal("750000")) == Decimal("750000")
+    # 8.33% of annual gross = 750,000 × 12 × 0.0833 = 749,700.
+    assert derive_amount_for(
+        "salario_escolar",
+        monthly_gross=Decimal("750000"),
+        hire_date=None,
+        as_of_year=2026,
+    ) == Decimal("749700.00")
 
 
 def test_derive_amount_for_unknown_type_raises():
     from api.services.finance.incomes import derive_amount_for
 
     with pytest.raises(ValueError):
-        derive_amount_for("bonus", Decimal("100000"))
+        derive_amount_for(
+            "bonus",
+            monthly_gross=Decimal("100000"),
+            hire_date=None,
+            as_of_year=2026,
+        )

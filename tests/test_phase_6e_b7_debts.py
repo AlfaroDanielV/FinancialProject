@@ -120,6 +120,46 @@ async def test_patch_whitelist_accepts_safe_fields_and_rejects_financials(
 
 
 @pytest.mark.asyncio
+async def test_patch_minimum_payment_editable_and_validated(db_with_user):
+    """The cuota is the one editable financial field (2026-06). It must accept a
+    sane value and reject the two impossible ones the create form also blocks."""
+    session, user_id = db_with_user
+    _override(session, user_id)
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            debt = await _create_debt(ac)  # balance 1,000,000, rate 0.18
+            debt_id = debt["id"]
+
+            # Happy path: a valid cuota updates (15,000 interest < 30,000 < balance).
+            ok = await ac.patch(
+                f"/api/v1/debts/{debt_id}", json={"minimum_payment": 30_000}
+            )
+            assert ok.status_code == 200, ok.text
+            assert Decimal(str(ok.json()["minimum_payment"])) == Decimal("30000.00")
+
+            # Cuota ≥ balance → 400.
+            too_big = await ac.patch(
+                f"/api/v1/debts/{debt_id}", json={"minimum_payment": 2_000_000}
+            )
+            assert too_big.status_code == 400, too_big.text
+
+            # Cuota below the monthly interest (15,000) → never amortizes → 400.
+            too_small = await ac.patch(
+                f"/api/v1/debts/{debt_id}", json={"minimum_payment": 10_000}
+            )
+            assert too_small.status_code == 400, too_small.text
+
+            # The rejected attempts left the stored cuota at the last good value.
+            row = (
+                await session.execute(sa_select(Debt).where(Debt.id == debt_id))
+            ).scalar_one()
+            assert Decimal(str(row.minimum_payment)) == Decimal("30000.00")
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
 async def test_delete_flips_archived_and_list_filters_default(db_with_user):
     session, user_id = db_with_user
     _override(session, user_id)

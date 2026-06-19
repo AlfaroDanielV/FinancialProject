@@ -56,6 +56,28 @@ def test_strip_html_collapses_whitespace():
     assert "line1 line2" in out
 
 
+def test_strip_html_drops_style_and_script_contents():
+    """Bank emails ship big inline <style>/<script> blocks. Their CSS/JS text
+    is not inside `< >`, so it must be removed with its contents — otherwise it
+    floods the body and buries the transaction past the 4000-char trim."""
+    bulk_css = ".x{font-family:Arial;color:#fff;background:#000;} " * 50
+    html = (
+        "<html><head><style>" + bulk_css + "</style></head><body>"
+        "<!--[if mso]><table><tr><td><![endif]-->"
+        "<table><tr><td>Comercio</td><td>AUTO MERCADO GUAYABOS</td></tr>"
+        "<tr><td>Monto</td><td>CRC:&nbsp;11,066.00</td></tr></table>"
+        "<script>track('open');</script>"
+        "</body></html>"
+    )
+    out = _strip_html(html)
+    assert "AUTO MERCADO GUAYABOS" in out
+    assert "11,066.00" in out
+    assert "&nbsp;" not in out  # entity unescaped, not left literal
+    assert "font-family" not in out  # CSS gone
+    assert "track(" not in out  # JS gone
+    assert "[if mso]" not in out  # conditional comment gone
+
+
 # ── _extract_body ────────────────────────────────────────────────────────────
 
 
@@ -88,6 +110,52 @@ def test_extract_body_falls_back_to_html():
     out = _extract_body(payload)
     assert "only html here" in out
     assert "<" not in out
+
+
+def test_extract_body_falls_back_to_html_when_plain_is_stub():
+    """Daniel's Promerica bug: the text/plain part is a short stub and the
+    real transaction table lives only in text/html. The extractor must read
+    the HTML, not the stub — otherwise the email is skipped as low-confidence."""
+    stub_plain = "Para ver este correo activá el formato HTML."  # < 120 chars
+    rich_html = (
+        "<html><body><table>"
+        "<tr><td>Comercio</td><td>AUTO MERCADO GUAYABOS SAN JOSE CR</td></tr>"
+        "<tr><td>Fecha/hora</td><td>02 jun 2026 / 16:29</td></tr>"
+        "<tr><td>Numero de tarjeta</td><td>****-****-****-9097</td></tr>"
+        "<tr><td>Monto</td><td>CRC: 11,066.00</td></tr>"
+        "</table></body></html>"
+    )
+    payload = {
+        "mimeType": "multipart/alternative",
+        "parts": [
+            {"mimeType": "text/plain", "body": {"data": _b64url(stub_plain)}},
+            {"mimeType": "text/html", "body": {"data": _b64url(rich_html)}},
+        ],
+    }
+    out = _extract_body(payload)
+    assert "AUTO MERCADO GUAYABOS SAN JOSE CR" in out
+    assert "11,066.00" in out
+    assert "<" not in out  # HTML tags stripped
+
+
+def test_extract_body_keeps_substantive_plain_over_html():
+    """A real text/plain body (>= _MIN_BODY_CHARS) is kept even when the HTML
+    alternative is longer — we don't want to switch to noisier HTML for emails
+    that already ship a good plain part (the 59 that work today)."""
+    good_plain = (
+        "Compra con tarjeta Mastercard en MXM GUAYABOS OCN00PV por CRC "
+        "12,560.00 el 11 may 2026. Numero de autorizacion 123456. "
+        "Gracias por usar tu tarjeta Promerica."
+    )  # > 120 chars
+    longer_html = "<div>" + good_plain + " " + ("promo legal aviso " * 40) + "</div>"
+    payload = {
+        "mimeType": "multipart/alternative",
+        "parts": [
+            {"mimeType": "text/plain", "body": {"data": _b64url(good_plain)}},
+            {"mimeType": "text/html", "body": {"data": _b64url(longer_html)}},
+        ],
+    }
+    assert _extract_body(payload) == good_plain.strip()
 
 
 def test_extract_body_walks_nested_parts():

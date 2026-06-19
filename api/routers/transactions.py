@@ -24,9 +24,18 @@ from ..schemas.transaction import (
     TransactionBulkCategorize,
     TransactionBulkResponse,
     TransactionCreate,
+    TransactionDeleteResponse,
     TransactionListResponse,
     TransactionResponse,
     TransactionUpdate,
+)
+from ..services.dedup import clear_duplicate_nudges_for_txn, flag_and_notify
+from ..services.envelopes import can_assign_transaction_to_envelope
+from ..services.fx import convert
+from ..services.transactions import (
+    TXN_DELETE_REASON_ES,
+    TransactionDeleteError,
+    hard_delete_transaction,
 )
 
 router = APIRouter(prefix="/api/v1/transactions", tags=["transactions"])
@@ -96,6 +105,9 @@ async def shortcut_transaction(
     db.add(txn)
     await db.commit()
     await db.refresh(txn)
+    # Duplicate detection: flag + raise a nudge if this looks like a dupe
+    # (best-effort, never blocks the capture). Telegram + in-app Alertas.
+    await flag_and_notify(db, user=user, txn=txn)
     return txn
 
 
@@ -144,6 +156,7 @@ async def create_transaction(
     db.add(txn)
     await db.commit()
     await db.refresh(txn)
+    await flag_and_notify(db, user=user, txn=txn)
     return txn
 
 
@@ -162,6 +175,7 @@ def _build_filters(
     max_amount: Optional[Decimal],
     q: Optional[str],
     include_archived: bool,
+    no_account: bool = False,
 ) -> list:
     filters: list = [Transaction.user_id == user_id]
     accounts_filter = []
@@ -171,6 +185,12 @@ def _build_filters(
         accounts_filter.extend(account_ids)
     if accounts_filter:
         filters.append(Transaction.account_id.in_(set(accounts_filter)))
+    if no_account:
+        # "Movimientos sin cuenta" — orphan rows (account_id IS NULL). These
+        # float: compute_account_balances excludes them, so they never show in
+        # any account's saldo. The native 'Sin cuenta' screen uses this to
+        # surface them for assignment. Composable with the other filters.
+        filters.append(Transaction.account_id.is_(None))
 
     categories_filter = []
     if category_id is not None:
@@ -186,9 +206,13 @@ def _build_filters(
         filters.append(Transaction.transaction_date <= to_date)
     if kind == "income":
         filters.append(Transaction.transfer_id.is_(None))
+        # Phase 7d: goal refunds are not income.
+        filters.append(Transaction.goal_id.is_(None))
         filters.append(Transaction.amount > 0)
     elif kind == "expense":
         filters.append(Transaction.transfer_id.is_(None))
+        # Phase 7d: goal aportes are savings, not spending.
+        filters.append(Transaction.goal_id.is_(None))
         filters.append(Transaction.amount < 0)
     elif kind == "transfer":
         filters.append(Transaction.transfer_id.is_not(None))
@@ -293,6 +317,10 @@ async def list_transactions(
     sort_by: SortBy = Query(default="date"),
     sort_dir: SortDir = Query(default="desc"),
     include_archived: bool = Query(default=False),
+    no_account: bool = Query(
+        default=False,
+        description="Solo movimientos sin cuenta asignada (account_id IS NULL).",
+    ),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(current_user),
 ):
@@ -310,6 +338,7 @@ async def list_transactions(
         max_amount=max_amount,
         q=q,
         include_archived=include_archived,
+        no_account=no_account,
     )
 
     count_result = await db.execute(select(func.count()).where(*filters))
@@ -481,7 +510,9 @@ def _enforce_bulk_eligible(
     bad = [
         str(t.id)
         for t in txns
-        if t.status != "confirmed" or t.transfer_id is not None
+        if t.status != "confirmed"
+        or t.transfer_id is not None
+        or t.goal_id is not None
     ]
     if bad:
         raise HTTPException(
@@ -491,7 +522,7 @@ def _enforce_bulk_eligible(
                 "ids": bad,
                 "message": (
                     "No se pueden modificar en bulk: filas pendientes de "
-                    "aprobar o partes de una transferencia."
+                    "aprobar, partes de una transferencia o aportes de metas."
                 ),
             },
         )
@@ -632,6 +663,16 @@ async def update_transaction(
             status_code=409,
             detail="Editá la transferencia, no sus movimientos individuales.",
         )
+    if txn.goal_id is not None:
+        # Phase 7d: aportes/devoluciones are machine-managed — also keeps
+        # envelope_id off goal flows (savings sobres stay allocation-only).
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Este movimiento pertenece a una meta de ahorro. "
+                "Gestionalo desde la meta."
+            ),
+        )
     if txn.archived:
         raise HTTPException(
             status_code=409,
@@ -651,9 +692,95 @@ async def update_transaction(
         if category_result.scalar_one_or_none() is None:
             raise HTTPException(status_code=400, detail="Categoría inválida.")
 
+    if "envelope_id" in update_data and update_data["envelope_id"] is not None:
+        # Owner OR a member of a shared envelope's root may assign here. The txn
+        # fetch above is user-scoped, so a member still only ever moves their OWN
+        # transaction — this just allows the destination to be a shared envelope.
+        if not await can_assign_transaction_to_envelope(
+            db, user_id=user.id, envelope_id=update_data["envelope_id"]
+        ):
+            raise HTTPException(status_code=400, detail="Sobre inválido.")
+
+    # Reassign to another account. Balances are computed live from
+    # transactions.account_id, so changing it moves the amount between accounts
+    # for free. When the destination account uses a DIFFERENT currency, convert
+    # the amount and rewrite the row's currency to the account's — mirroring the
+    # transfers convention (each leg stored in its own account's currency) so
+    # per-account balance sums stay correct.
+    if "account_id" in update_data and update_data["account_id"] is not None:
+        account = (
+            await db.execute(
+                select(Account).where(
+                    Account.id == update_data["account_id"],
+                    Account.user_id == user.id,
+                    Account.archived.is_(False),
+                )
+            )
+        ).scalar_one_or_none()
+        if account is None:
+            raise HTTPException(status_code=400, detail="Cuenta inválida.")
+        if account.currency != txn.currency:
+            # The client edits the amount in the row's CURRENT currency, so the
+            # effective amount (edited or unchanged) is in txn.currency.
+            effective_amount = update_data.get("amount", txn.amount)
+            converted = convert(
+                Decimal(str(effective_amount)), txn.currency, account.currency
+            ).quantize(Decimal("0.01"))
+            update_data["amount"] = converted
+            txn.currency = account.currency
+
+    # Reclassification guard (gasto ↔ ingreso): a movement that ends up as
+    # income (amount > 0) cannot carry a spending-cap envelope. Force it null
+    # regardless of what the client sent — the native edit modal flips the kind
+    # by sending a sign-flipped `amount`, and balances recompute live from the
+    # sign, so no stored balance changes.
+    resulting_amount = update_data.get("amount", txn.amount)
+    if resulting_amount is not None and Decimal(str(resulting_amount)) > 0:
+        update_data["envelope_id"] = None
+
     for field, value in update_data.items():
         setattr(txn, field, value)
 
     await db.commit()
     await db.refresh(txn)
     return txn
+
+
+@router.delete("/{transaction_id}", response_model=TransactionDeleteResponse)
+async def delete_transaction_permanently(
+    transaction_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """Permanently delete a movement (app 'Eliminar definitivamente').
+
+    Distinct from archive (POST /bulk/archive), which is a reversible soft
+    delete. Guards mirror the PATCH immutability rules (shadow / transfer leg /
+    goal flow) plus the bill/debt-link guard → 409. Any stale 'posible
+    duplicado' nudge for this row is resolved in the same commit.
+    """
+    result = await db.execute(
+        select(Transaction).where(
+            Transaction.id == transaction_id,
+            Transaction.user_id == user.id,
+        )
+    )
+    txn = result.scalar_one_or_none()
+    if not txn:
+        raise HTTPException(status_code=404, detail="Transacción no encontrada.")
+
+    try:
+        await hard_delete_transaction(db, user=user, txn=txn)
+    except TransactionDeleteError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=TXN_DELETE_REASON_ES.get(
+                exc.reason_code, "No se puede eliminar este movimiento."
+            ),
+        ) from exc
+
+    await clear_duplicate_nudges_for_txn(
+        db, user_id=user.id, txn_id=transaction_id
+    )
+    await db.commit()
+    return TransactionDeleteResponse(deleted=True)

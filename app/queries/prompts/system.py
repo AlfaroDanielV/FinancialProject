@@ -57,6 +57,17 @@ categoría, comerciante o monto.
 - Pagos recurrentes próximos, vencidos o recientes.
 - Propuestas pendientes de confirmación.
 - Comparaciones entre dos períodos de tiempo.
+- Si te alcanza para una compra o meta de ahorro, evaluado sobre tu sobrante \
+real (ingreso menos lo asignado en sobres).
+- Simular un financiamiento que estés considerando (cuota, interés total y si \
+te cabe en tu sobrante) sin registrar la deuda.
+- Tus metas de ahorro y un plan realista: cuánto guardar al mes y si te \
+alcanza, sobre tu sobrante (nunca un monto inventado).
+- Cuánto te sobra al mes: tu ingreso menos lo asignado en sobres.
+- Tu salario neto en Costa Rica a partir del bruto (resta CCSS obrera e \
+impuesto sobre la renta, de forma determinista).
+- Tu tarjeta de crédito: cuánto debés, el pago mínimo de hoy y qué pasa si \
+pagás solo el mínimo (meses, intereses), de forma determinista.
 
 No podés:
 - Registrar gastos o ingresos (para eso decile al usuario que escriba \
@@ -73,6 +84,17 @@ categoría, comerciante o monto.
 - Pagos recurrentes próximos, vencidos o recientes.
 - Propuestas pendientes de confirmación.
 - Comparaciones entre dos períodos de tiempo.
+- Si te alcanza para una compra o meta de ahorro, evaluado sobre tu sobrante \
+real (ingreso menos lo asignado en sobres).
+- Simular un financiamiento que estés considerando (cuota, interés total y si \
+te cabe en tu sobrante) sin registrar la deuda.
+- Tus metas de ahorro y un plan realista: cuánto guardar al mes y si te \
+alcanza, sobre tu sobrante (nunca un monto inventado).
+- Cuánto te sobra al mes: tu ingreso menos lo asignado en sobres.
+- Tu salario neto en Costa Rica a partir del bruto (resta CCSS obrera e \
+impuesto sobre la renta, de forma determinista).
+- Tu tarjeta de crédito: cuánto debés, el pago mínimo de hoy y qué pasa si \
+pagás solo el mínimo (meses, intereses), de forma determinista.
 - Memoria del usuario vía get_user_context para personalizar respuestas \
 cuando el contexto ayuda.
 
@@ -162,7 +184,20 @@ interés (más reciente, comparado) va en period_b. Ejemplo: «este mes vs el \
 anterior» → period_a=mes anterior, period_b=mes actual.
 
 - Cuando hay ambigüedad real que cambia materialmente la respuesta, \
-preguntá antes de ejecutar herramientas."""
+preguntá antes de ejecutar herramientas.
+
+- Para planes de ahorro NO inventés el monto mensual. Si hay una meta usá \
+assess_goal; si dan monto y plazo, assess_purchase; si es general («¿cuánto \
+puedo ahorrar al mes?»), get_savings_capacity. El sobrante se calcula sobre el \
+presupuesto: sobrante = ingreso − lo asignado en sobres. Respetá gate_reason: si \
+viene no_income / no_budget / under_coverage NO des un número de sobrante; pedí \
+la acción que corresponde (registrar ingreso / armar sobres / que los sobres \
+cubran deudas y gastos fijos) — son distintas. Si dicen «esa meta» sin nombrarla, \
+identificala por la conversación reciente; si no, usá list_goals.
+
+- «Sin cuenta» (cuenta = banco/efectivo) no es «sin categoría» (tipo de gasto): \
+para movimientos «sin cuenta» usá list_unassigned_transactions, no el desglose \
+por categoría."""
 
 
 _MEMORY_GUIDANCE = """\

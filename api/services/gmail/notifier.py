@@ -57,6 +57,46 @@ def _format_amount(amount: Decimal | float, currency: str | None) -> str:
     return f"{sign_unsigned:,.2f} {currency or ''}".strip()
 
 
+def _scan_detail_suffix(result: ScanResult) -> str:
+    """Parenthetical '(N no parecían transacciones, M con errores)' so the user
+    can tell where a scan's emails went. Empty when nothing was skipped/failed —
+    without this, a batch of dropped emails reads as a silent '0 nuevas'."""
+    from bot import messages_es
+
+    parts: list[str] = []
+    if result.transactions_skipped:
+        parts.append(
+            messages_es.GMAIL_SCAN_DETAIL_SKIPPED_TPL.format(
+                n=result.transactions_skipped
+            )
+        )
+    if result.transactions_failed:
+        parts.append(
+            messages_es.GMAIL_SCAN_DETAIL_FAILED_TPL.format(
+                n=result.transactions_failed
+            )
+        )
+    if not parts:
+        return ""
+    return " (" + ", ".join(parts) + ")"
+
+
+def _all_skipped_hint(result: ScanResult) -> str:
+    """Wrong-sender hint, appended when a scan reviewed emails but matched and
+    created nothing (everything skipped) — the usual cause is a whitelisted
+    sender that doesn't send the bank's transaction alerts."""
+    from bot import messages_es
+
+    if (
+        result.messages_scanned > 0
+        and result.transactions_matched == 0
+        and result.transactions_created == 0
+        and result.transactions_skipped > 0
+    ):
+        return messages_es.GMAIL_SCAN_ALL_SKIPPED_HINT
+    return ""
+
+
 async def _resolve_chat_id(
     *, user_id: uuid.UUID, db: AsyncSession
 ) -> Optional[int]:
@@ -170,15 +210,18 @@ async def notify_run_started(
     if chat_id is None:
         return
 
+    # Copy intentionally avoids a specific day count: run_backfill clamps the
+    # window to the Gmail-connection time, so "los últimos 30 días" would
+    # overstate on a fresh setup. "correos recientes" is honest either way.
     if mode == "manual":
         text = (
-            f"Revisando los últimos {days} días… (corrida manual). "
-            f"Te aviso al final."
+            "Revisando tus correos recientes… (corrida manual). "
+            "Te aviso al final."
         )
     else:
         text = (
-            f"Empecé a revisar tus correos de los últimos {days} días. "
-            f"Te aviso cuando termine — puede tardar unos minutos."
+            "Empecé a revisar tus correos recientes. "
+            "Te aviso cuando termine — puede tardar unos minutos."
         )
     await _send(chat_id=chat_id, text=text)
 
@@ -252,7 +295,9 @@ async def notify_run_completed(
                 scanned=result.messages_scanned,
                 matched=result.transactions_matched,
                 created=result.transactions_created,
-            ),
+                detail=_scan_detail_suffix(result),
+            )
+            + _all_skipped_hint(result),
         )
         return
 
@@ -264,7 +309,9 @@ async def notify_run_completed(
                 scanned=result.messages_scanned,
                 matched=result.transactions_matched,
                 created=0,
-            ),
+                detail=_scan_detail_suffix(result),
+            )
+            + _all_skipped_hint(result),
         )
         return
 

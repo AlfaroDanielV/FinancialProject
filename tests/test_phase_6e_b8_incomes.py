@@ -14,6 +14,7 @@ Covers:
 """
 from __future__ import annotations
 
+import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -164,9 +165,11 @@ async def test_derive_cycles_creates_both_rows_with_correct_amounts(db_with_user
             assert body["created_salario_escolar"] is True
             assert body["aguinaldo"]["income_type"] == "aguinaldo"
             assert body["salario_escolar"]["income_type"] == "salario_escolar"
-            assert Decimal(str(body["aguinaldo"]["amount"])) == Decimal("600000")
+            # No hire date → full window. Aguinaldo = one month's gross.
+            # Salario escolar = 8.33% of annual gross = 600,000 × 12 × 0.0833.
+            assert Decimal(str(body["aguinaldo"]["amount"])) == Decimal("600000.00")
             assert Decimal(str(body["salario_escolar"]["amount"])) == Decimal(
-                "600000"
+                "599760.00"
             )
             assert body["aguinaldo"]["base_salary_link_id"] == salary["id"]
             assert body["salario_escolar"]["base_salary_link_id"] == salary["id"]
@@ -181,6 +184,38 @@ async def test_derive_cycles_creates_both_rows_with_correct_amounts(db_with_user
             )
             types = {row.income_type for row in rows.scalars().all()}
             assert types == {"aguinaldo", "salario_escolar"}
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_derive_cycles_prorates_by_hire_date(db_with_user):
+    """A hire date in the derive body prorates the aguinaldo on gross and is
+    persisted on the salary so a later re-derive remembers it."""
+    session, user_id = db_with_user
+    _override(session, user_id)
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            salary = await _create_salary(ac, amount="1000000")
+            resp = await ac.post(
+                f"/api/v1/recurring-incomes/{salary['id']}/derive-cycles",
+                json={"hire_date": "2026-07-01"},
+            )
+            assert resp.status_code == 201, resp.text
+            ag = Decimal(str(resp.json()["aguinaldo"]["amount"]))
+            # 1,000,000 × 153/365 (Jul 1 → Nov 30) = 419,178.08.
+            assert ag == Decimal("419178.08")
+
+        # hire_date persisted on the salary row.
+        row = (
+            await session.execute(
+                sa_select(RecurringIncome).where(
+                    RecurringIncome.id == uuid.UUID(salary["id"])
+                )
+            )
+        ).scalar_one()
+        assert row.hire_date == date(2026, 7, 1)
     finally:
         _clear()
 

@@ -86,6 +86,8 @@ def _make_result(
     scanned=0,
     matched=0,
     created=0,
+    skipped=0,
+    failed=0,
     revoked=False,
     no_whitelist=False,
     created_ids=None,
@@ -98,6 +100,8 @@ def _make_result(
         messages_scanned=scanned,
         transactions_matched=matched,
         transactions_created=created,
+        transactions_skipped=skipped,
+        transactions_failed=failed,
         revoked=revoked,
         no_whitelist=no_whitelist,
         created_transaction_ids=list(created_ids or []),
@@ -207,6 +211,94 @@ async def test_shadow_window_accumulates_ids_in_redis(
     text = captured_sends[0][1]
     assert "modo sombra" in text
     assert "10 correos" in text
+
+
+# ── skipped/failed detail suffix + wrong-sender hint ─────────────────────────
+
+
+async def test_shadow_all_skipped_shows_detail_and_wrong_sender_hint(
+    db_with_user, captured_sends
+):
+    """Daniel's bug: fresh activation (in shadow), 83 emails, 0 created/matched,
+    all skipped. The finish message must surface the skipped count AND the
+    wrong-sender hint instead of a silent '0 son nuevas'."""
+    db, user_id = db_with_user
+    await _activate(db, user_id, days_ago=0)  # in shadow
+    await _set_telegram_id(db, user_id)
+
+    await notifier_mod.notify_run_completed(
+        user_id=user_id,
+        result=_make_result(
+            user_id=user_id,
+            mode="backfill",
+            scanned=83,
+            matched=0,
+            created=0,
+            skipped=83,
+        ),
+        db=db,
+    )
+    assert len(captured_sends) == 1
+    text = captured_sends[0][1]
+    assert "modo sombra" in text
+    assert "83 no parecían transacciones" in text
+    assert "remitente" in text  # the wrong-sender hint fired
+
+
+async def test_quiet_shows_skipped_and_failed_detail_but_no_hint_when_matched(
+    db_with_user, captured_sends
+):
+    """Outside shadow, 0 created but some matched + skipped + failed: detail
+    surfaces both counts; the wrong-sender hint stays OFF because matched > 0
+    means the sender clearly is producing transactions."""
+    db, user_id = db_with_user
+    await _activate(db, user_id, days_ago=10)  # outside shadow
+    await _set_telegram_id(db, user_id)
+
+    await notifier_mod.notify_run_completed(
+        user_id=user_id,
+        result=_make_result(
+            user_id=user_id,
+            mode="manual",
+            scanned=20,
+            matched=3,
+            created=0,
+            skipped=15,
+            failed=2,
+        ),
+        db=db,
+    )
+    assert len(captured_sends) == 1
+    text = captured_sends[0][1]
+    assert "15 no parecían transacciones" in text
+    assert "2 con errores" in text
+    assert "remitente" not in text  # matched>0 → no wrong-sender hint
+
+
+async def test_no_detail_suffix_when_nothing_skipped_or_failed(
+    db_with_user, captured_sends
+):
+    """Clean scan: no parenthetical detail, no hint."""
+    db, user_id = db_with_user
+    await _activate(db, user_id, days_ago=10)  # outside shadow
+    await _set_telegram_id(db, user_id)
+
+    await notifier_mod.notify_run_completed(
+        user_id=user_id,
+        result=_make_result(
+            user_id=user_id,
+            mode="manual",
+            scanned=5,
+            matched=5,
+            created=0,
+        ),
+        db=db,
+    )
+    assert len(captured_sends) == 1
+    text = captured_sends[0][1]
+    assert "no parecían" not in text
+    assert "con errores" not in text
+    assert "remitente" not in text
 
 
 # ── outside shadow: per-transaction vs batch ─────────────────────────────────

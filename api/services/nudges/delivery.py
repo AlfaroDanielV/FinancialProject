@@ -64,11 +64,12 @@ log = logging.getLogger("nudges.delivery")
 class NudgeButton:
     """Phase 5d nudge action button.
 
-    Phase 6e B12 added the optional `url` field: when set, the renderer
-    emits a Telegram URL button instead of a callback button. URL buttons
-    bypass the act/dismiss/later state machine — they're for opening the
-    SPA via an `edit_session` magic link. `verb` stays required for
-    callback buttons; URL buttons can pass any sentinel ("link").
+    The optional `url` field: when set, the renderer emits a Telegram URL
+    button instead of a callback button. URL buttons bypass the
+    act/dismiss/later state machine. (Phase 6e B12 added this to open the
+    SPA; the SPA was retired at 6f B16 and no nudge currently sets `url`,
+    but the field stays for future https deep links.) `verb` stays
+    required for callback buttons; URL buttons can pass any sentinel ("link").
     """
 
     label: str
@@ -91,6 +92,27 @@ _BUTTONS: dict[str, list[NudgeButton]] = {
         NudgeButton("Ya pagué", "act"),
         NudgeButton("Recordame mañana", "later"),
         NudgeButton("Descartar", "dismiss"),
+    ],
+    "over_commitment": [
+        NudgeButton("Revisar", "act"),
+        NudgeButton("Más tarde", "later"),
+        NudgeButton("No mostrar más", "dismiss"),
+    ],
+    # Duplicate-transaction warning: two terminal choices. `act` deletes the
+    # likely-duplicate row; `dismiss` keeps it (clears the flag). Neither
+    # counts toward type-silence — see resolve_duplicate (a kept false positive
+    # must NOT mute duplicate detection).
+    "duplicate_transaction": [
+        NudgeButton("Eliminar", "act"),
+        NudgeButton("Conservar", "dismiss"),
+    ],
+    # Envelope-near-limit alert: `act` ("Ver sobre") just marks acted_on for
+    # now; a future native feed can route it to the envelope screen. `later`
+    # hides it this pass; `dismiss` silences the type after 2 (policy rule 2).
+    "envelope_near_limit": [
+        NudgeButton("Ver sobre", "act"),
+        NudgeButton("Más tarde", "later"),
+        NudgeButton("No mostrar más", "dismiss"),
     ],
 }
 

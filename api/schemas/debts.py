@@ -56,14 +56,44 @@ class DebtCreate(BaseModel):
         return self
 
 
-class DebtUpdate(BaseModel):
-    """Phase 6e B7 — narrowed whitelist.
+class DebtTermsExtraction(BaseModel):
+    """Phase 6f debt slice (D2) — loan terms parsed from an uploaded PDF.
 
-    Financial fields (`original_amount`, `current_balance`, `interest_rate`,
-    `minimum_payment`, `term_months`, rate fields, insurance fields,
-    `prepayment_penalty_pct`, `payments_made`) are immutable post-creation. To
-    record a refinance, create a new debt. To reconcile balance against a real
+    Returned by `POST /debts/parse-document` to PRE-FILL the native debt form;
+    it does NOT create a debt. Every loan-term field is Optional so the model
+    can honestly leave a value null instead of hallucinating one (the form
+    asks for whatever is missing). `interest_rate` is the 0–1 fraction
+    DebtCreate stores. Obeys "LLM extracts; rules decide": the deterministic
+    `POST /debts` is still the only write path.
+    """
+
+    original_amount: Optional[float] = Field(None, gt=0)
+    interest_rate: Optional[float] = Field(None, ge=0, le=1)
+    term_months: Optional[int] = Field(None, gt=0)
+    minimum_payment: Optional[float] = Field(None, gt=0)
+    lender: Optional[str] = None
+    start_date: Optional[date] = None
+    rate_type: Optional[RateTypeEnum] = None
+    includes_insurance: Optional[bool] = None
+    insurance_monthly: Optional[float] = Field(None, ge=0)
+    currency: Optional[str] = None
+    confidence: float = Field(..., ge=0, le=1)
+
+
+class DebtUpdate(BaseModel):
+    """Phase 6e B7 — narrowed whitelist (minimum_payment editable since 2026-06).
+
+    Most financial fields (`original_amount`, `current_balance`,
+    `interest_rate`, `term_months`, rate fields, insurance fields,
+    `prepayment_penalty_pct`, `payments_made`) stay immutable post-creation — to
+    record a refinance, create a new debt; to reconcile the balance against a
     statement, record a payment via `POST /debts/{id}/payments`.
+
+    The monthly payment (`minimum_payment`) IS editable: the cuota changes in
+    real life (variable-rate adjustments, renegotiation) or was mistyped at
+    entry, and it drives the amortization schedule, payoff scenarios, and the
+    affordability / savings-capacity math. The router validates it (positive,
+    below the balance, and enough to cover the monthly interest).
     """
 
     model_config = {"extra": "forbid"}
@@ -72,14 +102,18 @@ class DebtUpdate(BaseModel):
     payment_due_day: Optional[int] = Field(None, ge=1, le=31)
     account_id: Optional[uuid.UUID] = None
     notes: Optional[str] = None
+    minimum_payment: Optional[float] = Field(None, gt=0)
     is_active: Optional[bool] = None
     archived: Optional[bool] = None
+    # Fixed-expense attachment: a UUID attaches to that envelope; null detaches.
+    envelope_id: Optional[uuid.UUID] = None
 
 
 class DebtResponse(BaseModel):
     id: uuid.UUID
     user_id: uuid.UUID
     account_id: Optional[uuid.UUID]
+    envelope_id: Optional[uuid.UUID] = None
     name: str
     debt_type: str
     lender: Optional[str]
@@ -118,6 +152,7 @@ class DebtSummary(BaseModel):
     payment_due_day: int
     is_active: bool
     archived: bool = False
+    envelope_id: Optional[uuid.UUID] = None
 
     model_config = {"from_attributes": True}
 

@@ -16,7 +16,6 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from urllib.parse import urlencode
 
 import bcrypt
 from sqlalchemy import select, update
@@ -32,7 +31,9 @@ GENERIC_REJECT = "Link inválido o expirado. Pedile uno nuevo al bot con /setup.
 
 @dataclass
 class GeneratedLink:
-    url: str
+    # Phase 6f B16: the SPA `url` field was removed with the SPA. Callers
+    # build their own URL from `raw_token` — the native deep link
+    # (`bot.deep_link.mint_native_deep_link`) formats `ledgercr://exchange`.
     raw_token: str
     record_id: uuid.UUID
 
@@ -55,7 +56,7 @@ def _validate_target_path(target_path: str | None) -> str | None:
         or target_path.startswith("//")
         or "://" in target_path
     ):
-        raise ValueError("target_path debe ser una ruta relativa del SPA.")
+        raise ValueError("target_path debe ser una ruta relativa.")
     return target_path
 
 
@@ -96,11 +97,7 @@ async def generate_link(
     await session.commit()
     await session.refresh(record)
 
-    query = {"token": raw_token}
-    if clean_target_path is not None:
-        query["path"] = clean_target_path
-    url = f"{settings.spa_base_url.rstrip('/')}/?{urlencode(query)}"
-    return GeneratedLink(url=url, raw_token=raw_token, record_id=record.id)
+    return GeneratedLink(raw_token=raw_token, record_id=record.id)
 
 
 @dataclass

@@ -31,6 +31,41 @@ def pairing_key(code: str) -> str:
     return f"telegram:pairing:{code}"
 
 
+# Phase 8 B1: Telegram cold-start registration. Keyed by telegram_user_id
+# (NOT user_id — the user row doesn't exist yet). 15 min gives room to type
+# an email + name without feeling rushed.
+REGISTRATION_TTL_S = 15 * 60
+
+
+def registration_key(telegram_user_id: int | str) -> str:
+    return f"telegram:registration:{telegram_user_id}"
+
+
+# Phase 6f B3: device-login codes minted by /login in the Telegram bot,
+# consumed by the native app via POST /api/v1/auth/device-code/exchange.
+# Different namespace from `telegram:pairing:*` because pairing binds a
+# Telegram account to a user; device login authenticates an already-paired
+# user on a new device. TTL is the same 5 min — same alphabet, same length.
+DEVICE_CODE_TTL_S = 300
+
+
+def device_code_key(code: str) -> str:
+    return f"auth:device_code:{code}"
+
+
+# Shared envelopes: a share code minted by the owner via
+# POST /api/v1/envelopes/{id}/share, redeemed by up to 9 invitees via
+# POST /api/v1/envelopes/redeem. Unlike device/pairing codes this is MULTI-USE —
+# `redeem` reads (does NOT pop) the key, so several people can join with the same
+# code until it expires or the member cap is hit. `envelope:` namespace because
+# this is a native-app sharing flow, not durable bot state. 24h window.
+ENVELOPE_SHARE_CODE_TTL_S = 24 * 60 * 60
+
+
+def share_code_key(code: str) -> str:
+    return f"envelope:share_code:{code}"
+
+
 def pending_key(user_id: uuid.UUID | str) -> str:
     return f"telegram:pending:{user_id}"
 

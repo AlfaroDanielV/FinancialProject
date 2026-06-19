@@ -2,14 +2,16 @@ import uuid
 from datetime import date, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ..config import settings
 from ..database import get_db
 from ..dependencies import current_user
 from ..models.debt import Debt, DebtPayment
+from ..models.transaction import Transaction
 from ..models.user import User
 from ..schemas.debts import (
     AmortizationRow,
@@ -21,6 +23,7 @@ from ..schemas.debts import (
     DebtPayoffEntry,
     DebtResponse,
     DebtSummary,
+    DebtTermsExtraction,
     DebtUpdate,
     EarlyPayoffRequest,
     EarlyPayoffResponse,
@@ -32,6 +35,10 @@ from ..schemas.debts import (
     ScheduleSummary,
     UpcomingPayment,
 )
+from ..services.envelopes import is_valid_envelope_target
+from ..services.llm_extractor import extract_debt_terms
+
+from bot.app import get_llm_client
 from ..services.amortization import (
     DebtInfo,
     compare_payoff_strategies,
@@ -44,6 +51,9 @@ from ..services.amortization import (
 )
 
 router = APIRouter(prefix="/api/v1/debts", tags=["debts"])
+
+_PDF_MIME_TYPE = "application/pdf"
+_MAX_PDF_BYTES = 4 * 1024 * 1024  # 4 MB pre-base64; Azure Blob is P8
 
 VARIABLE_RATE_NOTICE = (
     "Este cálculo usa la tasa actual. La tasa variable ({ref} + spread) "
@@ -91,6 +101,43 @@ async def create_debt(
     await db.commit()
     await db.refresh(debt)
     return debt
+
+
+@router.post("/parse-document", response_model=DebtTermsExtraction)
+async def parse_debt_document(
+    file: UploadFile = File(..., description="Loan contract or statement (PDF)"),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> DebtTermsExtraction:
+    """Phase 6f debt slice (D2) — read loan terms from an uploaded PDF.
+
+    Sends the PDF to Claude as a `document` block (Haiku first, Sonnet retry on
+    low confidence) and returns the extracted `DebtTermsExtraction` to PRE-FILL
+    the native debt form. It does NOT create a debt — the deterministic
+    `POST /debts` remains the only write path ("LLM extracts; rules decide").
+    """
+    media_type = file.content_type or ""
+    if media_type != _PDF_MIME_TYPE:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported document type '{media_type}'. Only PDF is accepted.",
+        )
+
+    pdf_bytes = await file.read()
+    if len(pdf_bytes) > _MAX_PDF_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"PDF exceeds {_MAX_PDF_BYTES // (1024 * 1024)} MB limit.",
+        )
+
+    return await extract_debt_terms(
+        user=user,
+        pdf_bytes=pdf_bytes,
+        client=get_llm_client(),
+        haiku_model=settings.llm_extraction_model,
+        sonnet_model=settings.llm_query_model,
+        db=db,
+    )
 
 
 @router.get("", response_model=list[DebtSummary])
@@ -286,6 +333,35 @@ async def update_debt(
         raise HTTPException(status_code=404, detail="Deuda no encontrada.")
 
     update_data = payload.model_dump(exclude_unset=True)
+
+    env_id = update_data.get("envelope_id")
+    if env_id is not None and not await is_valid_envelope_target(
+        db, user_id=user.id, envelope_id=env_id
+    ):
+        raise HTTPException(status_code=400, detail="Sobre inválido.")
+
+    # The cuota is the one editable financial field; validate it the same way
+    # the create form does. A payment ≥ the balance isn't a loan, and a payment
+    # that doesn't cover the monthly interest never amortizes (the balance only
+    # grows). Both are nonsensical for an amortizing debt.
+    new_payment = update_data.get("minimum_payment")
+    if new_payment is not None:
+        balance = float(debt.current_balance)
+        if balance > 0 and new_payment >= balance:
+            raise HTTPException(
+                status_code=400,
+                detail="La cuota mensual no puede ser mayor o igual al saldo de la deuda.",
+            )
+        monthly_interest = balance * float(debt.interest_rate) / 12.0
+        if new_payment <= monthly_interest:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "La cuota mensual no cubre el interés del mes; con ese monto "
+                    "el saldo nunca bajaría."
+                ),
+            )
+
     for field, value in update_data.items():
         setattr(debt, field, value)
 
@@ -346,6 +422,22 @@ async def record_payment(
         notes=payload.notes,
     )
     db.add(payment)
+
+    # Fixed-expense attachment (B2): if the debt is attached to an envelope and
+    # this payment links a transaction, tag that transaction to the envelope so
+    # the actual payment counts as spend there and the reservation releases the
+    # same cycle (never both).
+    if payload.transaction_id is not None and debt.envelope_id is not None:
+        txn = (
+            await db.execute(
+                select(Transaction).where(
+                    Transaction.id == payload.transaction_id,
+                    Transaction.user_id == user.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if txn is not None and txn.envelope_id is None:
+            txn.envelope_id = debt.envelope_id
 
     debt.current_balance = remaining
     debt.payments_made = (debt.payments_made or 0) + 1

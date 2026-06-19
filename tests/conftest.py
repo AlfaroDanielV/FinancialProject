@@ -90,6 +90,7 @@ _CLEANUP_TABLES = (
     "debts",
     "transfers",
     "transactions",
+    "envelopes",
     "user_categories",
     "goals",
     "accounts",

@@ -31,6 +31,13 @@ class NotificationEvent(Base):
         ForeignKey("custom_events.id", ondelete="CASCADE"),
         nullable=True,
     )
+    # B5: a PROJECTED debt cuota (no bill_occurrence row). Exactly one of
+    # {bill_occurrence_id, custom_event_id, debt_id} is set (CHECK, migration 0027).
+    debt_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("debts.id", ondelete="CASCADE"),
+        nullable=True,
+    )
     trigger_date: Mapped[date] = mapped_column(Date, nullable=False)
     advance_days: Mapped[int] = mapped_column(Integer, nullable=False)
     channel: Mapped[str] = mapped_column(String(20), nullable=False, default="in_app")

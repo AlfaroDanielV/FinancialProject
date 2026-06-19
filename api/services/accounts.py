@@ -13,11 +13,16 @@ from decimal import Decimal
 from typing import Iterable, Optional
 
 from rapidfuzz import fuzz, utils
-from sqlalchemy import case, func, select
+from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.account import Account
+from ..models.account_anchor import AccountAnchor
+from ..models.debt import Debt
+from ..models.goal import Goal
+from ..models.recurring_bill import RecurringBill
 from ..models.transaction import Transaction
+from ..models.transfer import Transfer
 from ..models.user import User
 
 # Above this ratio we consider a fuzzy name a confident hit. Below, the
@@ -90,18 +95,27 @@ async def compute_account_balances(
     account_ids: Optional[Iterable[uuid.UUID]] = None,
     today: date | None = None,
 ) -> dict[uuid.UUID, AccountBalances]:
-    """Return per-account current and month-start balances.
+    """Return per-account current and month-start balances (anchor-based).
 
-    Both balances reuse the same convention as the dashboard:
-    `initial_balance + Σ confirmed transactions` for the user, scoped per
-    account via `transactions.account_id`. Transfers are NOT excluded — a
-    transfer's two linked transactions move balance between accounts and
-    must net out to zero across the user.
+    Balance is projected forward from the account's latest reconciliation
+    anchor (bank reconciliation, not bottom-up reconstruction)::
+
+        current     = anchor.value + Σ(txns transaction_date > effective_date)
+        month_start = anchor.value + Σ(effective_date < txn_date < month_start)
+
+    Confirmed, non-archived txns only. The strict `>` is day-level (rule #6): a
+    txn dated ON the anchor day is pre-anchor (already in the stated balance).
+    An account with NO anchor (created before onboarding wired one) falls back
+    to `initial_balance + Σ(all)` — byte-identical to the pre-anchor behavior,
+    so nothing changes until a user actually anchors/re-anchors. Transfers are
+    NOT excluded — a transfer's two legs move balance between accounts.
     """
     ids = list(account_ids) if account_ids is not None else None
     if ids is not None and not ids:
         return {}
 
+    # Per-account base value: the account's initial_balance (pre-anchor
+    # fallback), overridden by its latest anchor's value when one exists.
     base_stmt = select(
         Account.id,
         Account.initial_balance,
@@ -109,13 +123,38 @@ async def compute_account_balances(
     if ids is not None:
         base_stmt = base_stmt.where(Account.id.in_(ids))
     base_result = await db.execute(base_stmt)
-    initial_by_account: dict[uuid.UUID, Decimal] = {
+    base_by_account: dict[uuid.UUID, Decimal] = {
         account_id: Decimal(initial or 0)
         for account_id, initial in base_result.fetchall()
     }
-    if not initial_by_account:
+    if not base_by_account:
         return {}
+    scope_ids = list(base_by_account.keys())
 
+    # Latest anchor per account — DISTINCT ON (account_id) ordered by the
+    # composite index (never a correlated subquery → no N+1). The anchor value
+    # overrides the base; effective_date is the exclusive lower bound for sums.
+    anchor_stmt = (
+        select(
+            AccountAnchor.account_id,
+            AccountAnchor.value,
+            AccountAnchor.effective_date,
+        )
+        .where(AccountAnchor.account_id.in_(scope_ids))
+        .order_by(
+            AccountAnchor.account_id,
+            AccountAnchor.effective_date.desc(),
+            AccountAnchor.created_at.desc(),
+        )
+        .distinct(AccountAnchor.account_id)
+    )
+    for account_id, value, _eff in (await db.execute(anchor_stmt)).all():
+        base_by_account[account_id] = Decimal(value)
+
+    # Post-anchor sums. The per-account lower bound comes from the latest-anchor
+    # subquery join; an account with no anchor (eff IS NULL) includes every row.
+    latest_anchor = anchor_stmt.subquery()
+    eff = latest_anchor.c.effective_date
     month_start = _month_start(today)
     sums_stmt = (
         select(
@@ -134,11 +173,16 @@ async def compute_account_balances(
                 0,
             ).label("before_month"),
         )
+        .select_from(Transaction)
+        .outerjoin(
+            latest_anchor, latest_anchor.c.account_id == Transaction.account_id
+        )
         .where(
             Transaction.user_id == user_id,
-            Transaction.account_id.in_(initial_by_account.keys()),
+            Transaction.account_id.in_(scope_ids),
             Transaction.status == "confirmed",
             Transaction.archived.is_(False),
+            or_(eff.is_(None), Transaction.transaction_date > eff),
         )
         .group_by(Transaction.account_id)
     )
@@ -149,12 +193,159 @@ async def compute_account_balances(
     }
 
     balances: dict[uuid.UUID, AccountBalances] = {}
-    for account_id, initial in initial_by_account.items():
+    for account_id, base in base_by_account.items():
         total, before_month = sums_by_account.get(
             account_id, (Decimal("0"), Decimal("0"))
         )
         balances[account_id] = AccountBalances(
-            current=initial + total,
-            month_start=initial + before_month,
+            current=base + total,
+            month_start=base + before_month,
         )
     return balances
+
+
+# ── Phase 7b B2: TRUE hard delete with cascade ────────────────────────────────
+
+
+@dataclass(frozen=True)
+class AccountDeleteImpact:
+    """What a hard delete would remove / detach. Shown to the user BEFORE
+    confirming (every financial action must be auditable)."""
+
+    transactions: int
+    transfers: int
+    debts_detached: int
+    bills_detached: int
+    goals_detached: int
+
+
+async def compute_delete_impact(
+    db: AsyncSession, *, user_id: uuid.UUID, account_id: uuid.UUID
+) -> AccountDeleteImpact:
+    async def _count(stmt) -> int:
+        return int((await db.execute(stmt)).scalar_one() or 0)
+
+    return AccountDeleteImpact(
+        transactions=await _count(
+            select(func.count()).where(
+                Transaction.user_id == user_id,
+                Transaction.account_id == account_id,
+            )
+        ),
+        transfers=await _count(
+            select(func.count()).where(
+                Transfer.user_id == user_id,
+                or_(
+                    Transfer.from_account_id == account_id,
+                    Transfer.to_account_id == account_id,
+                ),
+            )
+        ),
+        debts_detached=await _count(
+            select(func.count()).where(
+                Debt.user_id == user_id, Debt.account_id == account_id
+            )
+        ),
+        bills_detached=await _count(
+            select(func.count()).where(
+                RecurringBill.user_id == user_id,
+                RecurringBill.account_id == account_id,
+            )
+        ),
+        goals_detached=await _count(
+            select(func.count()).where(
+                Goal.user_id == user_id, Goal.linked_account_id == account_id
+            )
+        ),
+    )
+
+
+async def hard_delete_account(
+    db: AsyncSession, *, user_id: uuid.UUID, account: Account
+) -> AccountDeleteImpact:
+    """Permanently delete an account and ALL its transactions (Phase 7b B2).
+
+    Cascade contract (decision note: Account Hard Delete With Cascade):
+    - The account's transactions are DELETED. Their referrers survive with the
+      link nulled (debt_payments/bill_occurrences via migration 0028;
+      goal_contributions/gmail_messages_seen were already SET NULL).
+    - Debts, recurring bills, and goals linked to the account are DETACHED,
+      never deleted.
+    - Transfers touching the account are deleted; the surviving leg in the
+      OTHER account keeps its amount (that account's balance history must not
+      change), loses its transfer_id via the FK, and is annotated so the user
+      can tell why it became a plain row.
+
+    One DB transaction; the caller commits. Returns the impact counts (also
+    used by the delete-impact preview endpoint).
+    """
+    impact = await compute_delete_impact(
+        db, user_id=user_id, account_id=account.id
+    )
+
+    # 1. Annotate the surviving leg of every transfer that touches this
+    #    account BEFORE deleting the transfer rows (afterwards transfer_id is
+    #    NULL and they're indistinguishable from plain transactions).
+    transfer_ids = [
+        row
+        for row in (
+            await db.execute(
+                select(Transfer.id).where(
+                    Transfer.user_id == user_id,
+                    or_(
+                        Transfer.from_account_id == account.id,
+                        Transfer.to_account_id == account.id,
+                    ),
+                )
+            )
+        ).scalars()
+    ]
+    if transfer_ids:
+        note = f" (transferencia — cuenta «{account.name}» eliminada)"
+        await db.execute(
+            update(Transaction)
+            .where(
+                Transaction.transfer_id.in_(transfer_ids),
+                Transaction.account_id != account.id,
+            )
+            .values(
+                description=func.coalesce(Transaction.description, "") + note
+            )
+        )
+        # 2. Delete the transfer rows → surviving legs' transfer_id nulls via
+        #    the FK (transactions.transfer_id ON DELETE SET NULL).
+        await db.execute(delete(Transfer).where(Transfer.id.in_(transfer_ids)))
+
+    # 3. Detach obligations + goals (their FKs are NO ACTION / app-managed).
+    await db.execute(
+        update(Debt)
+        .where(Debt.user_id == user_id, Debt.account_id == account.id)
+        .values(account_id=None)
+    )
+    await db.execute(
+        update(RecurringBill)
+        .where(
+            RecurringBill.user_id == user_id,
+            RecurringBill.account_id == account.id,
+        )
+        .values(account_id=None)
+    )
+    await db.execute(
+        update(Goal)
+        .where(Goal.user_id == user_id, Goal.linked_account_id == account.id)
+        .values(linked_account_id=None)
+    )
+
+    # 4. Delete the account's transactions (incl. its own former transfer
+    #    legs, whose transfer_id is now NULL).
+    await db.execute(
+        delete(Transaction).where(
+            Transaction.user_id == user_id,
+            Transaction.account_id == account.id,
+        )
+    )
+
+    # 5. Delete the account. lazy_detection_events.matched_account_id is
+    #    SET NULL at the DB level; credit_card_terms (Phase 7b B3) CASCADEs.
+    await db.delete(account)
+    return impact

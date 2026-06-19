@@ -24,6 +24,7 @@ from api.services.transactions import (
     UndoGuardError,
     delete_telegram_transaction,
 )
+from api.services.transfers import delete_transfer_with_transactions
 
 from . import messages_es
 from .pending import clear_last_action, load_last_action
@@ -44,6 +45,17 @@ async def run_undo(
     except (ValueError, TypeError):
         await clear_last_action(user_id=user.id, redis=redis)
         return False, messages_es.UNDO_NOT_FOUND
+
+    if action_type == "log_transfer":
+        # Phase 7b: a transfer undoes as one unit — the transfer row plus
+        # BOTH legs, otherwise one account keeps a phantom movement.
+        ok = await delete_transfer_with_transactions(
+            db, user_id=user.id, transfer_id=record_id
+        )
+        await clear_last_action(user_id=user.id, redis=redis)
+        if not ok:
+            return False, messages_es.UNDO_NOT_FOUND
+        return True, messages_es.UNDO_SUCCESS
 
     if action_type not in ("log_expense", "log_income"):
         await clear_last_action(user_id=user.id, redis=redis)

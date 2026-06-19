@@ -8,7 +8,10 @@ Registry at the bottom lets the orchestrator iterate without explicit
 wiring. New evaluator → import + append.
 """
 from .base import BaseNudgeEvaluator, NudgeCandidate
+from .duplicate_transaction import DuplicateTransactionEvaluator
+from .envelope_near_limit import EnvelopeNearLimitEvaluator
 from .missing_income import MissingIncomeEvaluator
+from .over_commitment import OverCommitmentEvaluator
 from .stale_pending import StalePendingEvaluator
 from .upcoming_bill import UpcomingBillEvaluator
 
@@ -17,13 +20,19 @@ ALL_EVALUATORS: list[BaseNudgeEvaluator] = [
     MissingIncomeEvaluator(),
     StalePendingEvaluator(),
     UpcomingBillEvaluator(),
+    OverCommitmentEvaluator(),
+    DuplicateTransactionEvaluator(),
+    EnvelopeNearLimitEvaluator(),
 ]
 
 __all__ = [
     "BaseNudgeEvaluator",
     "NudgeCandidate",
+    "DuplicateTransactionEvaluator",
+    "EnvelopeNearLimitEvaluator",
     "MissingIncomeEvaluator",
     "StalePendingEvaluator",
     "UpcomingBillEvaluator",
+    "OverCommitmentEvaluator",
     "ALL_EVALUATORS",
 ]

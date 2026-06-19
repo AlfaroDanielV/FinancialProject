@@ -133,6 +133,22 @@ def test_builder_includes_few_shot_examples() -> None:
     assert "dónde está la mayor fuga" in out
 
 
+def test_builder_capabilities_mention_affordability() -> None:
+    """Phase 7: the deterministic affordability/pushback capability must be
+    discoverable from the capabilities list so the LLM knows it can answer
+    "¿me alcanza para X?" — in both the memory-on and memory-off variants."""
+    from app.queries.prompts.system import (
+        _CAPABILITIES_WITH_MEMORY,
+        _CAPABILITIES_WITHOUT_MEMORY,
+    )
+
+    out = build_system_prompt(user=_user(), now=_now_utc())
+    assert "te alcanza para una compra o meta de ahorro" in out
+    # Present regardless of the insights_dispatcher_enabled flag.
+    assert "te alcanza para una compra" in _CAPABILITIES_WITH_MEMORY
+    assert "te alcanza para una compra" in _CAPABILITIES_WITHOUT_MEMORY
+
+
 def test_snapshot_for_2026_04_27_daniel() -> None:
     """Snapshot guard: any drift in the prompt fails this test loudly.
 

@@ -38,6 +38,28 @@ BASIC_EXPENSE_CRC = RecordedLLMResponse(
 )
 
 
+# ── 1b. Basic CRC income ──────────────────────────────────────────────────────
+# Input: "me pagaron 100000 colones"
+BASIC_INCOME_CRC = RecordedLLMResponse(
+    tool_input={
+        "intent": "log_income",
+        "dispatcher": "write",
+        "amount": 100000,
+        "currency": "CRC",
+        "merchant": None,
+        "category_hint": "ingreso",
+        "account_hint": None,
+        "occurred_at_hint": None,
+        "query_window": None,
+        "confidence": 0.92,
+        "raw_notes": None,
+    },
+    input_tokens=430,
+    output_tokens=45,
+    cache_read_input_tokens=380,
+)
+
+
 # ── 2. Slang amount ("5k"), no currency ───────────────────────────────────────
 # Input: "5k en gasolina"
 SLANG_AMOUNT_NO_CURRENCY = RecordedLLMResponse(
@@ -122,6 +144,142 @@ WEEKLY_BALANCE_QUERY = RecordedLLMResponse(
     },
     input_tokens=420,
     output_tokens=35,
+    cache_read_input_tokens=380,
+)
+
+
+# ── 7. Conversational goal creation — named + amount (Phase 6f) ───────────────
+# Input: "creá una meta de fondo de emergencia de 500 mil"
+CREATE_GOAL_NAMED = RecordedLLMResponse(
+    tool_input={
+        "intent": "create_goal",
+        "dispatcher": "write",
+        "amount": None,
+        "currency": None,
+        "merchant": None,
+        "category_hint": None,
+        "account_hint": None,
+        "occurred_at_hint": None,
+        "query_window": None,
+        "goal_name": "fondo de emergencia",
+        "goal_target_amount": 500000,
+        "goal_target_date": None,
+        "confidence": 0.93,
+        "raw_notes": None,
+    },
+    input_tokens=440,
+    output_tokens=50,
+    cache_read_input_tokens=380,
+)
+
+
+# ── 8. Goal creation, amount + date but no name (drives clarification) ─────────
+# Input: "quiero ahorrar 2 millones para diciembre"
+CREATE_GOAL_NO_NAME = RecordedLLMResponse(
+    tool_input={
+        "intent": "create_goal",
+        "dispatcher": "write",
+        "amount": None,
+        "currency": None,
+        "merchant": None,
+        "category_hint": None,
+        "account_hint": None,
+        "occurred_at_hint": None,
+        "query_window": None,
+        "goal_name": None,
+        "goal_target_amount": 2000000,
+        "goal_target_date": "diciembre",
+        "confidence": 0.9,
+        "raw_notes": None,
+    },
+    input_tokens=438,
+    output_tokens=48,
+    cache_read_input_tokens=380,
+)
+
+
+# ── 9. Conversational recurring-income creation — salary (Phase 6f) ───────────
+# Input: "me pagan 800 mil de salario cada quincena, el próximo el 15"
+CREATE_INCOME_SALARY = RecordedLLMResponse(
+    tool_input={
+        "intent": "create_income",
+        "dispatcher": "write",
+        "amount": 800000,
+        "currency": None,
+        "merchant": None,
+        "category_hint": None,
+        "account_hint": None,
+        "occurred_at_hint": None,
+        "query_window": None,
+        "income_type": "salary",
+        "income_frequency": "biweekly",
+        "income_next_date": "el 15",
+        "confidence": 0.92,
+        "raw_notes": None,
+    },
+    input_tokens=445,
+    output_tokens=55,
+    cache_read_input_tokens=380,
+)
+
+
+# ── 10. Conversational recurring-bill creation (Phase 6f) ─────────────────────
+# Input: "el recibo de luz me llega como 18 mil cada mes, el 5"
+CREATE_BILL_MONTHLY = RecordedLLMResponse(
+    tool_input={
+        "intent": "create_bill",
+        "dispatcher": "write",
+        "amount": 18000,
+        "currency": None,
+        "merchant": None,
+        "category_hint": "servicios",
+        "account_hint": None,
+        "occurred_at_hint": None,
+        "query_window": None,
+        "bill_name": "Luz",
+        "bill_frequency": "monthly",
+        "bill_day_of_month": 5,
+        "confidence": 0.9,
+        "raw_notes": None,
+    },
+    input_tokens=448,
+    output_tokens=58,
+    cache_read_input_tokens=380,
+)
+
+
+# ── 11. Conversational debt creation (Phase 6f) — chat → form handoff ─────────
+# Input: "tengo un préstamo de 5 millones a 5 años con el BAC" (rate unknown)
+CREATE_DEBT_BASIC = RecordedLLMResponse(
+    tool_input={
+        "intent": "create_debt",
+        "dispatcher": "write",
+        "debt_name": None,
+        "debt_principal": 5000000,
+        "debt_interest_rate": None,
+        "debt_term_months": 60,
+        "debt_lender": "BAC",
+        "confidence": 0.9,
+    },
+    input_tokens=452,
+    output_tokens=44,
+    cache_read_input_tokens=380,
+)
+
+
+# ── Phase 7b. Card payment as a transfer ──────────────────────────────────────
+# Input: "pagué la tarjeta, 80 mil"
+LOG_TRANSFER_CARD = RecordedLLMResponse(
+    tool_input={
+        "intent": "log_transfer",
+        "dispatcher": "write",
+        "amount": 80000,
+        "transfer_from_hint": None,
+        "transfer_to_hint": "tarjeta",
+        "confidence": 0.92,
+    },
+    input_tokens=452,
+    output_tokens=44,
     cache_read_input_tokens=380,
 )
 

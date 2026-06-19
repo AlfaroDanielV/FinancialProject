@@ -2,7 +2,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,9 +19,12 @@ from .routers import (
     budgets,
     calendar,
     categories,
+    chat,
+    consents,
     custom_events,
     dashboard,
     debts,
+    envelopes,
     gmail,
     goals,
     insights,
@@ -31,6 +33,7 @@ from .routers import (
     notifications,
     nudges,
     onboarding,
+    payroll,
     privacy_insights,
     queries,
     recurring_bills,
@@ -67,7 +70,17 @@ async def lifespan(app: FastAPI):
         logging.getLogger("api.main").exception(
             "Telegram bot failed to start — continuing without it."
         )
+    # Phase 5d proactive messaging: start the in-process nudge scheduler AFTER
+    # the bot so telegram_send_fn can reach the aiogram Bot singleton. Gated on
+    # settings.nudge_scheduler_enabled; a no-op when disabled.
+    from .services.nudges.scheduler import (
+        start_nudge_scheduler,
+        stop_nudge_scheduler,
+    )
+
+    start_nudge_scheduler()
     yield
+    await stop_nudge_scheduler()
     await stop_bot()
     await close_redis()
 
@@ -82,33 +95,9 @@ app = FastAPI(
 )
 
 
-def _cors_origins() -> list[str]:
-    configured = [
-        origin.strip()
-        for origin in settings.spa_cors_origins.split(",")
-        if origin.strip()
-    ]
-    if settings.is_dev:
-        configured.extend(
-            [
-                settings.spa_base_url,
-                "http://localhost:5173",
-                "http://127.0.0.1:5173",
-            ]
-        )
-    elif settings.spa_base_url:
-        configured.append(settings.spa_base_url)
-
-    return list(dict.fromkeys(configured))
-
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins(),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Phase 6f B16: CORS middleware removed with the SPA. The native app
+# (React Native / axios) and the iPhone Shortcut webhook are non-browser
+# clients that don't enforce CORS. Re-add if a browser client returns.
 
 app.include_router(users.router)
 app.include_router(accounts.router)
@@ -120,6 +109,7 @@ app.include_router(categories.router)
 app.include_router(dashboard.router)
 app.include_router(reports.router)
 app.include_router(goals.router)
+app.include_router(envelopes.router)
 app.include_router(insights.router)
 app.include_router(recurring_bills.router)
 app.include_router(bill_occurrences.router)
@@ -136,9 +126,12 @@ app.include_router(telegram.telegram_router)
 app.include_router(gmail.router)
 app.include_router(privacy_insights.router)
 app.include_router(admin_insights.router)
+app.include_router(consents.router)
 app.include_router(recurring_incomes.router)
 app.include_router(onboarding.router)
+app.include_router(payroll.router)
 app.include_router(auth.router)
+app.include_router(chat.router)
 
 # Static pages for the OAuth callback redirect targets. Kept separate
 # from the router so adding a new HTML file doesn't require code changes.

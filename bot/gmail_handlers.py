@@ -449,7 +449,7 @@ async def _send_root_menu(
 # ── /conectar_gmail ──────────────────────────────────────────────────────────
 
 
-@router.message(Command("conectar_gmail"))
+@router.message(Command("conectar_gmail", "con_mail"))
 async def on_connect_gmail(message: Message) -> None:
     resolved = await _resolve_user(message)
     if resolved is None:
@@ -496,7 +496,7 @@ async def on_connect_gmail(message: Message) -> None:
 # ── /desconectar_gmail ───────────────────────────────────────────────────────
 
 
-@router.message(Command("desconectar_gmail"))
+@router.message(Command("desconectar_gmail", "desc_mail"))
 async def on_disconnect_gmail(message: Message) -> None:
     resolved = await _resolve_user(message)
     if resolved is None:
@@ -588,7 +588,7 @@ async def on_disconnect_callback(cb: CallbackQuery) -> None:
 # ── /estado_gmail ────────────────────────────────────────────────────────────
 
 
-@router.message(Command("estado_gmail"))
+@router.message(Command("estado_gmail", "est_mail"))
 async def on_status_gmail(message: Message) -> None:
     resolved = await _resolve_user(message)
     if resolved is None:
@@ -833,7 +833,7 @@ async def on_remove_bank_cancel(cb: CallbackQuery) -> None:
 # ── /aprobar_shadow / /rechazar_shadow (Block C.2) ───────────────────────────
 
 
-@router.message(Command("aprobar_shadow"))
+@router.message(Command("aprobar_shadow", "ok_shadow"))
 async def on_approve_shadow(message: Message) -> None:
     """Promote all of the user's gmail-source shadow rows to confirmed."""
     resolved = await _resolve_user(message)
@@ -841,31 +841,21 @@ async def on_approve_shadow(message: Message) -> None:
         return
     user, db = resolved
     try:
-        from sqlalchemy import update
+        from api.services.gmail.shadow_review import confirm_shadow
 
-        from api.models.transaction import Transaction
-
-        result = await db.execute(
-            update(Transaction)
-            .where(Transaction.user_id == user.id)
-            .where(Transaction.status == "shadow")
-            .where(Transaction.source == "gmail")
-            .values(status="confirmed")
-            .returning(Transaction.id)
-        )
-        ids = [r[0] for r in result.fetchall()]
-        await db.commit()
-        if not ids:
+        # items=None confirms ALL of the user's gmail shadow rows.
+        count = await confirm_shadow(db, user_id=user.id, items=None)
+        if not count:
             await message.answer(messages_es.GMAIL_APPROVE_SHADOW_NONE)
             return
         await message.answer(
-            messages_es.GMAIL_APPROVE_SHADOW_DONE_TPL.format(count=len(ids))
+            messages_es.GMAIL_APPROVE_SHADOW_DONE_TPL.format(count=count)
         )
     finally:
         await db.close()
 
 
-@router.message(Command("rechazar_shadow"))
+@router.message(Command("rechazar_shadow", "no_shadow"))
 async def on_reject_shadow_prompt(message: Message) -> None:
     """Confirm with an inline keyboard. The actual delete + mark
     happens on the callback."""
@@ -938,54 +928,25 @@ async def on_reject_shadow_callback(cb: CallbackQuery) -> None:
             await cb.answer(messages_es.PAIR_PROMPT, show_alert=True)
             return
 
-        from sqlalchemy import delete, select, update
+        from api.services.gmail.shadow_review import discard_shadow
 
-        from api.models.gmail_message_seen import GmailMessageSeen
-        from api.models.transaction import Transaction
-
-        # 1. Pick up all shadow gmail rows for this user.
-        rows = await db.execute(
-            select(Transaction.id, Transaction.gmail_message_id)
-            .where(Transaction.user_id == user.id)
-            .where(Transaction.status == "shadow")
-            .where(Transaction.source == "gmail")
-        )
-        targets = [(r[0], r[1]) for r in rows.fetchall()]
-        if not targets:
+        # ids=None discards ALL of the user's gmail shadow rows (mark
+        # gmail_messages_seen rejected_by_user + delete the transactions).
+        count = await discard_shadow(db, user_id=user.id, ids=None)
+        if not count:
             await cb.message.answer(messages_es.GMAIL_APPROVE_SHADOW_NONE)
             await cb.answer()
             return
 
-        gmail_ids = [g for _t, g in targets if g]
-        # 2. Mark seen rows as rejected_by_user (audit trail) BEFORE the
-        # transaction rows are deleted, because gmail_messages_seen.transaction_id
-        # has ON DELETE SET NULL — we don't lose the link, but rejecting
-        # before delete keeps the cause-and-effect ordering clean.
-        if gmail_ids:
-            await db.execute(
-                update(GmailMessageSeen)
-                .where(GmailMessageSeen.user_id == user.id)
-                .where(GmailMessageSeen.gmail_message_id.in_(gmail_ids))
-                .values(outcome="rejected_by_user")
-            )
-        # 3. Delete the shadow transactions.
-        await db.execute(
-            delete(Transaction)
-            .where(Transaction.user_id == user.id)
-            .where(Transaction.status == "shadow")
-            .where(Transaction.source == "gmail")
-        )
-        await db.commit()
-
         await cb.message.answer(
-            messages_es.GMAIL_REJECT_SHADOW_DONE_TPL.format(count=len(targets))
+            messages_es.GMAIL_REJECT_SHADOW_DONE_TPL.format(count=count)
         )
     finally:
         await db.close()
         await cb.answer()
 
 
-@router.message(Command("revisar_correos"))
+@router.message(Command("revisar_correos", "rev_mail"))
 async def on_manual_scan(message: Message) -> None:
     """Manual scan with a 30-minute cooldown. Runs days=2 (last 48h)."""
     resolved = await _resolve_user(message)

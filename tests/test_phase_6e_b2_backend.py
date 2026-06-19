@@ -49,7 +49,9 @@ async def test_goals_crud_and_contribution_endpoint(db_with_user):
                     "name": "Ahorro metas",
                     "account_type": "savings",
                     "currency": "CRC",
-                    "initial_balance": "0",
+                    # Phase 7d: contributions are funded — the account must
+                    # hold the money the aporte moves.
+                    "initial_balance": "100000",
                 },
             )
             assert account.status_code == 201, account.text
@@ -85,16 +87,27 @@ async def test_goals_crud_and_contribution_endpoint(db_with_user):
 
             contribution = await ac.post(
                 f"/api/v1/goals/{goal['id']}/contributions",
-                json={"amount": "25000"},
+                json={"amount": "25000", "account_id": account_id},
             )
             assert contribution.status_code == 200, contribution.text
             body = contribution.json()
             assert Decimal(str(body["goal"]["current_amount"])) == Decimal("25000")
             assert Decimal(str(body["contribution"]["amount"])) == Decimal("25000")
 
+            # Phase 7d: a goal holding money can't be deleted — cancel first
+            # (the refund goes back to the source account), then delete.
+            blocked = await ac.delete(f"/api/v1/goals/{goal['id']}")
+            assert blocked.status_code == 409, blocked.text
+
+            cancelled = await ac.post(f"/api/v1/goals/{goal['id']}/cancel")
+            assert cancelled.status_code == 200, cancelled.text
+            assert cancelled.json()["goal"]["status"] == "abandoned"
+            assert Decimal(
+                str(cancelled.json()["refunded_total"])
+            ) == Decimal("25000")
+
             deleted = await ac.delete(f"/api/v1/goals/{goal['id']}")
-            assert deleted.status_code == 200, deleted.text
-            assert deleted.json()["status"] == "abandoned"
+            assert deleted.status_code == 204, deleted.text
     finally:
         _clear()
 
@@ -136,7 +149,9 @@ async def test_transfer_with_fx_creates_linked_transactions_and_dashboard_exclud
                     "to_account_id": usd.json()["id"],
                     "amount": "1000",
                     "currency": "CRC",
-                    "fx_rate": "0.00195",
+                    # Canonical fx_rate = funding(CRC) per 1 destination(USD).
+                    # Mode B (amount in CRC): applied = 1000 ÷ 500 = $2.00.
+                    "fx_rate": "500",
                     "occurred_at": datetime.now(timezone.utc).isoformat(),
                     "notes": "Compra de dólares",
                 },
@@ -150,7 +165,7 @@ async def test_transfer_with_fx_creates_linked_transactions_and_dashboard_exclud
                 select(Transaction).where(Transaction.transfer_id == body["id"])
             )
             amounts = sorted(Decimal(txn.amount) for txn in txns.scalars().all())
-            assert amounts == [Decimal("-1000.00"), Decimal("1.95")]
+            assert amounts == [Decimal("-1000.00"), Decimal("2.00")]
 
             summary = await ac.get(
                 "/api/v1/dashboard/summary", params={"period": "month_current"}

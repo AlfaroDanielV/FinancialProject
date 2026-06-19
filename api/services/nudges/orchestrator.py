@@ -28,6 +28,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models.user_nudge import UserNudge, UserNudgeSilence
+from ..advice_trace import record_advice_event
 from ...schemas.nudges import NudgeEvaluateCounts, NudgeEvaluateResult
 from .evaluators import ALL_EVALUATORS, BaseNudgeEvaluator, NudgeCandidate
 
@@ -57,9 +58,9 @@ async def _active_silence_user_ids(
 
 async def _insert_candidate(
     session: AsyncSession, *, nudge_type: str, candidate: NudgeCandidate
-) -> bool:
-    """INSERT ... ON CONFLICT DO NOTHING. Returns True when a new row
-    was written, False when the (user_id, dedup_key) pair already exists."""
+) -> Optional[uuid.UUID]:
+    """INSERT ... ON CONFLICT DO NOTHING. Returns the new row's id, or None
+    when the (user_id, dedup_key) pair already exists."""
     stmt = (
         pg_insert(UserNudge)
         .values(
@@ -76,7 +77,7 @@ async def _insert_candidate(
         .returning(UserNudge.id)
     )
     result = await session.execute(stmt)
-    return result.scalar_one_or_none() is not None
+    return result.scalar_one_or_none()
 
 
 async def evaluate_all(
@@ -119,13 +120,28 @@ async def evaluate_all(
                 if candidate.user_id in silenced:
                     counts.silenced += 1
                     continue
-                inserted = await _insert_candidate(
+                new_id = await _insert_candidate(
                     session,
                     nudge_type=evaluator.nudge_type,
                     candidate=candidate,
                 )
-                if inserted:
+                if new_id is not None:
                     counts.created += 1
+                    # Phase 7e advice trace — only the verdict-shaped nudge
+                    # (over_commitment carries real engine numbers); reminder
+                    # nudges aren't advice. Own session, best-effort; a caller
+                    # rollback can orphan subject_id, which telemetry accepts.
+                    if evaluator.nudge_type == "over_commitment":
+                        await record_advice_event(
+                            user_id=candidate.user_id,
+                            kind="over_commitment_nudge",
+                            verdict="warning",
+                            inputs={"dedup_key": candidate.dedup_key},
+                            result=dict(candidate.payload),
+                            surface="nudge_evaluator",
+                            subject_type="nudge",
+                            subject_id=new_id,
+                        )
                 else:
                     counts.deduplicated += 1
 

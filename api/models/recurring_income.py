@@ -53,6 +53,12 @@ class RecurringIncome(Base):
     amount: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(14, 2), nullable=True
     )
+    # For salary incomes captured as gross via the CR calculator: the
+    # pre-deduction monthly figure. `amount` stays the NET take-home; this keeps
+    # the gross so the Ingresos edit can re-show it and recompute the net.
+    gross_monthly: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
     currency: Mapped[str] = mapped_column(
         String(3), nullable=False, default="CRC"
     )
@@ -64,6 +70,9 @@ class RecurringIncome(Base):
         ForeignKey("recurring_incomes.id", ondelete="CASCADE"),
         nullable=True,
     )
+    # Employee hire date (fecha de incorporación) on a salary row — drives the
+    # aguinaldo / salario escolar proration. NULL → full window assumed.
+    hire_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )

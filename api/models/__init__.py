@@ -1,5 +1,6 @@
 from .user import User
 from .account import Account
+from .account_anchor import AccountAnchor
 from .transaction import Transaction
 from .budget import Budget
 from .goal import Goal
@@ -28,10 +29,17 @@ from .user_insight import UserInsight, UserInsightAudit
 from .recurring_income import RecurringIncome
 from .magic_link_token import MagicLinkToken
 from .lazy_detection_event import LazyDetectionEvent
+from .envelope import Envelope
+from .envelope_member import EnvelopeMember
+from .credit_card_terms import CreditCardTerms
+from .advice_event import AdviceEvent
+from .snapshot import CashflowSnapshot, EnvelopeSnapshot
+from .consent import UserConsent
 
 __all__ = [
     "User",
     "Account",
+    "AccountAnchor",
     "Transaction",
     "Budget",
     "Goal",
@@ -63,4 +71,11 @@ __all__ = [
     "RecurringIncome",
     "MagicLinkToken",
     "LazyDetectionEvent",
+    "Envelope",
+    "EnvelopeMember",
+    "CreditCardTerms",
+    "AdviceEvent",
+    "EnvelopeSnapshot",
+    "CashflowSnapshot",
+    "UserConsent",
 ]
