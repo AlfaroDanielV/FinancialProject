@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from api.config import settings
 from api.database import get_db
@@ -206,6 +207,38 @@ async def test_reanchor_ajuste_excluded_from_income_reports(db_with_user):
     # The +125000 ajuste is excluded; only the real -25000 expense counts.
     assert summary.income_total == Decimal("0")
     assert summary.expense_total == Decimal("25000")
+
+
+async def test_apply_anchor_defaults_effective_date_to_user_today(
+    db_with_user, monkeypatch
+):
+    """Without an explicit `today`, apply_anchor stamps the user's CR calendar
+    day via clock.user_today — NOT a naive UTC date.today(). A near-midnight
+    re-anchor must not land on the wrong side of the strict-`>` boundary. See
+    `Decision - Timezone-Aware Date Boundaries (Server UTC vs CR)`."""
+    db, user_id = db_with_user
+    user = await db.get(User, user_id)
+    a = await _account(db, user_id, initial="0")
+
+    sentinel = date(2026, 6, 19)
+    monkeypatch.setattr("api.services.anchors.user_today", lambda u: sentinel)
+
+    await apply_anchor(
+        db,
+        user=user,
+        account=a,
+        value=Decimal("50000"),
+        source="reanchor",
+        write_ajuste=False,
+    )
+    await db.commit()
+
+    row = (
+        await db.execute(
+            select(AccountAnchor).where(AccountAnchor.account_id == a.id)
+        )
+    ).scalar_one()
+    assert row.effective_date == sentinel
 
 
 async def test_migrated_anchor_nudges_until_reanchor(db_with_user):

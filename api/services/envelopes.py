@@ -6,9 +6,8 @@ so the bars can never drift from the ledger. One grouped query per summary.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
-from zoneinfo import ZoneInfo
 
 import uuid
 from typing import Optional
@@ -28,6 +27,7 @@ from ..schemas.envelopes import (
     EnvelopeSummaryItem,
     EnvelopeSummaryResponse,
 )
+from .clock import user_today
 from .fx import convert
 from .income_frequency import PAYMENTS_PER_MONTH
 
@@ -40,11 +40,8 @@ _FREQ_TO_MONTHLY = PAYMENTS_PER_MONTH
 
 
 def _user_today(user: User) -> date:
-    try:
-        tz = ZoneInfo(user.timezone)
-    except Exception:  # pragma: no cover - defensive
-        tz = ZoneInfo("UTC")
-    return datetime.now(tz).date()
+    # Thin alias over the shared single source (clock.user_today).
+    return user_today(user)
 
 
 def _next_month_start(value: date) -> date:

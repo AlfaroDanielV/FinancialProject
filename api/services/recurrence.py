@@ -24,7 +24,6 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Iterable, Optional
-from zoneinfo import ZoneInfo
 
 from dateutil.relativedelta import relativedelta
 from dateutil.rrule import rrulestr
@@ -47,17 +46,12 @@ from ..models.notification_event import NotificationEvent
 from ..models.notification_rule import NotificationRule
 from ..models.recurring_bill import RecurringBill
 from ..models.transaction import Transaction
+from .clock import CR_TZ, today_cr  # single source; re-exported here for callers
 
 logger = logging.getLogger(__name__)
 
-CR_TZ = ZoneInfo("America/Costa_Rica")
-
 DEFAULT_HORIZON_MONTHS = 6
 VARIANCE_WARN_PCT = 0.20
-
-
-def today_cr() -> date:
-    return datetime.now(CR_TZ).date()
 
 
 # ─── date math ────────────────────────────────────────────────────────────────

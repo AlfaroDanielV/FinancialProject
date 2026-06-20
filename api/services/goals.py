@@ -204,7 +204,7 @@ async def compute_cancel_preview(
 
 
 async def cancel_goal_with_refunds(
-    db: AsyncSession, *, user_id: uuid.UUID, goal: Goal
+    db: AsyncSession, *, user_id: uuid.UUID, goal: Goal, today: date | None = None
 ) -> tuple[list[GoalRefundItem], Decimal]:
     """Refund every un-refunded sourced contribution (ONE positive refund
     transaction per source account — archived accounts still receive: the
@@ -215,7 +215,8 @@ async def cancel_goal_with_refunds(
 
     refunded_total = Decimal("0")
     items: list[GoalRefundItem] = []
-    today = date.today()
+    # Caller (router, has `user`) passes CR-tz today; net fallback otherwise.
+    today = today or date.today()
     for group in groups:
         if group.account is None:
             unrefundable += group.amount

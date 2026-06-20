@@ -29,6 +29,7 @@ from ..schemas.transaction import (
     TransactionResponse,
     TransactionUpdate,
 )
+from ..services.clock import user_today
 from ..services.dedup import clear_duplicate_nudges_for_txn, flag_and_notify
 from ..services.envelopes import can_assign_transaction_to_envelope
 from ..services.fx import convert
@@ -99,7 +100,9 @@ async def shortcut_transaction(
         merchant=payload.merchant,
         description=payload.description,
         category=payload.category,
-        transaction_date=payload.transaction_date or date.today(),
+        # CR-tz today, not naive UTC date.today() — a near-midnight capture
+        # must land on the user's calendar day. See clock.user_today.
+        transaction_date=payload.transaction_date or user_today(user),
         source="shortcut",
     )
     db.add(txn)

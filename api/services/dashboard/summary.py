@@ -24,6 +24,7 @@ from ...schemas.dashboard import (
     DashboardSummary,
 )
 from ..accounts import compute_account_balances
+from ..clock import user_today
 from ..anchors import AJUSTE_CATEGORY
 
 
@@ -233,7 +234,8 @@ async def get_dashboard_summary(
 ) -> DashboardSummary:
     display_currency = user.display_currency or user.currency or "CRC"
     accounts_count, active_goals_count = await _active_counts(db, user.id)
-    window = _period_window(period)
+    # User-tz today so "este mes" boundaries don't roll a day early under UTC.
+    window = _period_window(period, user_today(user))
     by_ccy = await _balance_split(db, user.id)
     available_balance, savings_balance = by_ccy.get(
         display_currency, (Decimal("0"), Decimal("0"))
