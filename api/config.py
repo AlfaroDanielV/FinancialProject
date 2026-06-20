@@ -89,6 +89,15 @@ class Settings(BaseSettings):
     # the silent `useMagicLinkListener` exchanges the token for a session JWT.
     native_app_scheme: str = "ledgercr"
 
+    # Apple App Review reviewer bypass (P8 / TestFlight). Ledger CR's only login
+    # is a single-use, 5-minute Telegram `/login` code, which an Apple reviewer
+    # cannot obtain. When BOTH are set, `apple_review_demo_code` is a STATIC,
+    # reusable device code that signs in as the `apple_review_demo_email` user —
+    # purely so Beta App Review can enter the app. Leave BOTH empty in normal
+    # operation; set them only for the review window and unset after approval.
+    apple_review_demo_code: str = ""
+    apple_review_demo_email: str = ""
+
     @property
     def is_dev(self) -> bool:
         return self.environment == "development"

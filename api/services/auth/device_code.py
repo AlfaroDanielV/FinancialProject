@@ -36,9 +36,10 @@ import uuid
 from typing import Optional
 
 from redis.asyncio import Redis
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...config import settings
 from ...models.user import User
 from bot.redis_keys import DEVICE_CODE_TTL_S, device_code_key
 
@@ -85,7 +86,27 @@ async def consume_device_code(
     only one of the two pipelines can observe the value before the
     other's delete lands.
     """
-    key = device_code_key(normalize_code(code))
+    normalized = normalize_code(code)
+
+    # Apple App Review bypass (P8 / TestFlight). A static, reusable reviewer
+    # code that does NOT touch Redis (so it can't be consumed) and resolves to
+    # the configured demo user. Env-gated: empty `apple_review_demo_code`
+    # disables it entirely. Unset both settings once the beta is approved.
+    demo_code = settings.apple_review_demo_code
+    if demo_code and normalized == normalize_code(demo_code):
+        demo_email = settings.apple_review_demo_email
+        if not demo_email:
+            log.warning("apple_review_demo_code set but apple_review_demo_email empty")
+            return None
+        result = await db.execute(
+            select(User).where(func.lower(User.email) == demo_email.strip().lower())
+        )
+        user = result.scalar_one_or_none()
+        if user is None:
+            log.warning("apple_review demo user not found email=%s", demo_email)
+        return user
+
+    key = device_code_key(normalized)
     async with redis.pipeline(transaction=True) as pipe:
         pipe.get(key)
         pipe.delete(key)

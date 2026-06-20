@@ -18,9 +18,26 @@
         "simulator": false
       },
       "channel": "preview"
+    },
+    "production": {
+      "distribution": "store",
+      "channel": "production",
+      "autoIncrement": true,
+      "ios": {
+        "resourceClass": "m-medium"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://api.keystonefinance-atemporal.com"
+      }
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "ios": {
+        "ascApiKeyPath": "/home/alaroda/AuthKey_246WU6U47T.p8",
+        "ascApiKeyId": "246WU6U47T",
+        "ascApiKeyIssuerId": "9de47392-f88d-44d2-a2e9-e204035517d1"
+      }
+    }
   }
 }

@@ -15,12 +15,13 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.danielalfaro.ledgercr.dev",
+      "bundleIdentifier": "com.danielalfaro.ledgercr",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSCameraUsageDescription": "Tomá una foto del recibo para registrar la transacción automáticamente.",
         "NSPhotoLibraryUsageDescription": "Elegí una foto del recibo para registrar la transacción automáticamente."
-      }
+      },
+      "buildNumber": "2"
     },
     "web": {
       "bundler": "metro",
@@ -39,7 +40,22 @@
     ],
     "extra": {
       "phase": "6f",
-      "block": "debt-D3"
+      "block": "debt-D3",
+      "eas": {
+        "projectId": "be32f15e-2d4e-4297-85d6-f8ee1da01cc7"
+      }
+    },
+    "owner": "alfaroda",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/be32f15e-2d4e-4297-85d6-f8ee1da01cc7"
+    },
+    "android": {
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
     }
   }
 }

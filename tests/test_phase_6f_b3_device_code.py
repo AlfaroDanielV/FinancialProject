@@ -27,6 +27,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import update
 
+from api.config import settings
 from api.database import get_db
 from api.main import app
 from api.models.user import User
@@ -260,5 +261,53 @@ async def test_device_code_concurrent_exchanges_one_wins(db_with_user):
             a, b = await asyncio.gather(_exchange(ac, code), _exchange(ac, code))
         statuses = sorted([a.status_code, b.status_code])
         assert statuses == [200, 401], (a.status_code, b.status_code)
+    finally:
+        _clear_db_override()
+
+
+# ── 9. Apple App Review bypass: static, reusable, env-gated ───────────────────
+
+
+@pytest.mark.asyncio
+async def test_apple_review_demo_code_is_reusable(db_with_user, monkeypatch):
+    """The reviewer bypass code is static and does NOT touch Redis, so it
+    signs in repeatedly (unlike a real device code). It resolves to the
+    `apple_review_demo_email` user."""
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+
+    monkeypatch.setattr(settings, "apple_review_demo_code", "REVIEW")
+    monkeypatch.setattr(settings, "apple_review_demo_email", user.email)
+
+    _override_db(session)
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            # Lower-case + whitespace still normalizes to the configured code.
+            first = await _exchange(ac, " review ")
+            assert first.status_code == 200, first.text
+            assert first.json()["user_id"] == str(user_id)
+
+            # Reusable: a second exchange of the same static code still works.
+            second = await _exchange(ac, "REVIEW")
+            assert second.status_code == 200, second.text
+    finally:
+        _clear_db_override()
+
+
+@pytest.mark.asyncio
+async def test_apple_review_demo_code_disabled_by_default(db_with_user, monkeypatch):
+    """With the demo code unset (production default), the same string is
+    just an unknown device code → 401. No accidental open door."""
+    session, _user_id = db_with_user
+    monkeypatch.setattr(settings, "apple_review_demo_code", "")
+    monkeypatch.setattr(settings, "apple_review_demo_email", "")
+
+    _override_db(session)
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await _exchange(ac, "REVIEW")
+        assert resp.status_code == 401
     finally:
         _clear_db_override()
