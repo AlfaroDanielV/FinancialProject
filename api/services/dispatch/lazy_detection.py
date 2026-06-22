@@ -89,6 +89,18 @@ def match_account_hint(
     if not accounts:
         return AccountHintMatch(status="unknown", account=None, score=None)
 
+    # An exact name match wins outright. `_normalize` preserves the currency
+    # symbol (only `_compact` strips ₡/$), so dual-currency cards named
+    # "Promerica ₡" and "Promerica $" stay distinguishable here. Without this,
+    # both compact to "promerica" and tie at 1.0 below → a permanent
+    # "ambiguous" loop no reply can break (a tapped button label is routed back
+    # as a text hint and re-normalized just like a typed one). The partial
+    # unique index accounts(user_id, name) WHERE is_active guarantees at most
+    # one active account per exact name.
+    exact = [a for a in accounts if _normalize(a.name) == normalized]
+    if len(exact) == 1:
+        return AccountHintMatch(status="matched", account=exact[0], score=1.0)
+
     scored = sorted(
         ((_score(hint, account.name), account) for account in accounts),
         key=lambda pair: pair[0],

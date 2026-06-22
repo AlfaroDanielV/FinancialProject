@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     # Session JWT lifetime (shared by magic-link + device-code exchange). The
     # SPA `fa_session` cookie was removed at Phase 6f B16; the bearer JWT keeps
     # this TTL.
-    session_ttl_s: int = 14400  # 4h
+    session_ttl_s: int = 2592000  # 30 days (the native biometric lock gates access on each open)
     bcrypt_rounds: int = 12
 
     # Native app deep links (Phase 6f B15). Custom URL scheme registered in

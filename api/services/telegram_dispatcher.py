@@ -183,6 +183,23 @@ def _account_options(accounts: list[Any]) -> list[str]:
     return [a.name for a in accounts[:MAX_ACCOUNT_OPTIONS]]
 
 
+def _accounts_in_currency(accounts: list[Any], currency: str | None) -> list[Any]:
+    """Active accounts whose currency matches `currency` (defaulting CRC).
+
+    Breaks the dual-currency ambiguity: two cards that share a base name and
+    differ only by the ₡/$ suffix (e.g. "Promerica ₡" / "Promerica $") both
+    normalize+compact to the same token in `match_account_hint` (the matcher
+    strips the symbol), so a hint can never pick between them — the user gets
+    an unbreakable "¿De qué cuenta?" loop. A ₡ movement can only hit a ₡
+    account, so filtering by the movement's currency leaves a single candidate.
+    Returns the (possibly empty) filtered list; callers decide the fallback.
+    """
+    cur = (currency or "CRC").upper()
+    return [
+        a for a in accounts if (getattr(a, "currency", None) or "CRC").upper() == cur
+    ]
+
+
 # ── Spanish relative-date resolver ────────────────────────────────────────────
 # Small on purpose — if you find yourself adding to this, reach for the
 # occurred_at_hint field in the prompt rather than growing the table. The
@@ -391,11 +408,16 @@ async def _dispatch_log(
     # detection: unknown account/bank names prompt account creation instead
     # of silently falling back to another account.
     accounts = await list_active(user, db)
+    # Dual-currency disambiguation: restrict candidates to the movement's
+    # currency so two cards differing only by the ₡/$ suffix ("Promerica ₡" /
+    # "Promerica $") don't tie in match_account_hint. Fall back to all accounts
+    # when none match — a single mismatched account is still pickable.
+    candidates = _accounts_in_currency(accounts, resolved_currency) or accounts
     account = None
     telemetry_events: list[LazyDetectionTelemetry] = []
 
     if extraction.account_hint:
-        match = match_account_hint(extraction.account_hint, accounts)
+        match = match_account_hint(extraction.account_hint, candidates)
         hint_type = classify_hint_type(extraction.account_hint)
         telemetry_events.append(
             LazyDetectionTelemetry(
@@ -418,7 +440,7 @@ async def _dispatch_log(
                 awaiting_field="account",
                 partial=extraction.model_dump(mode="json"),
                 telemetry_events=telemetry_events,
-                options=_account_options(accounts),
+                options=_account_options(candidates),
             )
         else:
             return LazyDetectionPrompt(
@@ -433,8 +455,13 @@ async def _dispatch_log(
             )
     else:
         account = await resolve_account(user, None, db)
+        # resolve_account abstains when there are multiple accounts; if exactly
+        # one matches the movement's currency, take it (the dual-currency case
+        # where the other card is in the other moneda).
+        if account is None and len(candidates) == 1:
+            account = candidates[0]
 
-    account_required_but_not_chosen = len(accounts) > 1 and account is None
+    account_required_but_not_chosen = len(candidates) > 1 and account is None
     if account_required_but_not_chosen:
         return AskClarification(
             question_es=(
@@ -442,7 +469,7 @@ async def _dispatch_log(
             ),
             awaiting_field="account",
             partial=extraction.model_dump(mode="json"),
-            options=_account_options(accounts),
+            options=_account_options(candidates),
         )
 
     # 4. Occurred-at resolution.
@@ -515,13 +542,18 @@ async def _dispatch_set_balance(
         )
 
     accounts = await list_active(user, db)
+    # Dual-currency disambiguation (see _accounts_in_currency).
+    candidates = (
+        _accounts_in_currency(accounts, extraction.currency or user.currency)
+        or accounts
+    )
     account = None
     if extraction.account_hint:
-        match = match_account_hint(extraction.account_hint, accounts)
+        match = match_account_hint(extraction.account_hint, candidates)
         if match.status == "matched":
             account = match.account
-    if account is None and len(accounts) == 1:
-        account = accounts[0]
+    if account is None and len(candidates) == 1:
+        account = candidates[0]
 
     if account is None:
         return AskClarification(
@@ -531,7 +563,7 @@ async def _dispatch_set_balance(
             ),
             awaiting_field="account",
             partial=extraction.model_dump(mode="json"),
-            options=_account_options(accounts),
+            options=_account_options(candidates),
         )
 
     if account.account_type == "credit":
@@ -669,12 +701,21 @@ async def _dispatch_log_transfer(
                 "o usá la pestaña Cuentas)."
             ),
         )
-    account_options = _account_options(accounts)
+    # Dual-currency disambiguation: both legs of a same-currency transfer share
+    # the moneda (cross-currency is rejected below), so restrict to the
+    # movement's currency — but only when ≥2 candidates remain, otherwise keep
+    # the full list so the existing cross-currency reject still fires instead of
+    # looping on "no pueden ser la misma". See _accounts_in_currency.
+    in_currency = _accounts_in_currency(
+        accounts, extraction.currency or user.currency
+    )
+    candidates = in_currency if len(in_currency) >= 2 else accounts
+    account_options = _account_options(candidates)
 
     to_account = None
     if extraction.transfer_to_hint:
         status, to_account = _match_transfer_account(
-            extraction.transfer_to_hint, accounts
+            extraction.transfer_to_hint, candidates
         )
         if status != "matched":
             return AskClarification(
@@ -690,7 +731,7 @@ async def _dispatch_log_transfer(
     from_account = None
     if extraction.transfer_from_hint:
         status, from_account = _match_transfer_account(
-            extraction.transfer_from_hint, accounts
+            extraction.transfer_from_hint, candidates
         )
         if status != "matched":
             return AskClarification(
@@ -706,11 +747,11 @@ async def _dispatch_log_transfer(
     # With exactly two active accounts, one resolved side determines the
     # other — stated in the summary so a wrong default is caught at confirm.
     defaulted_side: Optional[str] = None
-    if from_account is None and to_account is not None and len(accounts) == 2:
-        from_account = next(a for a in accounts if a.id != to_account.id)
+    if from_account is None and to_account is not None and len(candidates) == 2:
+        from_account = next(a for a in candidates if a.id != to_account.id)
         defaulted_side = "from"
-    if to_account is None and from_account is not None and len(accounts) == 2:
-        to_account = next(a for a in accounts if a.id != from_account.id)
+    if to_account is None and from_account is not None and len(candidates) == 2:
+        to_account = next(a for a in candidates if a.id != from_account.id)
         defaulted_side = "to"
 
     if to_account is None:

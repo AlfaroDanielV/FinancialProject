@@ -10,6 +10,7 @@ import { AuthProvider, useAuth } from "./src/lib/AuthContext";
 import { initObservability } from "./src/lib/observability";
 import { queryClient } from "./src/lib/queryClient";
 import { AppNavigator } from "./src/navigation/AppNavigator";
+import { LockScreen } from "./src/screens/LockScreen";
 import { LoginScreen } from "./src/screens/Login";
 import { SplashScreen } from "./src/screens/SplashScreen";
 
@@ -29,6 +30,9 @@ function AuthGate() {
   }
   if (status === "anonymous") {
     return <LoginScreen />;
+  }
+  if (status === "locked") {
+    return <LockScreen />;
   }
   return <AppNavigator />;
 }
