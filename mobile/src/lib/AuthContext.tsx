@@ -8,7 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { AppState, type AppStateStatus } from "react-native";
+import { AppState } from "react-native";
 
 import {
   clearSession,
@@ -40,9 +40,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Refs that the long-lived listeners read without re-subscribing.
   const initializedRef = useRef(false); // ignore hydrate's notify; mount owns it
-  const authenticatingRef = useRef(false); // suppress re-lock during a prompt
   const statusRef = useRef<AuthStatus>("loading");
-  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  // Re-lock only after a REAL background (home / app switch). The biometric
+  // prompt / Control Center / banners only cause "inactive", so this flag stays
+  // false through the prompt — that's what prevents the unlock→relock loop.
+  const wasBackgroundedRef = useRef(false);
+  const lastUnlockAtRef = useRef(0); // skip re-lock briefly after an unlock
 
   useEffect(() => {
     statusRef.current = status;
@@ -84,18 +87,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Re-lock when returning to the foreground with an unlocked, valid session.
+  // Re-lock when returning from a GENUINE background with an unlocked session.
+  // iOS reports the biometric prompt / Control Center / notification banners as
+  // "inactive" (ignored here); only a home-press / app-switch reaches
+  // "background". Gating on that — never on "inactive" — is what stops the
+  // Face ID unlock→relock loop (the prompt's own active→inactive→active blip
+  // never sets wasBackgrounded).
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
-      const prev = appStateRef.current;
-      appStateRef.current = next;
-      const returnedToForeground =
-        next === "active" && (prev === "background" || prev === "inactive");
+      if (next === "background") {
+        wasBackgroundedRef.current = true;
+        return;
+      }
+      if (next !== "active") return; // ignore "inactive" (the prompt blip)
+      const wasBackgrounded = wasBackgroundedRef.current;
+      wasBackgroundedRef.current = false;
       if (
-        returnedToForeground &&
-        !authenticatingRef.current &&
+        wasBackgrounded &&
         statusRef.current === "authenticated" &&
-        getSessionToken()
+        getSessionToken() &&
+        Date.now() - lastUnlockAtRef.current > 1500
       ) {
         void biometricGateAvailable().then((gate) => {
           if (gate) setStatus("locked");
@@ -114,18 +125,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const unlock = useCallback(async () => {
-    authenticatingRef.current = true;
-    try {
-      const ok = await promptBiometric();
-      if (ok) setStatus("authenticated");
-      return ok;
-    } finally {
-      // Keep the re-lock suppressed briefly: dismissing the iOS prompt fires
-      // inactive→active, which would otherwise immediately re-lock the app.
-      setTimeout(() => {
-        authenticatingRef.current = false;
-      }, 1200);
+    const ok = await promptBiometric();
+    if (ok) {
+      // Stamp the unlock so a background that happens to fire right around the
+      // prompt teardown can't immediately re-lock (belt-and-suspenders on top
+      // of the "ignore inactive" rule above).
+      lastUnlockAtRef.current = Date.now();
+      setStatus("authenticated");
     }
+    return ok;
   }, []);
 
   const value = useMemo<AuthContextValue>(
