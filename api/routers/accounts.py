@@ -43,6 +43,7 @@ from ..services.anchors import (
     latest_anchor_sources,
     needs_balance_confirmation,
 )
+from ..services.clock import user_today
 from ..services.llm_extractor import extract_card_terms, extract_statement
 from ..services.statements import (
     ReconcileError,
@@ -61,13 +62,13 @@ _MAX_PDF_BYTES = 4 * 1024 * 1024  # 4 MB pre-base64, same cap as debts
 async def _accounts_with_balances(
     db: AsyncSession,
     *,
-    user_id: uuid.UUID,
+    user: User,
     accounts: Iterable[Account],
 ) -> list[AccountResponse]:
     accounts_list = list(accounts)
     ids = [acc.id for acc in accounts_list]
     balances = await compute_account_balances(
-        db, user_id=user_id, account_ids=ids
+        db, user_id=user.id, account_ids=ids, today=user_today(user)
     )
     sources = await latest_anchor_sources(db, account_ids=ids)
     responses: list[AccountResponse] = []
@@ -121,7 +122,7 @@ async def create_account(
     # The anchor benefit (partial-import immunity) is available on demand via
     # POST /{id}/anchor. (Pending operator decision on create-time anchoring.)
     [response] = await _accounts_with_balances(
-        db, user_id=user.id, accounts=[account]
+        db, user=user, accounts=[account]
     )
     return response
 
@@ -142,7 +143,7 @@ async def list_accounts(
 
     result = await db.execute(stmt)
     accounts = list(result.scalars().all())
-    return await _accounts_with_balances(db, user_id=user.id, accounts=accounts)
+    return await _accounts_with_balances(db, user=user, accounts=accounts)
 
 
 @router.get("/{account_id}", response_model=AccountResponse)
@@ -161,7 +162,7 @@ async def get_account(
     if not account:
         raise HTTPException(status_code=404, detail="Cuenta no encontrada.")
     [response] = await _accounts_with_balances(
-        db, user_id=user.id, accounts=[account]
+        db, user=user, accounts=[account]
     )
     return response
 
@@ -207,7 +208,7 @@ async def update_account(
         )
     await db.refresh(account)
     [response] = await _accounts_with_balances(
-        db, user_id=user.id, accounts=[account]
+        db, user=user, accounts=[account]
     )
     return response
 
@@ -397,7 +398,7 @@ async def delete_account(
     await db.commit()
     await db.refresh(account)
     [response] = await _accounts_with_balances(
-        db, user_id=user.id, accounts=[account]
+        db, user=user, accounts=[account]
     )
     return response
 
@@ -562,4 +563,4 @@ async def card_analysis(
                 "el pago mínimo primero."
             ),
         )
-    return build_card_analysis(card=card)
+    return build_card_analysis(card=card, today=user_today(user))

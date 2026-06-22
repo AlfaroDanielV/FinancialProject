@@ -26,6 +26,8 @@ from api.services.llm_extractor import ExtractionResult, Intent
 class _FakeAccount:
     name: str
     id: uuid.UUID = None  # type: ignore[assignment]
+    currency: str = "CRC"
+    account_type: str = "checking"
 
     def __post_init__(self) -> None:
         if self.id is None:
@@ -394,6 +396,76 @@ async def test_account_clarification_round_trip_merges_and_proposes(monkeypatch)
     assert isinstance(second, td.ProposeAction)
     assert second.payload["account_id"] == str(b.id)
     assert "Promerica Visa Platinum" in second.summary_es
+
+
+# ── dual-currency account disambiguation (the "¿De qué cuenta?" loop fix) ──────
+# Two cards that differ only by the ₡/$ suffix ("Promerica ₡" / "Promerica $")
+# both compact to "promerica" in the matcher, so every reply tied at 1.0 →
+# permanent "ambiguous" → an unbreakable loop. Layer 1 (exact symbol-preserving
+# match) lets the button label / full name resolve; Layer 2 (currency filter in
+# the dispatcher) lets the bare base name resolve.
+
+
+def test_match_account_hint_exact_match_breaks_dual_currency_tie():
+    from api.services.dispatch.lazy_detection import match_account_hint
+
+    crc = _FakeAccount(name="Promerica ₡")
+    usd = _FakeAccount(name="Promerica $")
+    # Full name (button label or full typing) → the exact symbol-preserving
+    # match wins despite the compact-collapse tie.
+    m = match_account_hint("Promerica ₡", [crc, usd])
+    assert m.status == "matched" and m.account is crc
+    # The bare base name has no exact match and still compacts to a tie → we
+    # keep asking rather than guessing.
+    m2 = match_account_hint("Promerica", [crc, usd])
+    assert m2.status == "ambiguous"
+
+
+async def test_dual_currency_button_label_proposes(monkeypatch):
+    crc = _FakeAccount(name="Promerica ₡", currency="CRC")
+    usd = _FakeAccount(name="Promerica $", currency="USD")
+    _stub_accounts(monkeypatch, [crc, usd], None)
+    result = await td.dispatch(
+        extraction=_extraction(account_hint="Promerica ₡", currency="CRC"),
+        user=_user(),
+        today=date(2026, 4, 20),
+        db=object(),
+    )
+    assert isinstance(result, td.ProposeAction)
+    assert result.payload["account_id"] == str(crc.id)
+
+
+async def test_dual_currency_short_name_resolves_via_currency_filter(monkeypatch):
+    crc = _FakeAccount(name="Promerica ₡", currency="CRC")
+    usd = _FakeAccount(name="Promerica $", currency="USD")
+    _stub_accounts(monkeypatch, [crc, usd], None)
+    # The bare "Promerica" would tie across both, but a ₡ expense can only hit
+    # the ₡ account → the currency filter leaves a single candidate.
+    result = await td.dispatch(
+        extraction=_extraction(account_hint="Promerica", currency="CRC"),
+        user=_user(),
+        today=date(2026, 4, 20),
+        db=object(),
+    )
+    assert isinstance(result, td.ProposeAction)
+    assert result.payload["account_id"] == str(crc.id)
+
+
+async def test_same_currency_collision_still_clarifies(monkeypatch):
+    # When the currency filter can't separate them (both ₡), we must still ask
+    # rather than over-resolve.
+    a = _FakeAccount(name="Promerica ₡", currency="CRC")
+    b = _FakeAccount(name="Promerica $", currency="CRC")  # contrived: both CRC
+    _stub_accounts(monkeypatch, [a, b], None)
+    result = await td.dispatch(
+        extraction=_extraction(account_hint="Promerica", currency="CRC"),
+        user=_user(),
+        today=date(2026, 4, 20),
+        db=object(),
+    )
+    assert isinstance(result, td.AskClarification)
+    assert result.awaiting_field == "account"
+    assert set(result.options) == {"Promerica ₡", "Promerica $"}
 
 
 async def test_amount_clarification_round_trip_parses_cr_format(monkeypatch):

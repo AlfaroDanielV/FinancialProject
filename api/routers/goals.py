@@ -26,6 +26,7 @@ from ..schemas.goals import (
     GoalCreate,
     GoalUpdate,
 )
+from ..services.clock import user_today
 from ..services.goals import (
     cancel_goal_with_refunds,
     compute_cancel_preview,
@@ -122,7 +123,7 @@ async def goals_progress(
         select(Goal).where(Goal.user_id == user.id, Goal.status == "active")
     )
     goals = list(result.scalars().all())
-    today = date.today()
+    today = user_today(user)
 
     progress_list: list[GoalProgress] = []
     for goal in goals:
@@ -291,7 +292,7 @@ async def cancel_goal(
             detail="Esta meta ya está cumplida — los aportes no se devuelven.",
         )
     refunds, unrefundable = await cancel_goal_with_refunds(
-        db, user_id=user.id, goal=goal
+        db, user_id=user.id, goal=goal, today=user_today(user)
     )
     await db.commit()
     await db.refresh(goal)
@@ -385,7 +386,7 @@ async def goal_forecast(
             lookback_months=3,
         )
 
-    today = date.today()
+    today = user_today(user)
     window_start = _add_months(_month_start(today), -3)
     window_end = _month_start(today)
 

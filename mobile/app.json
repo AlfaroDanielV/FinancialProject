@@ -36,7 +36,13 @@
           "cameraPermission": "Tomá una foto del recibo para registrar la transacción automáticamente."
         }
       ],
-      "expo-document-picker"
+      "expo-document-picker",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Usá Face ID para entrar a Ledger CR."
+        }
+      ]
     ],
     "extra": {
       "phase": "6f",

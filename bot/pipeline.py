@@ -28,6 +28,7 @@ from app.queries.dispatcher import run_dispatch
 from app.queries.history import append_turn as _append_query_history
 from api.models.user import User
 from api.models.lazy_detection_event import LazyDetectionEvent
+from api.services.clock import user_today
 from api.services.insights.extractor import (
     enqueue_insight_extraction,
     post_clarification_context,
@@ -154,13 +155,9 @@ _COMMAND_MENU = {"/menu", "/menú"}
 
 
 def _today_for(user: User) -> date:
-    """User's local calendar date. Falls back to UTC if timezone is bogus
-    (should never happen — every 5a-migrated row has a valid tz)."""
-    try:
-        tz = ZoneInfo(user.timezone)
-    except Exception:  # pragma: no cover - defensive
-        tz = ZoneInfo("UTC")
-    return datetime.now(tz).date()
+    """User's local calendar date. Thin alias over the shared single source
+    (`api.services.clock.user_today`) kept so existing callsites don't churn."""
+    return user_today(user)
 
 
 def _cb(short_id: str, verb: str) -> str:

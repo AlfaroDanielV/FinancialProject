@@ -1,6 +1,6 @@
 import json
 import uuid
-from datetime import date, datetime
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
@@ -25,6 +25,7 @@ from ..schemas.recurring_bills import (
     RecurringBillUpdate,
 )
 from ..services import recurrence
+from ..services.clock import user_today
 from ..services.envelopes import is_valid_envelope_target
 
 router = APIRouter(prefix="/api/v1/recurring-bills", tags=["recurring-bills"])
@@ -243,7 +244,7 @@ async def mark_bill_paid(
         )
 
     target_account = payload.account_id or bill.account_id
-    transaction_date = payload.paid_at or occurrence.due_date or date.today()
+    transaction_date = payload.paid_at or occurrence.due_date or user_today(user)
 
     txn = Transaction(
         user_id=user.id,

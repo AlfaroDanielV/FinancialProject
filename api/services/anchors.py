@@ -31,6 +31,7 @@ from ..models.account_anchor import AccountAnchor
 from ..models.transaction import Transaction
 from ..models.user import User
 from .accounts import compute_account_balances
+from .clock import user_today
 
 # Reserved category marker for the reconciliation adjustment row. Analytics
 # (dashboard/category/cash-flow) filter it out via `category IS DISTINCT FROM`
@@ -107,7 +108,10 @@ async def apply_anchor(
     point, not a correction). Append-only — never mutates an existing anchor.
     The caller commits.
     """
-    today = today or date.today()
+    # CR-tz today (the anchor effective_date) — a naive UTC date.today() near
+    # midnight would mis-place the strict-`>` boundary, bucketing an evening
+    # txn on the wrong side of the anchor. See clock.user_today.
+    today = today or user_today(user)
     value = Decimal(value)
 
     projected = Decimal("0")

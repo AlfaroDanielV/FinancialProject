@@ -25,6 +25,9 @@ migrations/versions/*.pyc
 *.swp
 *.swo
 
+# Claude Code harness worktrees — never commit (accidentally swept in once)
+.claude/worktrees/
+
 # OS
 .DS_Store
 Thumbs.db
