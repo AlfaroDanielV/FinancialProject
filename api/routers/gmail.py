@@ -455,6 +455,28 @@ async def add_senders(
         active_count += 1
         added.append(e)
 
+    # First-sender activation — mirror the bot's bank-confirmation step
+    # (bot/gmail_handlers.py::_activate_and_persist). Connecting Gmail via
+    # the native app upserts the credential with granted_at but NEVER sets
+    # activated_at, while the scheduled daily scan (workers/gmail_daily.py)
+    # only iterates credentials with `activated_at IS NOT NULL`. Without
+    # this, a user who onboards Gmail entirely in the app is silently
+    # skipped by the daily worker forever (manual in-app scans still work
+    # because they load the credential by user_id, no activated_at filter).
+    # Configuring senders is the native equivalent of confirming banks, so
+    # it's the right activation point; self-heals any stuck row on re-add.
+    cred = (
+        await db.execute(
+            select(GmailCredential).where(GmailCredential.user_id == user.id)
+        )
+    ).scalar_one_or_none()
+    if (
+        cred is not None
+        and cred.revoked_at is None
+        and cred.activated_at is None
+    ):
+        cred.activated_at = datetime.now(timezone.utc)
+
     await db.commit()
     return SenderAddResponse(added=added, skipped=skipped, at_cap=at_cap)
 

@@ -367,6 +367,48 @@ async def _connect(session, user_id):
 
 
 @pytest.mark.asyncio
+async def test_add_senders_activates_native_credential(db_with_user):
+    """Adding the first sender flips activated_at on a native-connected
+    credential (granted but not yet activated), so the scheduled daily
+    worker — which filters `activated_at IS NOT NULL` — picks the user up.
+    Mirrors the bot's bank-confirmation activation step."""
+    session, user_id = db_with_user
+    await _connect(session, user_id)  # granted_at set, activated_at NULL
+    token = await _token(session, user_id)
+    try:
+        async with _client() as ac:
+            resp = await ac.post(
+                "/api/v1/gmail/senders",
+                json={"bank_name": "BAC", "emails": "a@bac.cr"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200, resp.text
+
+        cred = (
+            await session.execute(
+                select(GmailCredential).where(
+                    GmailCredential.user_id == user_id
+                )
+            )
+        ).scalar_one()
+        assert cred.activated_at is not None
+        first_activation = cred.activated_at
+
+        # Re-adding does not bump an already-set activation (idempotent).
+        async with _client() as ac:
+            again = await ac.post(
+                "/api/v1/gmail/senders",
+                json={"bank_name": "BAC", "emails": "b@bac.cr"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert again.status_code == 200
+        await session.refresh(cred)
+        assert cred.activated_at == first_activation
+    finally:
+        _clear_db_override()
+
+
+@pytest.mark.asyncio
 async def test_scan_409_when_not_connected(db_with_user):
     session, user_id = db_with_user
     token = await _token(session, user_id)
