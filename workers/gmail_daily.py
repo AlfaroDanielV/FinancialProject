@@ -136,7 +136,17 @@ async def run_daily_for_all_users() -> None:
 
 async def main() -> None:
     setup_logging("INFO")
-    await run_daily_for_all_users()
+    # Initialize a send-only Telegram bot so the notifier can actually reach the
+    # user. Imported here (not module-top) to keep the worker's bot-package
+    # coupling minimal and dodge import-time cycles. Best-effort: a missing token
+    # / disabled mode no-ops and scans still run, just without notifications.
+    from bot.app import start_bot_send_only, stop_bot
+
+    await start_bot_send_only()
+    try:
+        await run_daily_for_all_users()
+    finally:
+        await stop_bot()
 
 
 if __name__ == "__main__":

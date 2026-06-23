@@ -604,14 +604,18 @@ az containerapp job update -g "$RG" -n "$JOB_GMAIL" --set-env-vars \
   GMAIL_CLIENT_SECRET=secretref:gmail-client-secret
 ```
 
-> **Notification gap:** `workers/gmail_daily.py` currently never calls
-> `bot.app.start_bot()`, so `get_bot()` in the notifier always raises
-> `RuntimeError` and every Telegram notification is silently dropped with
-> `notifier_send_skipped reason=bot_not_initialized`. The worker will scan
-> and create shadow transactions correctly, but users won't receive the
-> "nuevas transacciones" Telegram message until `start_bot()` is added to
-> the worker's `main()`. The env vars above (`TELEGRAM_BOT_TOKEN`,
-> `TELEGRAM_MODE`) are wired in advance so that fix is a code-only change.
+> **Notification delivery (resolved):** `workers/gmail_daily.py::main()` now
+> calls `bot.app.start_bot_send_only()` before the run (and `stop_bot()` after,
+> in a `finally`), so the notifier's `get_bot()` succeeds and scan-completion /
+> shadow-summary messages are delivered. It deliberately uses the send-only
+> initializer rather than `start_bot()`: the worker runs with
+> `TELEGRAM_MODE=webhook`, and a full `start_bot()` would call `set_webhook(...)`
+> from this short-lived job, re-registering Telegram's delivery URL and racing
+> the API container. The send-only path creates a Bot for outbound `send_message`
+> only — no handlers, no webhook, no polling. The env vars above
+> (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_MODE`) supply the token; a missing token or
+> `TELEGRAM_MODE=disabled` makes the initializer a graceful no-op (scans still
+> run, notifications are skipped).
 
 Smoke it once before waiting for the cron. The job takes ~10–30 s to
 complete; wait before checking status:

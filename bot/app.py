@@ -57,6 +57,40 @@ def set_llm_client(client: LLMClient) -> None:
     _state.llm_client = client
 
 
+async def start_bot_send_only() -> None:
+    """Populate the Bot singleton for SEND-ONLY use (no handlers, no
+    webhook, no polling, no gmail_listener). Idempotent.
+
+    Used by standalone workers (e.g. workers/gmail_daily.py) that run in
+    their own process and only need to push notifications via the notifier's
+    `get_bot()` path — they never receive updates.
+
+    Deliberately does NOT call `start_bot()`: the worker container runs with
+    TELEGRAM_MODE=webhook, and `start_bot()` would call `set_webhook(...)` from
+    a short-lived job, re-registering Telegram's delivery URL and racing the API
+    container (plus dropping pending updates). A send-only Bot avoids that.
+
+    Graceful no-op when sending isn't possible (mode disabled or no token): the
+    singleton stays empty, so `get_bot()` keeps raising and the notifier's
+    best-effort `_send` logs `notifier_send_skipped` — the scan is unaffected.
+    Tear down with `stop_bot()`."""
+    if _state.bot is not None:
+        return
+
+    if settings.telegram_mode.lower() == "disabled" or not settings.telegram_bot_token:
+        log.info(
+            "start_bot_send_only skipped: telegram disabled or no token — "
+            "notifications will be dropped, scans unaffected."
+        )
+        return
+
+    _state.bot = Bot(
+        token=settings.telegram_bot_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+    log.info("Telegram bot initialized send-only (worker mode).")
+
+
 async def start_bot() -> None:
     """Initialize the Bot and Dispatcher, attach handlers, and launch
     whichever mode is configured. Idempotent — second call is a no-op."""
