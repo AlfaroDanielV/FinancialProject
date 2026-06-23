@@ -17,7 +17,12 @@ WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
 
-RUN uv sync --frozen --no-dev --no-install-project
+# --extra azure: the worker resolves Gmail refresh tokens from Key Vault
+# via the azure_kv secret store in prod (SECRET_STORE_BACKEND=azure_kv).
+# Without it, every scan throws ModuleNotFoundError: No module named 'azure'
+# (swallowed per-user → daily_scan_error, job still exits 0). Mirrors
+# Dockerfile.prod so the builder layer is identical (cache-shared).
+RUN uv sync --frozen --no-dev --no-install-project --extra azure
 
 COPY . .
 
