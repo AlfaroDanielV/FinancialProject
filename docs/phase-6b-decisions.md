@@ -575,3 +575,30 @@ que Phase 5b chat).
 notificada porque casi todas las notificaciones bancarias son del lado
 "sale plata de aquí". El usuario puede corregir manualmente con un
 ingreso espejo si es transfer entre cuentas propias.
+
+## 2026-06-23 — Daily worker inicializa el bot en modo SOLO-ENVÍO
+
+Bug: el worker diario (`workers/gmail_daily.py`) corre en su propio
+proceso (Container Apps Job) sin el lifespan de FastAPI, así que nunca
+inicializaba el bot. El notifier (`api/services/gmail/notifier.py::_send`)
+hace `from bot.app import get_bot`; sin init, `get_bot()` lanza
+`RuntimeError`, se loguea `notifier_send_skipped reason=bot_not_initialized`
+y **toda notificación de Telegram se descartaba en silencio**. El scan y
+los shadow rows funcionaban; el usuario nunca recibía el aviso de "nuevas
+transacciones". (El `/scan` manual sí avisa porque corre dentro del API,
+donde el bot ya está inicializado.)
+
+Fix: `bot/app.py::start_bot_send_only()` — puebla el singleton `_BotSingleton`
+con un `Bot` SOLO para enviar (sin handlers, sin webhook, sin polling, sin
+`gmail_listener`). `main()` lo llama antes de la corrida y `stop_bot()` en
+un `finally`.
+
+Por qué NO `start_bot()`: el contenedor del worker corre con
+`TELEGRAM_MODE=webhook`, y `start_bot()` en ese modo llama `set_webhook(...)`
+— re-registraría la URL de entrega de Telegram desde un job efímero, en
+carrera con el contenedor del API (y `drop_pending_updates=True` botaría
+updates encolados). El path solo-envío evita eso.
+
+Degradación elegante: token ausente o `TELEGRAM_MODE=disabled` → no-op
+(el singleton queda vacío, `_send` sigue logueando el skip); el scan no se
+ve afectado. Tests: `tests/test_gmail_worker_notify.py` (5).
