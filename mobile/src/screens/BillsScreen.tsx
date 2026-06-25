@@ -327,7 +327,12 @@ export function BillsScreen({ navigation }: Props) {
               const sub =
                 row.kind === "occurrence"
                   ? row.bill.provider || row.bill.category || row.bill.frequency
-                  : OBLIGATION_LABELS[row.item.item_type] ?? row.item.item_type;
+                  : row.item.item_type === "card_payment"
+                    ? row.item.payment_mode === "full"
+                      ? "De contado · saldo completo"
+                      : "Pago mínimo de tarjeta"
+                    : OBLIGATION_LABELS[row.item.item_type] ??
+                      row.item.item_type;
               const amountText =
                 row.kind === "occurrence"
                   ? fmtAmount(

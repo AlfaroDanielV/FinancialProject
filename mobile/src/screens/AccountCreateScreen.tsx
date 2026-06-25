@@ -75,24 +75,10 @@ export function AccountCreateScreen() {
         style={styles.scroll}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
+        automaticallyAdjustKeyboardInsets
         showsVerticalScrollIndicator={false}
       >
-        {/* ── Name ────────────────────────────────────────────────────────── */}
-        <View style={styles.fieldGroup}>
-          <Text style={styles.label}>Nombre</Text>
-          <TextInput
-            style={styles.input}
-            value={name}
-            onChangeText={setName}
-            placeholder="Ej: BAC Colones, BNCR Ahorros"
-            placeholderTextColor={Colors.textMuted}
-            autoFocus
-            maxLength={80}
-            returnKeyType="next"
-          />
-        </View>
-
-        {/* ── Account type ─────────────────────────────────────────────────── */}
+        {/* ── Account type (first — a tap, no keyboard) ────────────────────── */}
         <View style={styles.fieldGroup}>
           <Text style={styles.label}>Tipo de cuenta</Text>
           <View style={styles.segmented}>
@@ -131,6 +117,20 @@ export function AccountCreateScreen() {
               del mes — lo tratamos como plata apartada para tus metas.
             </Text>
           )}
+        </View>
+
+        {/* ── Name ────────────────────────────────────────────────────────── */}
+        <View style={styles.fieldGroup}>
+          <Text style={styles.label}>Nombre</Text>
+          <TextInput
+            style={styles.input}
+            value={name}
+            onChangeText={setName}
+            placeholder="Ej: BAC Colones, BNCR Ahorros"
+            placeholderTextColor={Colors.textMuted}
+            maxLength={80}
+            returnKeyType="next"
+          />
         </View>
 
         {/* ── Currency ─────────────────────────────────────────────────────── */}
@@ -208,7 +208,7 @@ const styles = StyleSheet.create({
   content: {
     padding: Spacing.md,
     gap: Spacing.lg,
-    paddingBottom: Spacing.xl,
+    paddingBottom: Spacing.xl * 2,
   },
 
   // ── field ─────────────────────────────────────────────────────────────────

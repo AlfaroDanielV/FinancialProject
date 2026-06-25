@@ -9,7 +9,7 @@ PUT /accounts/{id}/card-terms is the only write path.
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -24,6 +24,10 @@ class CardTermsCreate(BaseModel):
     credit_limit: Optional[Decimal] = Field(None, gt=0)
     statement_day: Optional[int] = Field(None, ge=1, le=31)
     payment_due_day: int = Field(..., ge=1, le=31)
+    # Recurring-payment preference: 'minimum' (default) or 'full' (pago de
+    # contado). Selects which live figure the upcoming-payment projection
+    # surfaces; budget/affordability/reservation stay on the minimum.
+    payment_mode: Literal["minimum", "full"] = "minimum"
     # B5 obligation attachment: the card's minimum reserves inside this
     # envelope while unpaid (validated active + same-user in the router).
     envelope_id: Optional[uuid.UUID] = None
@@ -40,6 +44,7 @@ class CardTermsUpdate(BaseModel):
     credit_limit: Optional[Decimal] = Field(None, gt=0)
     statement_day: Optional[int] = Field(None, ge=1, le=31)
     payment_due_day: Optional[int] = Field(None, ge=1, le=31)
+    payment_mode: Optional[Literal["minimum", "full"]] = None
     notes: Optional[str] = Field(None, max_length=500)
 
 
@@ -54,6 +59,7 @@ class CardTermsResponse(BaseModel):
     credit_limit: Optional[Decimal]
     statement_day: Optional[int]
     payment_due_day: int
+    payment_mode: str
     envelope_id: Optional[uuid.UUID]
     notes: Optional[str]
     created_at: datetime

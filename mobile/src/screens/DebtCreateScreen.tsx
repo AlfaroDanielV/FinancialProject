@@ -245,6 +245,7 @@ export function DebtCreateScreen() {
         style={styles.scroll}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
+        automaticallyAdjustKeyboardInsets
         showsVerticalScrollIndicator={false}
       >
         {/* ── PDF upload (rate helper) ─────────────────────────────────────── */}
@@ -506,7 +507,7 @@ function Field({
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   scroll: { flex: 1 },
-  content: { padding: Spacing.md, gap: Spacing.lg, paddingBottom: Spacing.xl },
+  content: { padding: Spacing.md, gap: Spacing.lg, paddingBottom: Spacing.xl * 2 },
 
   fieldGroup: { gap: Spacing.xs },
   label: {

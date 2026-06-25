@@ -36,6 +36,17 @@ class CardWithTerms:
     balance_owed: Decimal  # positive magnitude; 0 when nothing is owed
     minimum_due: Decimal
 
+    @property
+    def recurring_payment_due(self) -> Decimal:
+        """The monthly card payment the upcoming-payment projection surfaces:
+        the full live balance when the card is paid 'de contado'
+        (`payment_mode == 'full'`), else the minimum. The minimum stays the
+        must-pay floor that budget / affordability / envelope reservation use
+        — `payment_mode` only changes what the reminder + agent report."""
+        if self.terms.payment_mode == "full":
+            return self.balance_owed
+        return self.minimum_due
+
 
 async def list_active_cards_with_terms(
     db: AsyncSession, *, user_id: uuid.UUID

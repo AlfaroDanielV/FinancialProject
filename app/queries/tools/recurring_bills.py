@@ -90,6 +90,25 @@ async def list_recurring_bills(
 
         rows = list((await db.execute(stmt)).all())
 
+        # Projected obligations (debt cuotas + card payments) are NOT
+        # materialized bill_occurrences — they live only in the upcoming feed.
+        # Merge them so the agent can answer "¿qué pagos tengo este mes?" with
+        # the loan cuota and the card payment (minimum or de contado) included.
+        projected: list[Any] = []
+        if status in ("upcoming", "all"):
+            from api.services.recurrence import get_upcoming_feed
+
+            feed = await get_upcoming_feed(
+                db,
+                user_id,
+                from_date=today,
+                to_date=today + timedelta(days=days_ahead),
+                include_overdue=False,
+            )
+            projected = [
+                e for e in feed if e.item_type in ("debt", "card_payment")
+            ]
+
     bills: list[dict[str, Any]] = []
     total_upcoming = Decimal("0")
     for row in rows:
@@ -115,6 +134,30 @@ async def list_recurring_bills(
                 "account_name": row.account_name,
                 "days_until_due": days_until_due,
                 "paid_at": row.paid_at.isoformat() if row.paid_at else None,
+            }
+        )
+
+    for e in projected:
+        days_until_due = (e.date - today).days
+        # Sum into the total only when the currency matches the user's, so a
+        # USD card payment doesn't corrupt the colón total.
+        if e.amount and e.currency == currency:
+            total_upcoming += as_decimal(e.amount)
+        bills.append(
+            {
+                "bill_name": e.title,
+                "category": "deuda" if e.item_type == "debt" else "tarjeta",
+                "amount": (
+                    decimal_to_string(as_decimal(e.amount))
+                    if e.amount is not None
+                    else None
+                ),
+                "currency": e.currency,
+                "due_date": e.date.isoformat(),
+                "status": "overdue" if e.is_overdue else "upcoming",
+                "account_name": None,
+                "days_until_due": days_until_due,
+                "paid_at": None,
             }
         )
 

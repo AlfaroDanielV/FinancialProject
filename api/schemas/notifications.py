@@ -140,6 +140,9 @@ class UpcomingFeedItem(BaseModel):
     debt_id: Optional[uuid.UUID] = None  # source debt when item_type == "debt"
     # Phase 7b: source credit account when item_type == "card_payment".
     account_id: Optional[uuid.UUID] = None
+    # 'minimum' | 'full' when item_type == "card_payment" (else None) — lets
+    # the client label "de contado" vs "mínimo".
+    payment_mode: Optional[str] = None
     is_overdue: bool = False
 
 

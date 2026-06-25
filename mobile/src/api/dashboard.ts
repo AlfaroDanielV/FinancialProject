@@ -63,6 +63,9 @@ export interface UpcomingFeedItem {
   category: string | null;
   provider: string | null;
   debt_id: string | null;
+  account_id: string | null;
+  // 'minimum' | 'full' when item_type === "card_payment" — "de contado" vs "mínimo".
+  payment_mode: "minimum" | "full" | null;
   is_overdue: boolean;
 }
 

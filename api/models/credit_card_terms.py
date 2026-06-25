@@ -56,6 +56,13 @@ class CreditCardTerms(Base):
     # Día de corte (statement) / fecha límite de pago.
     statement_day: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     payment_due_day: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Recurring-payment preference: 'minimum' (the must-pay floor) or 'full'
+    # (pago de contado — the full live balance). Selects which LIVE figure the
+    # upcoming-payment projection surfaces; never a stored amount, never a
+    # materialized bill. Budget/affordability/reservation stay on the minimum.
+    payment_mode: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="minimum"
+    )
     # B5 obligation attachment — the card minimum reserves inside this
     # envelope while unpaid. ON DELETE SET NULL (deleting an envelope
     # detaches, never deletes the terms).

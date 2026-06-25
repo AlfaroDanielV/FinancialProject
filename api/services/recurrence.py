@@ -639,6 +639,10 @@ class FeedEntry:
     # Phase 7b B5: card minimums are likewise projected live; this is the
     # credit account id when item_type == "card_payment", else None.
     account_id: Optional[uuid.UUID] = None
+    # 'minimum' | 'full' for item_type == "card_payment" (else None): which
+    # live figure this projection surfaces (de contado vs the minimum). Lets
+    # the client label "Pago de tarjeta (de contado)" vs "Pago mínimo".
+    payment_mode: Optional[str] = None
 
 
 def _monthly_due_dates(day: int, from_date: date, to_date: date) -> list[date]:
@@ -804,11 +808,14 @@ async def get_upcoming_feed(
             )
         )
 
-    # Phase 7b B5: project each card's minimum due in the window — derived
+    # Phase 7b B5: project each card's payment due in the window — derived
     # LIVE from payment_due_day + the terms formula over the current balance.
-    # A paid-down card (minimum 0) stops projecting with zero cleanup.
+    # The amount is the minimum (must-pay floor) or, when the card is paid
+    # "de contado" (payment_mode='full'), the full live balance. A paid-down
+    # card (payment due 0) stops projecting with zero cleanup.
     for card in await list_active_cards_with_terms(session, user_id=user_id):
-        if card.minimum_due <= 0:
+        payment_due = card.recurring_payment_due
+        if payment_due <= 0:
             continue
         dues = _monthly_due_dates(
             card.terms.payment_due_day, from_date, to_date
@@ -816,13 +823,18 @@ async def get_upcoming_feed(
         if not dues:
             continue
         due = dues[0]
+        contado = card.terms.payment_mode == "full"
         entries.append(
             FeedEntry(
                 item_type="card_payment",
                 id=card.account.id,
                 date=due,
-                title=f"Pago de tarjeta {card.account.name}",
-                amount=float(card.minimum_due),
+                title=(
+                    f"Pago de tarjeta {card.account.name} (de contado)"
+                    if contado
+                    else f"Pago de tarjeta {card.account.name}"
+                ),
+                amount=float(payment_due),
                 currency=card.account.currency,
                 status=None,
                 category=None,
@@ -830,6 +842,7 @@ async def get_upcoming_feed(
                 recurring_bill_id=None,
                 is_overdue=due < today,
                 account_id=card.account.id,
+                payment_mode=card.terms.payment_mode,
             )
         )
 

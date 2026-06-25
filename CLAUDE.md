@@ -1378,6 +1378,68 @@ Cascade`, `Decision - Credit Card Terms As Account Parameters (Not A Debt)`.
 la tarjeta") is `log_transfer`, never `log_expense`. The LLM never calculates
 card interest — `app/domain/credit` does.
 
+## Credit Card Contado Recurring Payment (post-7b, 2026-06-25)
+
+Operator ask: a credit card's payment date + amount should count as a recurring
+payment the agent considers, deleted with the card. **Code-complete on `dev`;
+operator on-device sign-off pending.** Migration `0040`.
+`committed_outflows`/cashflow byte-lock untouched. Canonical: vault
+`Decision - Credit Card Contado Recurring Payment`.
+
+Most of the ask already held: the card **minimum** projects **live** as
+`item_type="card_payment"` in `get_upcoming_feed` (7b B5) and disappears for
+free on card deletion (1:1 `credit_card_terms` `account_id` `ON DELETE
+CASCADE`). Two real gaps closed here:
+
+- **Per-card `payment_mode`** (`minimum` | `full`/contado) on
+  `credit_card_terms` (migration `0040`, default `minimum`, CHECK). It selects
+  **which live figure the upcoming-payment projection surfaces** — `minimum`
+  (`card.minimum_due`, unchanged) or **de contado** (the full live
+  `card.balance_owed`). **Projection, NOT a materialized `recurring_bills` row**
+  (preserves "debts/cards projected, not materialized"). New
+  `CardWithTerms.recurring_payment_due` property; `get_upcoming_feed` card
+  branch uses it + sets `FeedEntry.payment_mode` + a "(de contado)" title;
+  `UpcomingFeedItem` + `/calendar/upcoming` + the mobile `cardTerms`/`dashboard`
+  types carry `payment_mode`. Toggle in `CardAccountCreateScreen` +
+  `CardTermsEditModal`; `BillsScreen` labels the row mode-aware.
+- **Agent awareness:** `app/queries/tools/recurring_bills.py::list_recurring_bills`
+  now merges projected `debt` + `card_payment` entries from `get_upcoming_feed`
+  (it had only read `bill_occurrences`, so projected obligations were invisible
+  to the chat agent). This fixes the latent gap for debt cuotas too.
+
+**Scope = reminder + agent only** (operator decision). The contado amount drives
+the feed + the agent's answers; it does **NOT** change the budget — envelope
+**reservation** (`compute_envelope_summary`) and **affordability transparency**
+(`gather_affordability_inputs`) keep using the **minimum** (the must-pay floor),
+and `committed_outflows` is byte-identical. Avoids the consumption double-count
+(card charges are already envelope spend).
+
+**Verification:** `tests/test_credit_card_contado_mode.py` (6: property,
+contado projection + title + `payment_mode`, minimum-mode unchanged,
+reservation-stays-on-minimum, affordability byte-stable across modes, query
+tool surfaces the contado payment) + `scripts/test_phase_7b.sh` green (141,
+cashflow byte-lock intact) + mobile `tsc --noEmit` clean. `alembic → 0040`.
+**Deferred:** card payment notifications (still no `notification_events` card
+target — 7b B6 deferral); letting contado drive the budget (rejected — double
+count).
+
+## Account creation + form keyboard UX (2026-06-25)
+
+Two operator UX asks, mobile-only, no migration. **On `dev`; on-device sign-off
+pending.**
+
+- **Account type first.** `AccountCreateScreen` reordered so **Tipo de cuenta**
+  is the first field (was Name → Type); `autoFocus` removed from Name so the
+  keyboard doesn't pop before the user taps a type (and the credit→`CardCreate`
+  redirect now triggers first). One file.
+- **Keyboard no longer hides the last fields.** The 12 bottom-sheet input modals
+  already had the `KeyboardAvoidingView`+`ScrollView` scaffold; the three
+  full-screen create forms (`AccountCreateScreen`, `CardAccountCreateScreen`,
+  `DebtCreateScreen`) had a `ScrollView` but **no** KAV. Targeted fix (operator
+  chose targeted over a shared-scaffold refactor): added iOS
+  `automaticallyAdjustKeyboardInsets` to each + bumped `contentContainerStyle`
+  `paddingBottom` to `Spacing.xl * 2`. No new dep, no shared component.
+
 ## Phase 7c (active) — UI 2.0: Neutral Theme + Money Clarity
 
 Operator ask 2026-06-11 ("too hard to understand my money; make the UI

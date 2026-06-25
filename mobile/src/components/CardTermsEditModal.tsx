@@ -68,6 +68,9 @@ export function CardTermsEditModal({
   const [envelopeId, setEnvelopeId] = useState<string | null>(
     terms?.envelope_id ?? null,
   );
+  const [paymentMode, setPaymentMode] = useState<"minimum" | "full">(
+    terms?.payment_mode ?? "minimum",
+  );
   const [pickerVisible, setPickerVisible] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -92,6 +95,7 @@ export function CardTermsEditModal({
         terms?.payment_due_day != null ? String(terms.payment_due_day) : "",
       );
       setEnvelopeId(terms?.envelope_id ?? null);
+      setPaymentMode(terms?.payment_mode ?? "minimum");
       setError(null);
     }
   }, [terms, visible]);
@@ -109,6 +113,7 @@ export function CardTermsEditModal({
         credit_limit: creditLimit.trim() ? String(parseNum(creditLimit)) : null,
         statement_day: statementDay.trim() ? parseInt(statementDay, 10) : null,
         payment_due_day: due,
+        payment_mode: paymentMode,
         envelope_id: envelopeId,
       });
     },
@@ -234,6 +239,39 @@ export function CardTermsEditModal({
                 placeholderTextColor={Colors.textMuted}
                 maxLength={2}
               />
+            </Field>
+            <Field label="¿Cómo pagás esta tarjeta?">
+              <View style={styles.modeRow}>
+                {(
+                  [
+                    ["minimum", "Pago mínimo"],
+                    ["full", "De contado"],
+                  ] as const
+                ).map(([value, label]) => (
+                  <Pressable
+                    key={value}
+                    onPress={() => setPaymentMode(value)}
+                    style={({ pressed }) => [
+                      styles.modeBtn,
+                      paymentMode === value && styles.modeBtnActive,
+                      pressed && { opacity: 0.8 },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.modeLabel,
+                        paymentMode === value && styles.modeLabelActive,
+                      ]}
+                    >
+                      {label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Text style={styles.modeHint}>
+                Solo cambia el recordatorio del pago y lo que el agente te dice
+                — el presupuesto siempre usa el mínimo.
+              </Text>
             </Field>
             <Field label="Sobre (reserva el pago mínimo)">
               <Pressable
@@ -369,6 +407,25 @@ const styles = StyleSheet.create({
   },
   selectText: { fontSize: FontSize.md, color: Colors.textPrimary },
   selectPlaceholder: { color: Colors.textMuted },
+  modeRow: { flexDirection: "row", gap: Spacing.sm },
+  modeBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.sm + 2,
+    alignItems: "center",
+    backgroundColor: Colors.bgCard,
+  },
+  modeBtnActive: { borderColor: Colors.accent, backgroundColor: Colors.accentBg },
+  modeLabel: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: "500" },
+  modeLabelActive: { color: Colors.accent, fontWeight: "600" },
+  modeHint: {
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    lineHeight: 17,
+    marginTop: 4,
+  },
   error: {
     color: Colors.expense,
     fontSize: FontSize.sm,

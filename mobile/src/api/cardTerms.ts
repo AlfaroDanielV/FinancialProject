@@ -16,6 +16,9 @@ export interface CardTermsPayload {
   credit_limit?: string | null;
   statement_day?: number | null;
   payment_due_day: number;
+  /** 'minimum' (must-pay floor) or 'full' (pago de contado — full balance).
+   * Selects which live amount the upcoming-payment reminder + agent surface. */
+  payment_mode?: "minimum" | "full";
   /** B5 attachment — omit to keep the current envelope; null detaches. */
   envelope_id?: string | null;
   notes?: string | null;
@@ -32,6 +35,7 @@ export interface CardTermsResponse {
   credit_limit: string | null;
   statement_day: number | null;
   payment_due_day: number;
+  payment_mode: "minimum" | "full";
   envelope_id: string | null;
   notes: string | null;
   created_at: string;

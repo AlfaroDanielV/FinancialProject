@@ -88,6 +88,10 @@ export function CardAccountCreateScreen() {
   const [minPct, setMinPct] = useState("");
   const [statementDay, setStatementDay] = useState("");
   const [dueDay, setDueDay] = useState("");
+  // Recurring-payment preference: 'minimum' (must-pay floor) vs 'full' (pago
+  // de contado — the full balance). Only changes the upcoming-payment reminder
+  // + what the agent reports; the budget keeps using the minimum.
+  const [paymentMode, setPaymentMode] = useState<"minimum" | "full">("minimum");
   const [lowConfidenceNote, setLowConfidenceNote] = useState(false);
 
   const dual = mode === "BOTH";
@@ -197,6 +201,7 @@ export function CardAccountCreateScreen() {
       credit_limit: opts.limit.trim() ? String(parseNum(opts.limit)) : null,
       statement_day: statementDay.trim() ? stmtDayNum : null,
       payment_due_day: dueDayNum,
+      payment_mode: paymentMode,
     });
     return account;
   };
@@ -298,6 +303,7 @@ export function CardAccountCreateScreen() {
         style={styles.scroll}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
+        automaticallyAdjustKeyboardInsets
         showsVerticalScrollIndicator={false}
       >
         {/* ── PDF upload (contract-first) ──────────────────────────────────── */}
@@ -547,6 +553,39 @@ export function CardAccountCreateScreen() {
           </View>
         )}
 
+        <Field
+          label="¿Cómo planeás pagar esta tarjeta?"
+          hint="Solo cambia el recordatorio del pago y lo que el agente te dice — el presupuesto siempre usa el mínimo."
+        >
+          <View style={styles.currencyRow}>
+            {(
+              [
+                ["minimum", "Pago mínimo"],
+                ["full", "De contado"],
+              ] as const
+            ).map(([value, label]) => (
+              <Pressable
+                key={value}
+                onPress={() => setPaymentMode(value)}
+                style={({ pressed }) => [
+                  styles.currencyBtn,
+                  paymentMode === value && styles.currencyBtnActive,
+                  pressed && { opacity: 0.8 },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.currencyLabel,
+                    paymentMode === value && styles.currencyLabelActive,
+                  ]}
+                >
+                  {label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </Field>
+
         <Field label="Día de corte (1–31, opcional)">
           <TextInput
             style={styles.input}
@@ -614,7 +653,7 @@ function Field({
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   scroll: { flex: 1 },
-  content: { padding: Spacing.md, gap: Spacing.lg, paddingBottom: Spacing.xl },
+  content: { padding: Spacing.md, gap: Spacing.lg, paddingBottom: Spacing.xl * 2 },
 
   fieldGroup: { gap: Spacing.xs },
   label: {
