@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Optional
 
 from sqlalchemy import Boolean, ForeignKey, Numeric, String
 from sqlalchemy.dialects.postgresql import UUID
@@ -28,6 +29,12 @@ class Account(Base):
     initial_balance: Mapped[Decimal] = mapped_column(
         Numeric(14, 2), nullable=False, default=0
     )
+    # Statement-reconciliation identity (migration 0038). Nullable; self-stamped
+    # the first time a statement leg resolves to this account so the NEXT
+    # statement matches deterministically (IBAN → account_number → last4).
+    iban: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    account_number: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    last4: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     archived: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False

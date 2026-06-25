@@ -137,11 +137,16 @@ STATEMENT_PROPOSAL = (
     "Leí tu estado de {bank} al {corte}. Voy a dejar estos saldos igual que tu "
     "banco:\n{lines}\n\n¿Los aplico?"
 )
-STATEMENT_UNMATCHED = (
-    "\n\nNo pude emparejar: {names}. Reconcilialas desde la app si querés."
+STATEMENT_REVIEW = (
+    "\n\nEstos los revisás en la app (no me cuadraron o no los pude emparejar): "
+    "{names}."
 )
 STATEMENT_RECONCILED = (
     "Listo, reconcilié {count} {noun} al {corte}. Ahora cuadran con tu banco."
+)
+STATEMENT_RECONCILE_FAILED = (
+    "No pude aplicar la reconciliación (alguna cuenta cambió o el monto no era "
+    "válido). Probá de nuevo o reconciliá desde la app."
 )
 
 # Phase 7b — transfers between own accounts (card payment = transfer).

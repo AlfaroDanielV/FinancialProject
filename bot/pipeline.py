@@ -724,7 +724,17 @@ async def _handle_confirm(
     if pending.action_type == "reconcile_statement":
         # Statement reconciliation: anchor each matched account to its corte
         # balance (+ set loan balances) in one batch. Append-only; not in /undo.
-        await commit_pending(user=user, pending=pending, db=db, redis=redis)
+        # A target can go archived/foreign or a value can fail validation between
+        # propose and confirm — surface that as Spanish copy, never a raw crash.
+        from api.services.statements import ReconcileError
+
+        try:
+            await commit_pending(user=user, pending=pending, db=db, redis=redis)
+        except (ReconcileError, ValidationError, ValueError) as exc:
+            log.warning("statement reconcile commit failed: %s", exc)
+            await db.rollback()
+            await clear_pending(user_id=user.id, redis=redis)
+            return BotReply(text=messages_es.STATEMENT_RECONCILE_FAILED)
         payload = pending.payload
         n = len(payload["items"])
         reply = BotReply(
@@ -1106,7 +1116,11 @@ async def handle_statement_document(
     from api.models.account import Account
     from api.models.debt import Debt
     from api.services.llm_extractor import extract_statement
-    from api.services.statements import suggest_targets
+    from api.services.statement_normalize import (
+        build_reconcile_plan,
+        is_auto_includable,
+        leg_to_item,
+    )
 
     try:
         extraction = await extract_statement(
@@ -1121,72 +1135,53 @@ async def handle_statement_document(
         log.exception("statement extraction failed")
         return BotReply(text=messages_es.STATEMENT_PARSE_ERROR)
 
-    if not extraction.products or extraction.corte_date is None:
+    if not extraction.accounts or extraction.period_end is None:
         return BotReply(text=messages_es.STATEMENT_EMPTY)
 
-    extraction = await suggest_targets(db, user=user, extraction=extraction)
-    corte = extraction.corte_date
-
-    acct_ids = [
-        p.suggested_account_id
-        for p in extraction.products
-        if p.kind in ("deposit", "credit") and p.suggested_account_id
-    ]
-    debt_ids = [
-        p.suggested_debt_id
-        for p in extraction.products
-        if p.kind == "loan" and p.suggested_debt_id
-    ]
-    accounts = (
-        {
-            a.id: a
-            for a in (
-                await db.execute(select(Account).where(Account.id.in_(acct_ids)))
-            ).scalars()
-        }
-        if acct_ids
-        else {}
+    accounts = list(
+        (
+            await db.execute(
+                select(Account).where(
+                    Account.user_id == user.id,
+                    Account.is_active.is_(True),
+                    Account.archived.is_(False),
+                )
+            )
+        ).scalars()
     )
-    debts = (
-        {
-            d.id: d
-            for d in (
-                await db.execute(select(Debt).where(Debt.id.in_(debt_ids)))
-            ).scalars()
-        }
-        if debt_ids
-        else {}
+    debts = list(
+        (
+            await db.execute(
+                select(Debt).where(
+                    Debt.user_id == user.id,
+                    Debt.is_active.is_(True),
+                    Debt.archived.is_(False),
+                )
+            )
+        ).scalars()
     )
+    plan = build_reconcile_plan(extraction, accounts=accounts, debts=debts)
+    corte = plan.corte_date
 
     _KIND_LABEL = {"deposit": "Cuenta", "credit": "Tarjeta", "loan": "Préstamo"}
     items: list[dict] = []
     lines: list[str] = []
-    unmatched: list[str] = []
-    for p in extraction.products:
-        product_label = p.label or _KIND_LABEL[p.kind]
-        if p.account_last4:
-            product_label = f"{product_label} …{p.account_last4}"
-        if p.kind == "loan":
-            target = debts.get(p.suggested_debt_id) if p.suggested_debt_id else None
-        else:
-            target = (
-                accounts.get(p.suggested_account_id)
-                if p.suggested_account_id
-                else None
-            )
-        if target is None:
-            unmatched.append(product_label)
+    review: list[str] = []
+    for leg in plan.legs:
+        leg_label = leg.label or _KIND_LABEL.get(leg.resolution.kind, "Producto")
+        if leg.last4:
+            leg_label = f"{leg_label} …{leg.last4}"
+        if not is_auto_includable(leg):
+            # Conservation-flagged, no role candidate, or no confident target →
+            # the user resolves it in the app (no silent drop).
+            review.append(leg_label)
             continue
-        items.append(
-            {
-                "kind": p.kind,
-                "target_id": str(target.id),
-                "closing_balance": str(p.closing_balance),
-            }
-        )
+        # The one collapse point — identical to the REST/native write items.
+        items.append(leg_to_item(leg).model_dump(mode="json"))
+        name = leg.resolution.target_name or leg_label
         lines.append(
-            f"• {target.name}: "
-            f"{format_amount(Decimal(str(p.closing_balance)), p.currency)}"
+            f"• {name}: "
+            f"{format_amount(Decimal(str(leg.reconcile_value)), leg.currency)}"
         )
 
     if not items:
@@ -1196,14 +1191,12 @@ async def handle_statement_document(
 
     short_id = new_short_id()
     summary = messages_es.STATEMENT_PROPOSAL.format(
-        bank=extraction.bank or "tu banco",
+        bank=plan.bank or "tu banco",
         corte=corte.isoformat(),
         lines="\n".join(lines),
     )
-    if unmatched:
-        summary += messages_es.STATEMENT_UNMATCHED.format(
-            names=", ".join(unmatched)
-        )
+    if review:
+        summary += messages_es.STATEMENT_REVIEW.format(names=", ".join(review))
     pending = PendingAction(
         short_id=short_id,
         action_type="reconcile_statement",

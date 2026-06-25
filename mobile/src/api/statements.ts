@@ -15,11 +15,23 @@ export interface StatementProduct {
   label: string | null;
   account_last4: string | null;
   iban: string | null;
+  account_number: string | null;
   currency: string;
   kind: StatementKind;
-  closing_balance: number;
+  // null when no role candidate resolved — the row must not anchor a fabricated 0.
+  closing_balance: number | null;
   suggested_account_id: string | null;
   suggested_debt_id: string | null;
+  // Enrichment (generalized reconciliation): null = unverifiable, true =
+  // conservation-checked, false = mismatch → needs review.
+  conservation_ok?: boolean | null;
+  needs_review?: boolean;
+  review_reason?: string | null;
+  target_role?: string | null;
+  attributed_instruments?: string[];
+  candidate_ids?: string[];
+  // 1.0 = a confident identity match; only then do we self-stamp identity.
+  match_confidence?: number;
 }
 
 export interface StatementExtraction {
@@ -33,6 +45,12 @@ export interface StatementReconcileItem {
   kind: StatementKind;
   target_id: string;
   closing_balance: string; // decimal as string
+  currency?: string | null; // writer guards a currency mismatch when present
+  iban?: string | null; // self-stamped onto the target if its column is null
+  account_number?: string | null;
+  last4?: string | null;
+  conservation_ok?: boolean | null;
+  needs_review?: boolean;
 }
 
 export interface StatementReconcileResultItem {
@@ -42,6 +60,8 @@ export interface StatementReconcileResultItem {
   delta: string | null;
   anchor_id: string | null;
   new_balance: string;
+  conservation_ok?: boolean | null;
+  needs_review?: boolean;
 }
 
 export interface StatementReconcileResponse {

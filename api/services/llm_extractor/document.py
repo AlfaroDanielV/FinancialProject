@@ -28,7 +28,7 @@ from ...models.llm_extraction import LLMExtraction
 from ...models.user import User
 from ...schemas.card_terms import CardTermsExtraction
 from ...schemas.debts import DebtTermsExtraction
-from ...schemas.statements import StatementExtraction
+from ...schemas.statements import StatementExtractionV2
 from .client import LLMClient, LLMClientError
 
 _CONFIDENCE_THRESHOLD = 0.65
@@ -254,96 +254,243 @@ _CARD_TERMS_TOOL = {
 }
 
 
-# ── Bank-statement reconciliation: read ending balance(s) per product ─────────
+# ── Bank-statement reconciliation: normalize into semantic primitives ─────────
+# The SAME shape for every bank and account type. The LLM tags account_type /
+# direction / role / contingent and COPIES amounts verbatim; it computes nothing.
+# Deterministic code (statement_normalize.build_reconcile_plan) does conservation,
+# dedup, target-role selection, and ledger resolution.
 
 _STATEMENT_SYSTEM_PROMPT = (
     "Sos un extractor de estados de cuenta bancarios costarricenses. Tu único "
     "trabajo es leer el estado de cuenta adjunto (PDF) y llamar la herramienta "
     "extract_statement. No respondas con texto — siempre llamá la herramienta. "
-    "Un estado puede traer VARIOS productos en un solo documento (por ejemplo "
-    "el BAC trae varias cuentas a la vista más un crédito). Devolvé CADA "
-    "producto con su saldo al corte. Si un dato no está, dejalo en null; NO "
-    "inventes. Preferimos una extracción parcial honesta a una inventada."
+    "Copiás los montos TAL CUAL aparecen impresos (positivos); NO calculás, NO "
+    "sumás, NO decidís cuál saldo es 'el correcto'. Solo etiquetás. Si un dato "
+    "no está, dejalo en null; NO inventes. Preferimos una extracción parcial "
+    "honesta a una inventada."
 )
 
 _STATEMENT_PROMPT = (
-    "Adjunté mi estado de cuenta. Extraé cada producto con la herramienta "
-    "extract_statement. Para cada producto: kind = 'deposit' para una cuenta a "
-    "la vista / ahorro / corriente, 'credit' para una tarjeta de crédito, "
-    "'loan' para un préstamo o crédito. closing_balance = el SALDO AL CORTE de "
-    "la cuenta, o el saldo adeudado / saldo al corte de la tarjeta o préstamo, "
-    "como número POSITIVO tal como aparece impreso. account_last4 = los últimos "
-    "4 dígitos del IBAN o número de cuenta. corte_date = la fecha de corte como "
-    "YYYY-MM-DD (solo el día, sin hora). Si una tarjeta opera en colones y "
-    "dólares con saldos separados, devolvé un producto por moneda."
+    "Adjunté mi estado de cuenta. Llamá extract_statement con UNA entrada por "
+    "cada CUENTA o producto (no por cada tarjeta física).\n\n"
+    "account_type: 'checking'/'savings' para cuentas a la vista o de ahorro, "
+    "'credit_card' para tarjeta de crédito, 'loan' para préstamo, "
+    "'line_of_credit' para línea de crédito, 'investment' para inversión.\n\n"
+    "UNA tarjeta puede tener varias tarjetas físicas (titular + adicionales) con "
+    "distintos números: es UNA sola cuenta con UN saldo por moneda. Poné cada "
+    "número en 'instruments' (sin monto). NO creés una cuenta por cada tarjeta "
+    "física. Si la tarjeta opera en colones Y dólares con saldos separados, eso "
+    "SÍ son dos 'currency_legs' dentro de la MISMA cuenta.\n\n"
+    "Por cada currency_leg:\n"
+    "- opening_balance = el 'saldo anterior' impreso (positivo), o null si no "
+    "aparece.\n"
+    "- flows = cada movimiento del período. amount = monto POSITIVO impreso. "
+    "direction = 'inflow' para lo que ENTRA / reduce la deuda (depósitos, pagos "
+    "recibidos, abonos, créditos) y 'outflow' para lo que SALE / aumenta la "
+    "deuda (compras, retiros, cargos, comisiones). contingent = true SOLO para "
+    "montos que todavía NO forman parte del saldo a pagar de contado este corte "
+    "— típicamente los intereses corrientes que se cobran solo si no pagás de "
+    "contado, o cuotas futuras de un plan. El interés ya capitalizado NO es "
+    "contingente.\n"
+    "- closing_candidates = cada saldo final impreso CON su rol: 'payoff' = "
+    "saldo de contado / pago total / 'para no generar intereses'; 'financed' = "
+    "saldo financiado o saldo total; 'minimum' = pago mínimo; 'closing' = saldo "
+    "al corte de una cuenta; 'available' = saldo disponible; "
+    "'principal_outstanding' = saldo de principal de un préstamo; "
+    "'market_value' = valor de mercado de una inversión; 'previous' = saldo "
+    "anterior. Copiá TODOS los saldos que aparezcan con su rol; NO elijas vos "
+    "cuál es el correcto.\n\n"
+    "identifiers = IBAN / número de cuenta / últimos 4 dígitos si aparecen. "
+    "period_end = la fecha de corte como YYYY-MM-DD (solo el día)."
 )
+
+_BALANCE_ROLES = [
+    "closing",
+    "available",
+    "financed",
+    "payoff",
+    "minimum",
+    "principal_outstanding",
+    "market_value",
+    "previous",
+]
 
 _STATEMENT_TOOL = {
     "name": "extract_statement",
     "description": (
-        "Extract every product (account / card / loan) and its closing balance "
-        "from the attached Costa Rican bank statement PDF. Always call this "
-        "tool; never reply in free text. A single statement may bundle several "
-        "products — return one entry per product. Leave any absent field null."
+        "Normalize a Costa Rican bank statement PDF into semantic primitives: "
+        "one entry per ACCOUNT (not per physical card), each with its currency "
+        "legs, sign-tagged flows, and role-tagged closing balances. Always call "
+        "this tool; never reply in free text. Copy amounts verbatim as positive "
+        "magnitudes; only TAG them. Leave any absent field null."
     ),
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
-        "required": ["corte_date", "products", "confidence"],
+        "required": ["accounts", "confidence"],
         "properties": {
             "bank": {
                 "type": ["string", "null"],
                 "description": "Issuing bank ('BAC', 'Promerica', 'BCR').",
             },
-            "corte_date": {
+            "period_start": {
+                "type": ["string", "null"],
+                "description": "Statement period start as YYYY-MM-DD.",
+            },
+            "period_end": {
                 "type": ["string", "null"],
                 "description": (
-                    "Fecha de corte as YYYY-MM-DD (day-level, no time)."
+                    "Fecha de corte (period end) as YYYY-MM-DD — the anchor date."
                 ),
             },
-            "products": {
+            "due_date": {
+                "type": ["string", "null"],
+                "description": "Payment due date as YYYY-MM-DD, if printed.",
+            },
+            "accounts": {
                 "type": "array",
-                "description": "One entry per product on the statement.",
+                "description": "One entry per account/product (NOT per card).",
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["kind", "currency", "closing_balance"],
+                    "required": ["account_type", "currency_legs"],
                     "properties": {
-                        "label": {
-                            "type": ["string", "null"],
-                            "description": (
-                                "Human label / product name as printed "
-                                "('Cuenta a la vista', 'VISA Emerald')."
-                            ),
-                        },
-                        "account_last4": {
-                            "type": ["string", "null"],
-                            "description": (
-                                "Last 4 digits of the IBAN / account number."
-                            ),
-                        },
-                        "iban": {
-                            "type": ["string", "null"],
-                            "description": "Full IBAN if printed (optional).",
-                        },
-                        "currency": {
+                        "account_type": {
                             "type": "string",
-                            "enum": ["CRC", "USD"],
+                            "enum": [
+                                "checking",
+                                "savings",
+                                "credit_card",
+                                "loan",
+                                "line_of_credit",
+                                "investment",
+                            ],
                         },
-                        "kind": {
-                            "type": "string",
-                            "enum": ["deposit", "credit", "loan"],
+                        "issuer": {
+                            "type": ["string", "null"],
+                            "description": "Issuing institution if distinct from bank.",
+                        },
+                        "product_name": {
+                            "type": ["string", "null"],
                             "description": (
-                                "deposit = cuenta a la vista/ahorro/corriente; "
-                                "credit = tarjeta de crédito; loan = préstamo."
+                                "Product name as printed ('Cuenta a la vista', "
+                                "'VISA Emerald Infinite')."
                             ),
                         },
-                        "closing_balance": {
-                            "type": "number",
+                        "identifiers": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["kind", "value"],
+                                "properties": {
+                                    "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                            "iban",
+                                            "account_number",
+                                            "masked_pan",
+                                            "last4",
+                                            "product_code",
+                                        ],
+                                    },
+                                    "value": {"type": "string"},
+                                },
+                            },
+                        },
+                        "instruments": {
+                            "type": "array",
                             "description": (
-                                "SALDO AL CORTE (account) or saldo adeudado "
-                                "(card/loan) as a POSITIVE magnitude."
+                                "Physical cards under this account — attribution "
+                                "ONLY, never a balance."
                             ),
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "masked_pan": {"type": ["string", "null"]},
+                                    "holder_name": {"type": ["string", "null"]},
+                                    "is_supplementary": {"type": "boolean"},
+                                },
+                            },
+                        },
+                        "currency_legs": {
+                            "type": "array",
+                            "description": "One per currency the account runs in.",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["currency"],
+                                "properties": {
+                                    "currency": {
+                                        "type": "string",
+                                        "enum": ["CRC", "USD"],
+                                    },
+                                    "opening_balance": {
+                                        "type": ["number", "null"],
+                                        "description": (
+                                            "'Saldo anterior' as a positive "
+                                            "magnitude, or null."
+                                        ),
+                                    },
+                                    "flows": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "additionalProperties": False,
+                                            "required": ["amount", "direction"],
+                                            "properties": {
+                                                "amount": {
+                                                    "type": "number",
+                                                    "description": (
+                                                        "Positive magnitude as "
+                                                        "printed."
+                                                    ),
+                                                },
+                                                "direction": {
+                                                    "type": "string",
+                                                    "enum": ["inflow", "outflow"],
+                                                    "description": (
+                                                        "inflow = entra / reduce "
+                                                        "deuda; outflow = sale / "
+                                                        "aumenta deuda."
+                                                    ),
+                                                },
+                                                "contingent": {
+                                                    "type": "boolean",
+                                                    "description": (
+                                                        "true only if NOT in the "
+                                                        "pay-in-full balance "
+                                                        "(current-period interest)."
+                                                    ),
+                                                },
+                                                "label_raw": {
+                                                    "type": ["string", "null"]
+                                                },
+                                            },
+                                        },
+                                    },
+                                    "closing_candidates": {
+                                        "type": "array",
+                                        "description": (
+                                            "Every printed ending balance, each "
+                                            "with its role. Do NOT pick one."
+                                        ),
+                                        "items": {
+                                            "type": "object",
+                                            "additionalProperties": False,
+                                            "required": ["amount", "role"],
+                                            "properties": {
+                                                "amount": {"type": "number"},
+                                                "role": {
+                                                    "type": "string",
+                                                    "enum": _BALANCE_ROLES,
+                                                },
+                                            },
+                                        },
+                                    },
+                                },
+                            },
                         },
                     },
                 },
@@ -424,11 +571,12 @@ async def extract_statement(
     haiku_model: str,
     sonnet_model: str,
     db: AsyncSession,
-) -> StatementExtraction:
-    """Read every product + its closing balance from a bank statement PDF.
-    Same Haiku-first / Sonnet-retry contract as `extract_debt_terms`. Returns a
-    validated `StatementExtraction` (does NOT write anything — the deterministic
-    reconcile path appends the anchors)."""
+) -> StatementExtractionV2:
+    """Normalize a bank statement PDF into the semantic primitives
+    (`StatementExtractionV2`). Same Haiku-first / Sonnet-retry contract as
+    `extract_debt_terms`. Does NOT write anything — `build_reconcile_plan` turns
+    this into a reconcile plan and the deterministic reconcile path appends the
+    anchors."""
     return await _extract_document(
         user=user,
         pdf_bytes=pdf_bytes,
@@ -439,7 +587,7 @@ async def extract_statement(
         system_prompt=_STATEMENT_SYSTEM_PROMPT,
         user_prompt=_STATEMENT_PROMPT,
         tool=_STATEMENT_TOOL,
-        result_model=StatementExtraction,
+        result_model=StatementExtractionV2,
         intent="parse_statement",
     )
 

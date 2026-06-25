@@ -281,6 +281,12 @@ async def _commit_reconcile_statement(
             kind=it["kind"],
             target_id=uuid.UUID(it["target_id"]),
             closing_balance=Decimal(it["closing_balance"]),
+            currency=it.get("currency"),
+            iban=it.get("iban"),
+            account_number=it.get("account_number"),
+            last4=it.get("last4"),
+            conservation_ok=it.get("conservation_ok"),
+            needs_review=it.get("needs_review", False),
         )
         for it in payload["items"]
     ]

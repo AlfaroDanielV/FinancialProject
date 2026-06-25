@@ -36,6 +36,7 @@ import {
   STATEMENT_KIND_LABELS,
   type StatementExtraction,
   type StatementKind,
+  type StatementProduct,
   type StatementReconcileItem,
 } from "../api/statements";
 import { fetchAccounts, type AccountResponse } from "../api/accounts";
@@ -56,6 +57,14 @@ function todayIso(): string {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${d.getFullYear()}-${m}-${day}`;
+}
+
+function reviewLabel(p: StatementProduct): string {
+  if (p.review_reason === "conservation_mismatch")
+    return "Revisar — el saldo no cuadra con los movimientos";
+  if (p.review_reason === "no_target_role")
+    return "Revisar — no encontré el saldo a aplicar";
+  return "Revisar antes de aplicar";
 }
 
 interface RowState {
@@ -103,7 +112,13 @@ export function StatementReconcileScreen() {
         data.products.map((p) => {
           const suggested =
             p.kind === "loan" ? p.suggested_debt_id : p.suggested_account_id;
-          return { enabled: Boolean(suggested), targetId: suggested };
+          // Conservation-flagged rows default OFF — the user confirms them. A
+          // row with no resolved balance can't anchor anything.
+          return {
+            enabled:
+              Boolean(suggested) && !p.needs_review && p.closing_balance != null,
+            targetId: suggested,
+          };
         }),
       );
     },
@@ -120,11 +135,24 @@ export function StatementReconcileScreen() {
       const items: StatementReconcileItem[] = [];
       (extraction?.products ?? []).forEach((p, i) => {
         const row = rows[i];
-        if (row?.enabled && row.targetId) {
+        if (row?.enabled && row.targetId && p.closing_balance != null) {
+          // Self-stamp identity onto the target only for a confident identity
+          // match the user did NOT override — otherwise we'd poison the next
+          // statement's deterministic resolution.
+          const suggestedId =
+            p.kind === "loan" ? p.suggested_debt_id : p.suggested_account_id;
+          const stampable =
+            (p.match_confidence ?? 0) >= 1 && row.targetId === suggestedId;
           items.push({
             kind: p.kind,
             target_id: row.targetId,
             closing_balance: String(p.closing_balance),
+            currency: p.currency,
+            iban: stampable ? p.iban : null,
+            account_number: stampable ? p.account_number : null,
+            last4: stampable ? p.account_last4 : null,
+            conservation_ok: p.conservation_ok ?? null,
+            needs_review: p.needs_review ?? false,
           });
         }
       });
@@ -168,7 +196,9 @@ export function StatementReconcileScreen() {
   };
 
   const enabledCount = rows.filter((r, i) => {
-    return r.enabled && r.targetId && extraction?.products[i];
+    return (
+      r.enabled && r.targetId && extraction?.products[i]?.closing_balance != null
+    );
   }).length;
   const canSubmit = enabledCount > 0 && Boolean(corte) && !reconcileMutation.isPending;
 
@@ -252,15 +282,39 @@ export function StatementReconcileScreen() {
                     </View>
                     <Switch
                       value={active}
+                      disabled={p.closing_balance == null}
                       onValueChange={(v) => setRow(i, { enabled: v })}
                       trackColor={{ false: Colors.border, true: Colors.accentSoft }}
                       thumbColor={active ? Colors.accent : Colors.bgCard}
                     />
                   </View>
 
+                  {p.needs_review || p.conservation_ok === false ? (
+                    <View style={styles.reviewBadge}>
+                      <Feather name="alert-triangle" size={12} color={Colors.warning} />
+                      <Text style={styles.reviewBadgeText}>{reviewLabel(p)}</Text>
+                    </View>
+                  ) : p.conservation_ok == null ? (
+                    <Text style={styles.unverified}>
+                      Sin verificar — confirmá el monto.
+                    </Text>
+                  ) : null}
+
+                  {p.attributed_instruments && p.attributed_instruments.length > 0 ? (
+                    <Text style={styles.instruments} numberOfLines={1}>
+                      Tarjetas: {p.attributed_instruments.join(", ")}
+                    </Text>
+                  ) : null}
+
                   <Text style={styles.rowBalance}>
-                    {formatMoney(p.closing_balance, p.currency)}{" "}
-                    <Text style={styles.rowBalanceCur}>{p.currency}</Text>
+                    {p.closing_balance != null ? (
+                      <>
+                        {formatMoney(p.closing_balance, p.currency)}{" "}
+                        <Text style={styles.rowBalanceCur}>{p.currency}</Text>
+                      </>
+                    ) : (
+                      <Text style={styles.rowBalanceCur}>Sin saldo aplicable</Text>
+                    )}
                   </Text>
 
                   <Pressable
@@ -424,6 +478,14 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
   },
   rowTitle: { flex: 1, fontSize: FontSize.sm, color: Colors.textPrimary },
+  reviewBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.xs,
+  },
+  reviewBadgeText: { fontSize: FontSize.xs, color: Colors.warning, flex: 1 },
+  unverified: { fontSize: FontSize.xs, color: Colors.textMuted },
+  instruments: { fontSize: FontSize.xs, color: Colors.textMuted },
   rowBalance: { fontSize: FontSize.lg, fontWeight: "700", color: Colors.textPrimary },
   rowBalanceCur: { fontSize: FontSize.xs, color: Colors.textMuted, fontWeight: "500" },
   targetBtn: {

@@ -1,30 +1,40 @@
-"""Bank-statement reconciliation — match products → set the real balance.
+"""Bank-statement reconciliation — apply a confirmed plan → set the real balance.
 
 A statement states each product's balance at the fecha de corte. We trust it as
-ground truth (same philosophy as the balance-anchor engine, 2026-06-19):
+ground truth (same philosophy as the balance-anchor engine, 2026-06-19). The
+extraction + the per-(account×leg) plan are built upstream by
+`statement_normalize.build_reconcile_plan` (semantic primitives + policy table +
+conservation); this module is the deterministic WRITER the plan collapses to:
 
-- **deposit** account → append a `source="statement"` anchor at the corte date
-  with `value = closing_balance`. Every txn dated ≤ corte is absorbed into the
-  stated balance (excluded by the strict `>` in `compute_account_balances`);
-  post-corte activity rides on top. `write_ajuste=False` — the corte balance IS
-  the truth, so there is no drift row to write at corte (a `S − balance_now`
-  ajuste dated at corte would be a confusing wrong-looking line).
+- **deposit / investment** account → append a `source="statement"` anchor at the
+  corte date with `value = closing_balance`. Every txn dated ≤ corte is absorbed
+  into the stated balance (excluded by the strict `>` in
+  `compute_account_balances`); post-corte activity rides on top. `write_ajuste=
+  False` — the corte balance IS the truth.
 - **credit** account → same anchor, but the card balance is stored NEGATIVE when
   owed (`owed = -balance`, see `credit_cards.py`), so the anchor value is
   `-closing_balance`.
-- **loan** → set `Debt.current_balance := closing_balance`. This is the ONE
-  sanctioned write to an otherwise-immutable debt financial field (the PATCH
-  whitelist forbids it); justified because the statement is authoritative. An
-  audit note is appended; the amortization schedule stays representational.
+- **loan / line_of_credit** → set `Debt.current_balance := closing_balance`. The
+  ONE sanctioned write to an otherwise-immutable debt field (the PATCH whitelist
+  forbids it); an audit note is appended.
 
-"LLM extracts; rules decide": the LLM proposed the figures; this deterministic
-path is the only writer. The caller commits.
+Two cross-cutting guards (defense in depth — a stale chat payload or a native
+override can hand a bad item straight to this writer, bypassing the plan builder):
+- **currency guard:** reject a leg whose `currency` ≠ the target's.
+- **identity self-stamp:** fill the target's NULL identity columns (IBAN /
+  account_number / last4) from the item so the NEXT statement matches
+  deterministically (fill-if-null, never clobber a user-set value).
+
+"LLM extracts; rules decide": this deterministic path is the only writer. The
+caller commits.
 """
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import date
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,100 +43,43 @@ from ..models.account import Account
 from ..models.debt import Debt
 from ..models.user import User
 from ..schemas.statements import (
-    StatementExtraction,
     StatementReconcileItem,
     StatementReconcileResultItem,
 )
 from .accounts import compute_account_balances
 from .anchors import apply_anchor
-from .dispatch.lazy_detection import match_account_hint
 
 _CENT = Decimal("0.01")
 
 
 class ReconcileError(ValueError):
-    """A reconcile item couldn't be applied (bad/foreign/archived target). The
-    router maps this to a 400 with the Spanish message."""
+    """A reconcile item couldn't be applied (bad/foreign/archived target, or a
+    currency mismatch). The router maps this to a 400 with the Spanish message."""
 
 
 def _is_credit(account: Account) -> bool:
     return account.account_type == "credit"
 
 
-async def suggest_targets(
-    db: AsyncSession,
-    *,
-    user: User,
-    extraction: StatementExtraction,
-) -> StatementExtraction:
-    """Fill each product's `suggested_account_id` / `suggested_debt_id` with a
-    best-guess match against the user's records (the form/chat lets the user
-    override). Deterministic — never an LLM decision. Mutates + returns the
-    extraction."""
-    accounts = list(
-        (
-            await db.execute(
-                select(Account).where(
-                    Account.user_id == user.id,
-                    Account.is_active.is_(True),
-                    Account.archived.is_(False),
-                )
-            )
-        ).scalars()
-    )
-    debts = list(
-        (
-            await db.execute(
-                select(Debt).where(
-                    Debt.user_id == user.id,
-                    Debt.is_active.is_(True),
-                    Debt.archived.is_(False),
-                )
-            )
-        ).scalars()
-    )
-
-    for product in extraction.products:
-        if product.kind == "loan":
-            cands = [d for d in debts if d.currency == product.currency]
-            if len(cands) == 1:
-                product.suggested_debt_id = cands[0].id
-            else:
-                hint = " ".join(
-                    p for p in (extraction.bank, product.label) if p
-                )
-                match = _match_debt(hint, cands)
-                if match is not None:
-                    product.suggested_debt_id = match.id
-            continue
-
-        want_credit = product.kind == "credit"
-        cands = [
-            a
-            for a in accounts
-            if _is_credit(a) == want_credit and a.currency == product.currency
-        ]
-        if len(cands) == 1:
-            product.suggested_account_id = cands[0].id
-            continue
-        hint = " ".join(p for p in (extraction.bank, product.label) if p)
-        result = match_account_hint(hint or None, cands)
-        if result.status == "matched" and result.account is not None:
-            product.suggested_account_id = result.account.id
-
-    return extraction
+def _guard_currency(item: StatementReconcileItem, target: Any, label: str) -> None:
+    """Reject a leg whose currency disagrees with the target's (the silent
+    USD-onto-CRC bug). No-op when the item omits currency (legacy payloads)."""
+    if not item.currency:
+        return
+    target_cur = (getattr(target, "currency", None) or "CRC").upper()
+    if item.currency.upper() != target_cur:
+        raise ReconcileError(
+            f"La moneda del producto ({item.currency.upper()}) no coincide con "
+            f"«{label}» ({target_cur})."
+        )
 
 
-def _match_debt(hint: str, debts: list[Debt]) -> Debt | None:
-    """Light fuzzy match of a statement hint to a Debt by name/lender. Reuses the
-    account matcher by treating the debt name as the candidate name."""
-    if not hint.strip() or not debts:
-        return None
-    # match_account_hint matches on `.name`; both Debt and Account expose it.
-    result = match_account_hint(hint, debts)  # type: ignore[arg-type]
-    if result.status == "matched":
-        return result.account  # type: ignore[return-value]
-    return None
+def _stamp_identity(item: StatementReconcileItem, target: Any) -> None:
+    """Fill the target's NULL identity columns from the item (fill-if-null)."""
+    for attr in ("iban", "account_number", "last4"):
+        val = getattr(item, attr, None)
+        if val and not getattr(target, attr, None):
+            setattr(target, attr, re.sub(r"\s+", "", val) or None)
 
 
 async def reconcile_products(
@@ -173,6 +126,8 @@ async def reconcile_products(
             raise ReconcileError(
                 f"El tipo del producto no coincide con la cuenta «{acct.name}»."
             )
+        _guard_currency(it, acct, acct.name)
+        _stamp_identity(it, acct)
         # Credit balances are stored NEGATIVE when owed (see credit_cards.py).
         value = -it.closing_balance if it.kind == "credit" else it.closing_balance
         res = await apply_anchor(
@@ -195,6 +150,8 @@ async def reconcile_products(
                 delta=(value - old_current).quantize(_CENT),
                 anchor_id=res.anchor_id,
                 new_balance=value,
+                conservation_ok=it.conservation_ok,
+                needs_review=it.needs_review,
             )
         )
 
@@ -218,6 +175,8 @@ async def reconcile_products(
                     f"El préstamo «{debt.name}» está archivado; no se puede "
                     "reconciliar."
                 )
+            _guard_currency(it, debt, debt.name)
+            _stamp_identity(it, debt)
             old_bal = Decimal(debt.current_balance or 0)
             new_bal = it.closing_balance
             debt.current_balance = new_bal
@@ -234,6 +193,8 @@ async def reconcile_products(
                     delta=(new_bal - old_bal).quantize(_CENT),
                     anchor_id=None,
                     new_balance=new_bal,
+                    conservation_ok=it.conservation_ok,
+                    needs_review=it.needs_review,
                 )
             )
 

@@ -10,6 +10,7 @@ from ..config import settings
 from ..database import get_db
 from ..dependencies import current_user
 from ..models.account import Account
+from ..models.debt import Debt
 from ..models.credit_card_terms import CreditCardTerms
 from ..models.user import User
 from ..schemas.account import (
@@ -45,10 +46,10 @@ from ..services.anchors import (
 )
 from ..services.clock import user_today
 from ..services.llm_extractor import extract_card_terms, extract_statement
+from ..services.statement_normalize import build_reconcile_plan, plan_to_extraction
 from ..services.statements import (
     ReconcileError,
     reconcile_products,
-    suggest_targets,
 )
 
 from bot.app import get_llm_client
@@ -296,7 +297,30 @@ async def parse_statement(
         sonnet_model=settings.llm_query_model,
         db=db,
     )
-    return await suggest_targets(db, user=user, extraction=extraction)
+    accounts = list(
+        (
+            await db.execute(
+                select(Account).where(
+                    Account.user_id == user.id,
+                    Account.is_active.is_(True),
+                    Account.archived.is_(False),
+                )
+            )
+        ).scalars()
+    )
+    debts = list(
+        (
+            await db.execute(
+                select(Debt).where(
+                    Debt.user_id == user.id,
+                    Debt.is_active.is_(True),
+                    Debt.archived.is_(False),
+                )
+            )
+        ).scalars()
+    )
+    plan = build_reconcile_plan(extraction, accounts=accounts, debts=debts)
+    return plan_to_extraction(plan, confidence=extraction.confidence)
 
 
 @router.post("/reconcile-statement", response_model=StatementReconcileResponse)

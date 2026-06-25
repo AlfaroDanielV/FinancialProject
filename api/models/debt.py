@@ -61,6 +61,11 @@ class Debt(Base):
     insurance_monthly: Mapped[Optional[float]] = mapped_column(
         Numeric(12, 2), nullable=True
     )
+    # Statement-reconciliation identity (migration 0038). Nullable; self-stamped
+    # when a loan statement leg resolves to this debt (account_number / IBAN).
+    iban: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    account_number: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    last4: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     archived: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False

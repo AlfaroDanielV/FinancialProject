@@ -6,9 +6,13 @@ Covers:
 3. `reconcile_products()` credit → owed balance anchors NEGATIVE (owed = -current).
 4. `reconcile_products()` loan → Debt.current_balance set + audit note appended.
 5. `reconcile_products()` multi-account batch in one corte.
-6. `suggest_targets()` pre-fills a single matching account.
+6. `build_reconcile_plan()` resolves a single match; the writer rejects a
+   currency mismatch and self-stamps identity so the next statement matches.
 7. `POST /accounts/parse-statement` 415 guard + happy path (no write).
 8. `POST /accounts/reconcile-statement` happy path + 400 on a foreign target.
+
+The deterministic plan builder + policy table + conservation have their own
+DB-free suite in `test_statement_plan.py`.
 
 FixtureLLMClient ignores the PDF bytes, so a minimal `%PDF-` header suffices.
 """
@@ -34,12 +38,15 @@ from api.models.user import User
 from api.services.accounts import compute_account_balances
 from api.services.llm_extractor import FixtureLLMClient, RecordedLLMResponse
 from api.services.llm_extractor.document import extract_statement
+from api.services.statement_normalize import build_reconcile_plan, plan_to_extraction
 from api.services.statements import (
     ReconcileError,
     reconcile_products,
-    suggest_targets,
 )
-from api.schemas.statements import StatementExtraction, StatementReconcileItem
+from api.schemas.statements import (
+    StatementExtractionV2,
+    StatementReconcileItem,
+)
 from bot.app import set_llm_client
 from sqlalchemy import select
 
@@ -61,25 +68,37 @@ pytestmark = pytest.mark.skipif(
 
 _TINY_PDF = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
 
-# A BAC-like consolidated statement: 2 deposit accounts + 1 loan.
+# A BAC-like consolidated statement (V2 semantic shape): 1 deposit + 1 loan.
 _STATEMENT = RecordedLLMResponse(
     tool_input={
         "bank": "BAC",
-        "corte_date": "2026-05-31",
+        "period_end": "2026-05-31",
         "confidence": 0.9,
-        "products": [
+        "accounts": [
             {
-                "kind": "deposit",
-                "currency": "CRC",
-                "closing_balance": 268207.37,
-                "account_last4": "2600",
-                "label": "Cuenta a la vista",
+                "account_type": "checking",
+                "product_name": "Cuenta a la vista",
+                "identifiers": [{"kind": "last4", "value": "2600"}],
+                "currency_legs": [
+                    {
+                        "currency": "CRC",
+                        "closing_candidates": [
+                            {"amount": 268207.37, "role": "closing"}
+                        ],
+                    }
+                ],
             },
             {
-                "kind": "loan",
-                "currency": "CRC",
-                "closing_balance": 12119385.98,
-                "label": "Crédito",
+                "account_type": "loan",
+                "product_name": "Crédito",
+                "currency_legs": [
+                    {
+                        "currency": "CRC",
+                        "closing_candidates": [
+                            {"amount": 12119385.98, "role": "principal_outstanding"}
+                        ],
+                    }
+                ],
             },
         ],
     },
@@ -157,10 +176,10 @@ async def test_extract_statement_parses_and_logs(db_with_user):
         db=session,
     )
     assert result.bank == "BAC"
-    assert result.corte_date == date(2026, 5, 31)
-    assert len(result.products) == 2
-    assert result.products[0].kind == "deposit"
-    assert result.products[1].kind == "loan"
+    assert result.period_end == date(2026, 5, 31)
+    assert len(result.accounts) == 2
+    assert result.accounts[0].account_type == "checking"
+    assert result.accounts[1].account_type == "loan"
 
     rows = (
         await session.execute(
@@ -306,27 +325,120 @@ async def test_reconcile_rejects_unknown_account(db_with_user):
         )
 
 
-# ── 7. suggest_targets pre-fills a single matching account ────────────────────
+# ── 7. build_reconcile_plan resolves a single matching account ────────────────
 
 
 @pytest.mark.asyncio
-async def test_suggest_targets_single_match(db_with_user):
+async def test_resolve_single_match(db_with_user):
     session, user_id = db_with_user
-    user = await session.get(User, user_id)
     a = await _account(session, user_id, name="BAC Principal")
 
-    extraction = StatementExtraction.model_validate(
+    extraction = StatementExtractionV2.model_validate(
         {
             "bank": "BAC",
-            "corte_date": "2026-05-31",
+            "period_end": "2026-05-31",
             "confidence": 0.9,
-            "products": [
-                {"kind": "deposit", "currency": "CRC", "closing_balance": 268207.37}
+            "accounts": [
+                {
+                    "account_type": "checking",
+                    "product_name": "Cuenta a la vista",
+                    "currency_legs": [
+                        {
+                            "currency": "CRC",
+                            "closing_candidates": [
+                                {"amount": 268207.37, "role": "closing"}
+                            ],
+                        }
+                    ],
+                }
             ],
         }
     )
-    out = await suggest_targets(session, user=user, extraction=extraction)
+    plan = build_reconcile_plan(extraction, accounts=[a], debts=[])
+    out = plan_to_extraction(plan, confidence=extraction.confidence)
     assert out.products[0].suggested_account_id == a.id
+
+
+# ── 7b. the writer rejects a currency mismatch (the silent-bug fix) ───────────
+
+
+@pytest.mark.asyncio
+async def test_reconcile_rejects_currency_mismatch(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    a = await _account(session, user_id, name="BAC CRC")  # CRC account
+    with pytest.raises(ReconcileError):
+        await reconcile_products(
+            session,
+            user=user,
+            corte_date=date(2026, 5, 31),
+            items=[
+                StatementReconcileItem(
+                    kind="deposit",
+                    target_id=a.id,
+                    closing_balance=Decimal("1"),
+                    currency="USD",  # ≠ the account's CRC
+                )
+            ],
+        )
+
+
+# ── 7c. identity self-stamp → the NEXT statement matches deterministically ────
+
+
+@pytest.mark.asyncio
+async def test_identity_self_stamp_then_deterministic_match(db_with_user):
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    a = await _account(session, user_id, account_type="credit", name="Promerica ₡")
+    b = await _account(session, user_id, account_type="credit", name="Promerica Oro ₡")
+
+    # First reconciliation carries the card's last4 → stamps it onto A.
+    await reconcile_products(
+        session,
+        user=user,
+        corte_date=date(2026, 5, 19),
+        items=[
+            StatementReconcileItem(
+                kind="credit",
+                target_id=a.id,
+                closing_balance=Decimal("100000"),
+                currency="CRC",
+                last4="1234",
+            )
+        ],
+    )
+    await session.commit()
+    await session.refresh(a)
+    assert a.last4 == "1234"
+
+    # A new statement whose card ends 1234 resolves to A outright — even though
+    # both A and B fuzzy-match "Promerica" (which would otherwise be ambiguous).
+    extraction = StatementExtractionV2.model_validate(
+        {
+            "bank": "Promerica",
+            "period_end": "2026-06-19",
+            "confidence": 0.9,
+            "accounts": [
+                {
+                    "account_type": "credit_card",
+                    "issuer": "Promerica",
+                    "product_name": "VISA",
+                    "identifiers": [{"kind": "last4", "value": "1234"}],
+                    "currency_legs": [
+                        {
+                            "currency": "CRC",
+                            "closing_candidates": [{"amount": 50000, "role": "payoff"}],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    plan = build_reconcile_plan(extraction, accounts=[a, b], debts=[])
+    (leg,) = plan.legs
+    assert leg.resolution.target_id == a.id
+    assert leg.resolution.confidence == 1.0
 
 
 # ── 8. endpoints ──────────────────────────────────────────────────────────────
