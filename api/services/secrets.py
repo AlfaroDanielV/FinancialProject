@@ -36,6 +36,16 @@ from typing import Optional, Protocol, runtime_checkable
 _log = logging.getLogger("api.services.secrets")
 
 
+class SecretStoreUnavailable(RuntimeError):
+    """The configured secret store cannot be built at all — a missing
+    `--extra azure` install, an unset `AZURE_KEY_VAULT_URL`, or an unknown
+    backend. This is a *process-wide* / config failure, never per-request,
+    so callers iterating users (the daily Gmail worker) treat it as
+    systemic and fail loudly instead of swallowing it per user. Subclasses
+    RuntimeError so existing `except RuntimeError` / `pytest.raises(
+    RuntimeError)` callers keep working."""
+
+
 # We deliberately re-import `settings` inside get_secret_store() rather
 # than at module level. Tests monkeypatch `settings.secret_store_backend`
 # at runtime; importing the singleton lazily keeps the selector honest.
@@ -188,7 +198,7 @@ class AzureKeyVaultStore:
 
     def __init__(self, vault_url: str) -> None:
         if not vault_url:
-            raise RuntimeError(
+            raise SecretStoreUnavailable(
                 "AZURE_KEY_VAULT_URL is not set; cannot use azure_kv backend."
             )
         try:
@@ -198,7 +208,7 @@ class AzureKeyVaultStore:
                 ResourceNotFoundError,
             )
         except ImportError as e:  # pragma: no cover — install-time issue
-            raise RuntimeError(
+            raise SecretStoreUnavailable(
                 "azure_kv backend requires `uv sync --extra azure` "
                 "(azure-identity + azure-keyvault-secrets)."
             ) from e
@@ -290,7 +300,7 @@ def get_secret_store() -> SecretStore:
                 vault_url=_settings.azure_key_vault_url
             )
         else:
-            raise RuntimeError(
+            raise SecretStoreUnavailable(
                 f"Unknown SECRET_STORE_BACKEND={backend!r}. "
                 f"Expected 'env', 'file', or 'azure_kv'."
             )

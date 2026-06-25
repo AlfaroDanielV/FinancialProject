@@ -13,10 +13,15 @@ The worker iterates over every active gmail_credentials row and:
     4. Calls maybe_send_shadow_summary so users in shadow window receive
        yesterday's roll-up.
 
-Exceptions per-user are caught and logged so one bad user doesn't kill
-the run for everyone else. The exit code is always 0 unless setup
-fails (DB connection, etc.) — the orchestrator only retries on infra
-errors, not per-user failures.
+Per-user exceptions are caught and logged so one bad user doesn't kill
+the run for everyone else (those count toward a failed tally but keep
+the loop going). The job exits NON-ZERO — so the orchestrator retries
+and the run shows Failed — when something systemic is detected:
+    * a `_is_systemic` failure (import / secret-store / config) on any
+      user re-raises immediately (it will hit every user identically), or
+    * every eligible user failed (`_raise_if_all_failed`) — a
+      finished-but-empty run is a red flag, not N coincidences.
+A run with zero eligible users exits 0 (nothing to do).
 
 Dependencies on the bot package are intentionally minimal — the
 notifier handles Telegram delivery via best-effort `bot.app.get_bot`,
@@ -39,7 +44,7 @@ from api.models.gmail_ingestion_run import GmailIngestionRun
 from api.redis_client import close_redis
 from api.services.gmail import notifier as notifier_mod
 from api.services.gmail.scanner import scan_user_inbox
-from api.services.secrets import close_secret_store
+from api.services.secrets import SecretStoreUnavailable, close_secret_store
 
 
 log = logging.getLogger("workers.gmail_daily")
@@ -49,6 +54,46 @@ log = logging.getLogger("workers.gmail_daily")
 # than this). 2 days = enough overlap that one missed cron doesn't lose
 # emails.
 _FALLBACK_WINDOW_DAYS = 2
+
+
+# Failure classes that are NOT user-specific: they recur identically for
+# every user, so swallowing them per-user lets the job report Succeeded
+# (exit 0) while scanning nobody. Bit us 2026-06-25: the worker image
+# shipped without `--extra azure`, so building the azure_kv secret store
+# raised SecretStoreUnavailable (cause: ModuleNotFoundError) for every
+# user — caught per-user, job stayed green, inboxes never scanned. These
+# fail the whole run loudly (non-zero exit → orchestrator retries + a
+# visible Failed status) instead.
+_SYSTEMIC_EXC = (ImportError, SecretStoreUnavailable)
+
+
+def _is_systemic(exc: BaseException) -> bool:
+    """True if `exc` (or any exception in its cause/context chain) is a
+    process-wide failure that will hit every user. We walk the chain
+    because the real failure arrives wrapped — SecretStoreUnavailable
+    raised `from ModuleNotFoundError`."""
+    seen: set[int] = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        if isinstance(cur, _SYSTEMIC_EXC):
+            return True
+        seen.add(id(cur))
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+def _raise_if_all_failed(*, ok: int, failed: int) -> None:
+    """A finished-but-entirely-failed run is a red flag — almost always
+    systemic (DB/KV/config), not N independent user problems. Raise so
+    the job exits non-zero instead of silently reporting success while
+    having scanned nobody. A run with no eligible users (ok+failed == 0)
+    is fine — there's simply nothing to do."""
+    total = ok + failed
+    if total > 0 and ok == 0:
+        raise RuntimeError(
+            f"daily Gmail run failed for all {total} user(s) — treating as "
+            f"systemic and failing the job"
+        )
 
 
 async def _last_successful_since(
@@ -68,9 +113,12 @@ async def _last_successful_since(
     return row.scalar_one_or_none()
 
 
-async def _scan_one_user(*, user_id) -> None:
-    """Execute the daily scan for a single user. All exceptions are
-    logged, never raised — the worker keeps going."""
+async def _scan_one_user(*, user_id) -> bool:
+    """Execute the daily scan for a single user. Returns True on success,
+    False on a swallowed per-user failure (one bad user must not kill the
+    run for everyone else). **Systemic** failures (`_is_systemic` — import
+    / secret-store / config) are RE-RAISED so the whole job fails loudly
+    rather than silently swallowing a problem that hits every user."""
     try:
         async with AsyncSessionLocal() as db:
             last_started = await _last_successful_since(
@@ -113,8 +161,17 @@ async def _scan_one_user(*, user_id) -> None:
             result.transactions_matched,
             result.transactions_skipped,
         )
-    except Exception:
+        return True
+    except Exception as exc:
+        if _is_systemic(exc):
+            # Not this user's fault — it will recur for everyone. Don't
+            # bury it as a per-user error; let it abort the run loudly.
+            log.error(
+                "daily_scan_systemic_error user=%s — aborting run", user_id
+            )
+            raise
         log.exception("daily_scan_error user=%s", user_id)
+        return False
 
 
 async def run_daily_for_all_users() -> None:
@@ -130,10 +187,24 @@ async def run_daily_for_all_users() -> None:
 
     log.info("daily_run_started users=%d", len(user_ids))
 
+    ok = 0
+    failed = 0
     for user_id in user_ids:
-        await _scan_one_user(user_id=user_id)
+        # A systemic failure re-raises here and aborts the run (the
+        # remaining users would fail identically). Per-user failures are
+        # swallowed (return False) and only count toward the tally.
+        if await _scan_one_user(user_id=user_id):
+            ok += 1
+        else:
+            failed += 1
 
-    log.info("daily_run_completed users=%d", len(user_ids))
+    log.info(
+        "daily_run_completed users=%d ok=%d failed=%d",
+        len(user_ids),
+        ok,
+        failed,
+    )
+    _raise_if_all_failed(ok=ok, failed=failed)
 
 
 async def main() -> None:
