@@ -1057,9 +1057,22 @@ fix lands on the next worker rebuild.
    `close_redis()` in `main()`'s `finally`. Cosmetic only; deploy on next
    worker rebuild. Tests: `tests/test_secret_store.py` (+3).
 
+4. **Worker error-handling hardened** (`b8b23a1`). The blanket per-user
+   `except` is what let bug #2 stay invisible (job green while scanning
+   nobody). Now: `secrets.SecretStoreUnavailable(RuntimeError)` marks the three
+   build-time secret-store failures; `gmail_daily._is_systemic()` walks the
+   cause/context chain for import/secret-store errors and `_scan_one_user`
+   **re-raises** those (aborts the run) while still swallowing genuine per-user
+   errors; the loop tallies `ok/failed` and `_raise_if_all_failed` exits
+   **non-zero** when every eligible user failed. A finished-but-empty run now
+   shows **Failed** + triggers an orchestrator retry instead of a silent green
+   no-op (zero eligible users still exits 0). Tests:
+   `tests/test_gmail_worker_hardening.py` (9).
+
 **Lessons:** (a) a per-user `try/except` that swallows a *hard dependency*
 error as a soft per-user failure keeps the job green while doing nothing — infra
-errors deserve a louder signal. (b) `Dockerfile.worker` and `Dockerfile.prod`
+errors deserve a louder signal (now enforced by `_is_systemic` re-raise +
+all-failed guard, `b8b23a1`). (b) `Dockerfile.worker` and `Dockerfile.prod`
 must keep the same `uv sync` extras; any KV-touching worker needs `--extra
 azure`. (c) a one-shot asyncio worker must close singleton network clients in a
 `finally` before the loop tears down.
