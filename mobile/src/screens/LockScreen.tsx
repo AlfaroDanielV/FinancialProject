@@ -72,8 +72,9 @@ export function LockScreen() {
 
 const styles = StyleSheet.create({
   safe: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: Colors.bg,
+    zIndex: 10,
   },
   center: {
     flex: 1,

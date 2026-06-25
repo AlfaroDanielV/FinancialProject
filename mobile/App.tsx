@@ -2,6 +2,7 @@ import { NavigationContainer } from "@react-navigation/native";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { useFonts } from "expo-font";
 import { StatusBar } from "expo-status-bar";
+import { View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { ErrorBoundary } from "./src/components/ErrorBoundary";
@@ -31,10 +32,15 @@ function AuthGate() {
   if (status === "anonymous") {
     return <LoginScreen />;
   }
-  if (status === "locked") {
-    return <LockScreen />;
-  }
-  return <AppNavigator />;
+  // Keep the app mounted under the lock so a re-lock never throws away the
+  // user's in-progress state (a half-filled form, the screen they were on).
+  // LockScreen is an opaque full-screen overlay; unlocking just removes it.
+  return (
+    <View style={{ flex: 1 }}>
+      <AppNavigator />
+      {status === "locked" && <LockScreen />}
+    </View>
+  );
 }
 
 export default function App() {

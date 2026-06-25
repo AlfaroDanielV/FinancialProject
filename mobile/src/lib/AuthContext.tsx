@@ -19,6 +19,12 @@ import {
 } from "./auth";
 import { biometricGateAvailable, promptBiometric } from "./biometric";
 
+// How long the app may sit in the background before it re-locks on return. A
+// quick app-switch under this stays unlocked — no re-prompt and no lost UI
+// state (forms, the screen you were on). A cold start always locks (the mount
+// effect), independent of this.
+const LOCK_AFTER_BACKGROUND_MS = 5 * 60 * 1000; // 5 minutes
+
 // "locked" = a valid session exists but the app is gated behind Face ID /
 // passcode (cold start with a persisted token, or returning from background).
 type AuthStatus = "loading" | "anonymous" | "locked" | "authenticated";
@@ -41,11 +47,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Refs that the long-lived listeners read without re-subscribing.
   const initializedRef = useRef(false); // ignore hydrate's notify; mount owns it
   const statusRef = useRef<AuthStatus>("loading");
-  // Re-lock only after a REAL background (home / app switch). The biometric
-  // prompt / Control Center / banners only cause "inactive", so this flag stays
-  // false through the prompt — that's what prevents the unlock→relock loop.
-  const wasBackgroundedRef = useRef(false);
-  const lastUnlockAtRef = useRef(0); // skip re-lock briefly after an unlock
+  // Timestamp (ms) of the last REAL background (home / app switch). The
+  // biometric prompt / Control Center / banners only cause "inactive" (never
+  // recorded here), so the prompt's own active→inactive→active blip can't
+  // re-lock. 0 = not currently backgrounded.
+  const backgroundedAtRef = useRef(0);
 
   useEffect(() => {
     statusRef.current = status;
@@ -87,26 +93,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Re-lock when returning from a GENUINE background with an unlocked session.
-  // iOS reports the biometric prompt / Control Center / notification banners as
-  // "inactive" (ignored here); only a home-press / app-switch reaches
-  // "background". Gating on that — never on "inactive" — is what stops the
-  // Face ID unlock→relock loop (the prompt's own active→inactive→active blip
-  // never sets wasBackgrounded).
+  // Re-lock on return from a background that lasted at least
+  // LOCK_AFTER_BACKGROUND_MS. "inactive" (the biometric prompt / Control Center
+  // / notification banners) is ignored, so the prompt can't trigger a re-lock —
+  // only a real home-press / app-switch records a background timestamp. A quick
+  // switch back under the threshold stays unlocked, so in-progress UI state is
+  // never thrown away.
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
       if (next === "background") {
-        wasBackgroundedRef.current = true;
+        backgroundedAtRef.current = Date.now();
         return;
       }
-      if (next !== "active") return; // ignore "inactive" (the prompt blip)
-      const wasBackgrounded = wasBackgroundedRef.current;
-      wasBackgroundedRef.current = false;
+      if (next !== "active") return; // ignore "inactive"
+      const bgAt = backgroundedAtRef.current;
+      backgroundedAtRef.current = 0;
       if (
-        wasBackgrounded &&
+        bgAt > 0 &&
+        Date.now() - bgAt >= LOCK_AFTER_BACKGROUND_MS &&
         statusRef.current === "authenticated" &&
-        getSessionToken() &&
-        Date.now() - lastUnlockAtRef.current > 1500
+        getSessionToken()
       ) {
         void biometricGateAvailable().then((gate) => {
           if (gate) setStatus("locked");
@@ -126,13 +132,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const unlock = useCallback(async () => {
     const ok = await promptBiometric();
-    if (ok) {
-      // Stamp the unlock so a background that happens to fire right around the
-      // prompt teardown can't immediately re-lock (belt-and-suspenders on top
-      // of the "ignore inactive" rule above).
-      lastUnlockAtRef.current = Date.now();
-      setStatus("authenticated");
-    }
+    if (ok) setStatus("authenticated");
     return ok;
   }, []);
 
