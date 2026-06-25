@@ -229,6 +229,18 @@ class AzureKeyVaultStore:
         except self._not_found:
             pass
 
+    async def aclose(self) -> None:
+        """Release the SecretClient + credential (each owns an aiohttp
+        ClientSession via azure-core's aio transport). Long-lived
+        processes never call this — the app holds one store for its
+        lifetime — but a one-shot worker must, or asyncio logs
+        'Unclosed client session' / 'Event loop is closed' on exit."""
+        for closeable in (self._client, self._credential):
+            try:
+                await closeable.close()
+            except Exception:  # best-effort teardown; never mask the run
+                _log.debug("secret store close failed", exc_info=True)
+
 
 # ── module-level selector ─────────────────────────────────────────────────────
 
@@ -241,6 +253,18 @@ def reset_store() -> None:
     `settings.secret_store_backend`."""
     global _store
     _store = None
+
+
+async def close_secret_store() -> None:
+    """Close + drop the cached store. Only AzureKeyVaultStore holds
+    network resources (Env/File stores have nothing to release), so this
+    is a no-op for them. Safe to call when no store was created."""
+    global _store
+    store = _store
+    _store = None
+    aclose = getattr(store, "aclose", None)
+    if aclose is not None:
+        await aclose()
 
 
 def get_secret_store() -> SecretStore:

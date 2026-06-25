@@ -216,3 +216,39 @@ def test_kv_name_for_user_uses_hyphens():
 def test_env_store_satisfies_protocol():
     store = secrets_mod.EnvSecretStore()
     assert isinstance(store, secrets_mod.SecretStore)
+
+
+# ── teardown (one-shot worker resource release) ───────────────────────────────
+
+
+async def test_close_secret_store_noop_for_env(monkeypatch, env_clean):
+    """Env/File stores hold no network resources — close just drops the
+    cached singleton without error."""
+    monkeypatch.setattr(settings, "secret_store_backend", "env")
+    secrets_mod.get_secret_store()
+    assert secrets_mod._store is not None
+    await secrets_mod.close_secret_store()
+    assert secrets_mod._store is None
+
+
+async def test_close_secret_store_safe_when_unset():
+    """Safe to call when no store was ever created (e.g. setup failed
+    before the first scan)."""
+    secrets_mod.reset_store()
+    await secrets_mod.close_secret_store()  # must not raise
+    assert secrets_mod._store is None
+
+
+async def test_close_secret_store_awaits_aclose():
+    """A store exposing aclose() (AzureKeyVaultStore) gets closed and the
+    singleton dropped."""
+    closed = []
+
+    class _FakeStore:
+        async def aclose(self) -> None:
+            closed.append(True)
+
+    secrets_mod._store = _FakeStore()
+    await secrets_mod.close_secret_store()
+    assert closed == [True]
+    assert secrets_mod._store is None

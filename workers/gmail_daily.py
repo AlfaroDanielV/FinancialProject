@@ -36,8 +36,10 @@ from api.database import AsyncSessionLocal
 from api.logging_config import setup_logging
 from api.models.gmail_credential import GmailCredential
 from api.models.gmail_ingestion_run import GmailIngestionRun
+from api.redis_client import close_redis
 from api.services.gmail import notifier as notifier_mod
 from api.services.gmail.scanner import scan_user_inbox
+from api.services.secrets import close_secret_store
 
 
 log = logging.getLogger("workers.gmail_daily")
@@ -146,7 +148,14 @@ async def main() -> None:
     try:
         await run_daily_for_all_users()
     finally:
+        # One-shot worker: explicitly release the singletons that hold
+        # network sessions before asyncio tears down the loop, or their
+        # __del__ logs 'Unclosed client session' / 'Event loop is closed'
+        # after the scan already succeeded. The long-lived API never does
+        # this (it holds them for its lifetime); a job that exits must.
         await stop_bot()
+        await close_secret_store()
+        await close_redis()
 
 
 if __name__ == "__main__":
