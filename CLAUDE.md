@@ -2076,6 +2076,89 @@ Canonical: vault `Decision - Statement Reconciliation (PDF To Balance Anchor)`.
   (no extractor change); per-product "Es otra cuenta" chat remap; `accounts.iban`
   for exact matching.
 
+### Generalized — Semantic Primitives + Policy Table (2026-06-25, merged to `dev` `1ad6f95`)
+
+The flat `StatementProduct{kind,last4,currency,closing_balance}` model above is
+**superseded** so reconciliation works for **any bank, any account type** with no
+bespoke parser. **Operator on-device sign-off pending.** Migration `0038`
+(identity columns). `committed_outflows`/cashflow byte-lock untouched. Canonical:
+vault `Decision - Statement Reconciliation Generalized (Semantic Primitives)`.
+Dissolves the two production bugs: **Bug 1** wrong-balance-field, **Bug 2**
+account-duplication.
+
+- **Two design moves.** (1) The LLM normalizes every statement into the SAME
+  **semantic primitives** — `StatementExtractionV2{accounts[]{account_type,
+  issuer, product_name, identifiers[], instruments[], currency_legs[]{currency,
+  opening_balance, flows[]{amount, direction, contingent, label_raw},
+  closing_candidates[]{amount, role}}}, period_end, …}`. The LLM tags
+  `account_type`/`direction`/`role`/`contingent` and copies amounts verbatim; it
+  **computes nothing**. (2) All bank/type behavior is deterministic code: a
+  **policy table** + **one universal conservation check**.
+- **Policy table** `api/services/statement_policy.py` — the ONLY type-specific
+  code. `account_type → (target_role, fallback_roles, sign asset|liability,
+  ledger_entity anchor|debt, reconcile_kind deposit|credit|loan)`:
+  checking/savings→(`closing`, asset, anchor, deposit); credit_card→(`payoff`,
+  liability, anchor, credit); loan/line_of_credit→(`principal_outstanding`,
+  liability, debt, loan); investment→(`market_value`, asset, anchor, deposit;
+  experimental). `reconcile_kind` maps the rich type back to the legacy 3-value
+  `StatementKind` so the **writer is untouched**. `select_target(leg, policy)`
+  returns `(magnitude quantized to cents, matched_role, ambiguous)`.
+- **Pipeline** `api/services/statement_normalize.py::build_reconcile_plan(extraction,
+  *, accounts, debts)` = NORMALIZE → DEDUP → VALIDATE → POLICY → RESOLVE → a
+  `ReconcilePlan` of one `LegPlan` per (account × currency leg). **Conservation**
+  (`check_conservation`): asset-orientation `expected = opening_signed + Σ(inflow −
+  outflow)` over **non-contingent** flows (a LIABILITY's opening is negative, so a
+  card payment reduces what's owed); compare **magnitudes** within 5 céntimos. It
+  **validates the LLM's role tag** (the Bug-1 backstop) and NEVER fabricates — the
+  role candidate is copied verbatim; mismatch → `needs_review`, not a write.
+  **Payoff correction:** `payoff = opening + Σ(non-contingent)`, the contingent
+  current-period interest excluded — NOT the draft's `financed − Σ(contingent)`
+  (which double-subtracts; ₡193 289,65 vs the wrong ₡187 849,09 on the Promerica
+  fixture). **Dedup (Bug 2):** group by identity signature (IBAN→account_number→
+  last4/PAN), identity-less accounts get a unique key so distinct same-named
+  accounts never collapse; instruments are **attribution-only** (no balance);
+  exactly one entry per (account × leg); dual-currency = two legs.
+- **The collapse seam.** The rich schema is an internal extraction+validation
+  representation that **collapses to the existing per-target
+  `StatementReconcileItem`** via the single point `auto_includable_items` /
+  `leg_to_item` (chat + REST/native both go through it). So `apply_anchor`, the
+  loan `Debt.current_balance` path, the native confirm form, and the chat confirm
+  stay essentially unchanged. The **parse response enriches**
+  (`conservation_ok`/`needs_review`/reason/`attributed_instruments`/`match_
+  confidence`); the **write request collapses**.
+- **Identity matching (operator chose columns + migration over deferring).**
+  Migration `0038` adds nullable `iban`/`account_number`/`last4` to `accounts` +
+  `debts`. RESOLVE = identifier priority (IBAN → account_number → unique last4 in
+  the policy+currency-filtered set) → issuer+product fuzzy (`match_account_hint`
+  0.85). The writer **self-stamps** NULL identity columns (fill-if-null) so the
+  NEXT statement matches deterministically — but ONLY for a **confident identity
+  match (confidence ≥ 1.0) the user didn't override** (so a by-elimination/fuzzy
+  match can't poison the wrong account). Resolves the old "`accounts.iban` for
+  exact matching" deferral.
+- **Writer guards** `api/services/statements.py::reconcile_products`: **currency
+  mismatch** → `ReconcileError` (fixes the silent USD-onto-CRC bug); identity
+  self-stamp; results echo `conservation_ok`/`needs_review`. **No silent drops** —
+  `needs_review`/unresolved/empty-leg products are surfaced (chat "revisalos en la
+  app"; native "Revisar" badge, default OFF, `closing_balance=null` →
+  non-toggleable so it can't anchor a fabricated ₡0). Chat commit wrapped →
+  `STATEMENT_RECONCILE_FAILED` Spanish copy (never a raw crash if a target went
+  archived/foreign between propose and confirm).
+- **LLM prompt** `document.py` — `_STATEMENT_TOOL`/`_SYSTEM`/`_PROMPT` rewritten to
+  emit V2 (one account per account, instruments not accounts, ₡+$ = two legs, tag
+  direction/role/contingent). `_extract_document`/`_run_one` (Haiku→Sonnet 0.65,
+  `pdf_b64`, `intent="parse_statement"`) unchanged. **Hard rule reaffirmed:** the
+  LLM never decides direction/role/dedup/the written number — [[Decision - LLM
+  Extracts Rules Decide]].
+- **Code-review fixes** (workflow-backed, high): a pre-merge multi-agent review
+  caught + I fixed seven confirmed bugs — identity-aware grouping, empty-leg
+  surfacing, null-balance projection, confidence-gated stamping, ambiguous-role
+  flag, cents-quantization (no `decimal_places=2` crash), chat-commit error net.
+- **Verification:** `tests/test_statement_plan.py` (13, DB-free) +
+  `tests/test_statement_reconcile.py` (12, DB) + `scripts/test_phase_7b.sh` (48
+  focused + 141 regression, cashflow byte-lock intact) + mobile `tsc --noEmit`
+  clean; `alembic current → 0038`. **Deferred (unchanged):** movement-level import;
+  live BCCR FX (₡500 placeholder); investment is experimental.
+
 ## CR Salary Calculator + Ingresos CRUD (post-7a, 2026-06-09)
 
 Deterministic Costa Rican net-pay calculator + full Ingresos CRUD. Backend +
@@ -2346,7 +2429,7 @@ INSIGHTS_DISPATCHER_ENABLED=false
 # exchange. (6f B16 removed the fa_session cookie + SESSION_COOKIE_* +
 # SPA_BASE_URL/SPA_CORS_ORIGINS with the SPA.)
 MAGIC_LINK_SESSION_SECRET=<strong random>
-SESSION_TTL_S=14400             # 4 hours (bearer JWT lifetime)
+SESSION_TTL_S=2592000           # 30 days (bearer JWT lifetime; the native biometric lock gates access)
 
 # Native app deep links (Phase 6f B15) — custom URL scheme in mobile/app.json.
 # Bot mints `<scheme>://exchange?token=...` so a tap opens the native app.
