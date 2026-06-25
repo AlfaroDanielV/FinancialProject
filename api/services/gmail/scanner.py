@@ -805,6 +805,7 @@ async def _process_one_message(
     # rejected_by_user).
     seen_outcome = {
         reconcile_mod.ReconcileOutcome.MATCHED_EXISTING: "matched",
+        reconcile_mod.ReconcileOutcome.APPLE_PAY_MERGED: "matched",
         reconcile_mod.ReconcileOutcome.CREATED_NEW: "created",
         reconcile_mod.ReconcileOutcome.CREATED_SHADOW: "created_shadow",
         reconcile_mod.ReconcileOutcome.DUPLICATE_GMAIL: "skipped",
@@ -838,7 +839,10 @@ async def _process_one_message(
         error=seen_error,
     )
 
-    if outcome == reconcile_mod.ReconcileOutcome.MATCHED_EXISTING:
+    if outcome in {
+        reconcile_mod.ReconcileOutcome.MATCHED_EXISTING,
+        reconcile_mod.ReconcileOutcome.APPLE_PAY_MERGED,
+    }:
         result.transactions_matched += 1
     elif outcome in {
         reconcile_mod.ReconcileOutcome.CREATED_NEW,

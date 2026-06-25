@@ -2159,6 +2159,76 @@ account-duplication.
   clean; `alembic current → 0038`. **Deferred (unchanged):** movement-level import;
   live BCCR FX (₡500 placeholder); investment is experimental.
 
+## Apple Pay → Zero-Touch Capture (iOS, 2026-06-25)
+
+Operator ask: an iOS Shortcuts **Wallet/Transaction trigger** automation logs a
+contactless (NFC) Apple Pay purchase into ledger_cr with zero touch, via a native
+**App Intent** that POSTs merchant + amount to the backend. An additional **fast
+signal, not a replacement** — the trigger fires on physical NFC taps only (not
+web/in-app Apple Pay, not chip/swipe), so **Gmail ingestion stays the system of
+record** and the same tap's later bank email reconciles into the same row. **No
+LLM on this path** (iOS is the extractor; deterministic rules decide). **Merged to
+`dev` (`feature/apple-pay-capture`); native build + operator on-device sign-off
+pending** (no native CI). Migration `0039`. `committed_outflows`/cashflow
+byte-lock untouched. Canonical: vault `Decision - Apple Pay Zero-Touch Capture`.
+
+- **Capture endpoint** `POST /api/v1/transactions/apple-pay` (bearer auth,
+  `current_user`): writes `source='apple_pay'`, `status='confirmed'` (counts in
+  balance AND reports immediately — operator decision) with sign=expense. Amount
+  is a STRING parsed to Decimal server-side (`api/services/money.py::
+  parse_money_magnitude`, CR-locale-aware; never float); currency CRC/USD stored
+  native (NO fx at capture). Best-effort card→account routing via
+  `match_account_hint` (currency-scoped), else `account_id=NULL` (the "Sin cuenta"
+  flow). `flag_and_notify` still runs (same-channel dupe detection).
+- **Idempotency** (offline retry): a per-tap `client_event_id` → `source_ref=
+  "apple_pay:{id}"` on the existing per-user UNIQUE partial index
+  `uq_transactions_user_source_ref` (migration 0006, previously unused). Explicit
+  SELECT-then-INSERT + `IntegrityError` re-select for the race. NOT Redis (a
+  durable financial write, unlike the transient bill mark-paid replay).
+- **Source CHECK** widened to add `apple_pay` (migration `0039`, the 0033 pattern).
+  No status migration (the row is `confirmed`). Balance filter UNCHANGED
+  (`compute_account_balances` already sums `status='confirmed'`).
+- **Reconciliation merge (Gmail)** `api/services/gmail/reconciler.py::
+  _find_apple_pay_provisional` — new branch in `reconcile()` BETWEEN
+  `_check_duplicate_gmail` and `_find_existing_match`: matches the incoming bank
+  email to a confirmed `apple_pay` row (same currency, signed amount ±
+  `AMOUNT_TOLERANCE`, date within **±5 days** `APPLE_PAY_LOOKBACK_DAYS` — Apple Pay
+  precedes the email; merchant a TIEBREAK not a gate) and **promotes it in place**
+  (`source→reconciled`, attach `gmail_message_id`, stays confirmed) — **never a
+  second row**, so the balance never double-counts. Ambiguity guard: with >1
+  amount+window match, merge ONLY when exactly one is merchant-similar, else fall
+  through to a shadow insert (user disambiguates). New
+  `ReconcileOutcome.APPLE_PAY_MERGED` → `scanner.py` maps it to seen `'matched'`;
+  `apple_pay` excluded from `_find_existing_match`.
+- **Native (mobile/, B1 — on-device verification required, no native CI):** Expo
+  config plugin `plugins/withApplePayIntent.js` injects the App Intent Swift
+  (`plugins/ios/ApplePayCaptureIntent.swift` — an `AppIntent` +
+  `AppShortcutsProvider`) into the **main app target** + `LedgerApiBaseUrl` into
+  Info.plist. The Intent reads the 30-day bearer JWT from the app's OWN keychain
+  (service `ledgercr.appintent`, written by `src/lib/appIntentToken.ts` at login,
+  `AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY`; queried **by service alone** so it doesn't
+  depend on expo-secure-store's account naming), parses the amount locale-aware,
+  generates the idempotency UUID, POSTs `Authorization: Bearer`, queues+retries on
+  offline failure, voseo dialogs on no-session/401. Reuses the existing
+  device-code session JWT (operator decision).
+- **Deployment (no Apple change):** the Intent is in the main app target reading
+  its own keychain, so **NO new capability/entitlement** — no Keychain Sharing, no
+  App Groups, no Apple Pay/PassKit. Same EAS Build → TestFlight flow. It is
+  **native** code → needs a NEW build (not an OTA `eas update`) + a `buildNumber`
+  bump. Setup doc `docs/apple-pay-setup.md` (es-CR voseo).
+- **Hard rule added:** a contactless Apple Pay tap is captured via the dedicated
+  `/transactions/apple-pay` endpoint (iOS extractor, deterministic write), never
+  the LLM path; the bank email is authoritative and merges INTO the provisional
+  row.
+- **Verification:** `tests/test_apple_pay_capture.py` (10: BAC ₡ merge=one row,
+  USD no fake FX, offline replay idempotent, unparseable→400 no row, ±5d
+  false-merge guard, unique-merchant merge) + reconciler/dedup/balance/accounts/
+  transactions/gmail-native regression (100) + cashflow byte-lock (28) green;
+  mobile `tsc --noEmit` clean; `alembic → 0039 (head)`. **Deferred:**
+  merchant→category classification (deterministic lookup later); multi-card
+  disambiguation beyond tagging; a refresh-token flow (30-day expiry accepted);
+  web/in-app Apple Pay + chip/swipe (Gmail covers those).
+
 ## CR Salary Calculator + Ingresos CRUD (post-7a, 2026-06-09)
 
 Deterministic Costa Rican net-pay calculator + full Ingresos CRUD. Backend +

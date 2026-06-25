@@ -42,7 +42,8 @@
         {
           "faceIDPermission": "Usá Face ID para entrar a Ledger CR."
         }
-      ]
+      ],
+      "./plugins/withApplePayIntent"
     ],
     "extra": {
       "phase": "6f",

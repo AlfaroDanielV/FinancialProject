@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models.account import Account
 from ...models.transaction import Transaction
+from ..dedup.duplicate_detector import _merchant_similar
 from ..extraction.email_extractor import (
     EXPENSE_TYPES,
     INCOME_TYPES,
@@ -67,9 +68,21 @@ AMOUNT_TOLERANCE = Decimal("1")
 # shadow-review summary message — it no longer gates the write decision.
 SHADOW_WINDOW_DAYS = 7
 
+# Apple Pay zero-touch capture writes a CONFIRMED row at NFC-tap time; the bank
+# email for the same purchase arrives hours-to-days later — far wider than the
+# ±1 day MATCH_WINDOW_DAYS used for manual rows. Apple Pay provisional rows
+# therefore get their own (wider) reconciliation window. Merchant text from an
+# NFC terminal often differs from the bank-email merchant, so merchant stays a
+# TIEBREAK, never a gate (same philosophy as the at-capture duplicate detector).
+APPLE_PAY_LOOKBACK_DAYS = 5
+APPLE_PAY_SOURCE = "apple_pay"
+
 
 class ReconcileOutcome(str, Enum):
     MATCHED_EXISTING = "matched_existing"
+    # An Apple Pay provisional row was promoted in place (source→reconciled,
+    # gmail_message_id attached) — the same purchase the user already tapped.
+    APPLE_PAY_MERGED = "apple_pay_merged"
     CREATED_NEW = "created_new"
     CREATED_SHADOW = "created_shadow"
     DUPLICATE_GMAIL = "duplicate_gmail"
@@ -133,6 +146,10 @@ async def _find_existing_match(
         .where(Transaction.user_id == user_id)
         .where(Transaction.currency == candidate.currency)
         .where(Transaction.gmail_message_id.is_(None))
+        # Apple Pay provisional rows are reconciled by _find_apple_pay_provisional
+        # (wider window + ambiguity guard); never let the manual-row branch grab
+        # one — especially one its own branch deliberately declined as ambiguous.
+        .where(Transaction.source != APPLE_PAY_SOURCE)
         .where(
             and_(
                 Transaction.transaction_date >= date_low,
@@ -231,6 +248,73 @@ async def _find_existing_gmail_sibling(
     return row.scalar_one_or_none()
 
 
+async def _find_apple_pay_provisional(
+    *,
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    candidate: ExtractedEmailTransaction,
+    signed: Decimal,
+) -> Optional[Transaction]:
+    """A confirmed Apple Pay row representing the SAME purchase as this incoming
+    bank email — so the reconciler promotes it in place instead of inserting a
+    second row. Returns the row to merge, or None.
+
+    Match: same currency, signed amount within ±AMOUNT_TOLERANCE, date within
+    ±APPLE_PAY_LOOKBACK_DAYS (Apple Pay precedes the email by hours-to-days),
+    `source='apple_pay'`, not yet reconciled (gmail_message_id IS NULL),
+    confirmed, not a transfer/goal flow.
+
+    Ambiguity guard (the wider window's cost): when more than one Apple Pay row
+    matches on amount+window, merge ONLY when exactly one of them is
+    merchant-similar to the email — otherwise return None and let the email fall
+    through to a normal shadow insert, so the user disambiguates in review. A
+    false positive must never silently merge the wrong charge. Read-only.
+    """
+    cand_date = candidate.transaction_date
+    if cand_date is None or candidate.currency is None:
+        return None
+
+    date_low = cand_date - timedelta(days=APPLE_PAY_LOOKBACK_DAYS)
+    date_high = cand_date + timedelta(days=APPLE_PAY_LOOKBACK_DAYS)
+    rows = await db.execute(
+        select(Transaction)
+        .where(Transaction.user_id == user_id)
+        .where(Transaction.currency == candidate.currency)
+        .where(Transaction.source == APPLE_PAY_SOURCE)
+        .where(Transaction.gmail_message_id.is_(None))
+        .where(Transaction.status == "confirmed")
+        .where(Transaction.transfer_id.is_(None))
+        .where(Transaction.goal_id.is_(None))
+        .where(
+            and_(
+                Transaction.transaction_date >= date_low,
+                Transaction.transaction_date <= date_high,
+            )
+        )
+        .where(func.abs(Transaction.amount - signed) <= AMOUNT_TOLERANCE)
+        .order_by(Transaction.transaction_date.desc())
+    )
+    candidates = list(rows.scalars().all())
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    # Multiple amount+window matches → require a UNIQUE merchant-similar row.
+    similar = [
+        t for t in candidates if _merchant_similar(t.merchant, candidate.merchant)
+    ]
+    if len(similar) == 1:
+        return similar[0]
+    log.info(
+        "applepay_merge_ambiguous user=%s candidates=%d similar=%d",
+        user_id,
+        len(candidates),
+        len(similar),
+    )
+    return None
+
+
 async def reconcile(
     *,
     db: AsyncSession,
@@ -296,6 +380,27 @@ async def reconcile(
             dup.id,
         )
         return (ReconcileOutcome.DUPLICATE_GMAIL, dup)
+
+    # 2b. Match an Apple Pay provisional row (zero-touch contactless capture).
+    #     Apple Pay wrote a confirmed row at tap time; this bank email is the
+    #     same purchase arriving later. Promote in place — never a second row,
+    #     so the balance (which sums confirmed rows) never double-counts.
+    apple_pay = await _find_apple_pay_provisional(
+        db=db, user_id=user_id, candidate=candidate, signed=signed
+    )
+    if apple_pay is not None:
+        apple_pay.gmail_message_id = gmail_message_id
+        apple_pay.source = "reconciled"
+        if not apple_pay.merchant and candidate.merchant:
+            apple_pay.merchant = candidate.merchant
+        await db.flush()
+        log.info(
+            "reconcile_applepay_merged user=%s msg=%s txn=%s",
+            user_id,
+            gmail_message_id,
+            apple_pay.id,
+        )
+        return (ReconcileOutcome.APPLE_PAY_MERGED, apple_pay)
 
     # 3. Match against pre-existing manual/telegram/shortcut rows.
     match = await _find_existing_match(

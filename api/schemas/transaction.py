@@ -18,6 +18,29 @@ class ShortcutTransactionCreate(BaseModel):
     transaction_date: Optional[date] = None
 
 
+class ApplePayCapture(BaseModel):
+    """Zero-touch contactless capture from the iOS App Intent (Apple Pay /
+    Wallet trigger).
+
+    iOS is the extractor (it hands us structured merchant + amount); the backend
+    decides deterministically — no LLM on this path. A contactless purchase is
+    always an expense, so the sign is applied server-side.
+
+    `amount` is a money STRING parsed to Decimal server-side (never float; see
+    `services.money.parse_money_magnitude`). `client_event_id` is the per-tap
+    idempotency key → stored as `source_ref='apple_pay:{id}'` so an offline
+    retry of the same tap is a no-op.
+    """
+
+    amount: str = Field(..., min_length=1, max_length=64)
+    currency: str = Field(default="CRC", max_length=10)
+    merchant: str = Field(..., min_length=1, max_length=255)
+    client_event_id: str = Field(..., min_length=1, max_length=200)
+    card_hint: Optional[str] = Field(default=None, max_length=255)
+    # Defaults to the user's CR-today when omitted.
+    transaction_date: Optional[date] = None
+
+
 class TransactionCreate(BaseModel):
     """General transaction creation payload."""
 

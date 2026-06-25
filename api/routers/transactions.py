@@ -10,6 +10,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, or_, select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
@@ -19,6 +20,7 @@ from ..models.transaction import Transaction
 from ..models.user import User
 from ..models.user_category import UserCategory
 from ..schemas.transaction import (
+    ApplePayCapture,
     ShortcutTransactionCreate,
     TransactionBulkArchive,
     TransactionBulkCategorize,
@@ -31,8 +33,10 @@ from ..schemas.transaction import (
 )
 from ..services.clock import user_today
 from ..services.dedup import clear_duplicate_nudges_for_txn, flag_and_notify
+from ..services.dispatch.lazy_detection import match_account_hint
 from ..services.envelopes import can_assign_transaction_to_envelope
 from ..services.fx import convert
+from ..services.money import parse_money_magnitude
 from ..services.transactions import (
     TXN_DELETE_REASON_ES,
     TransactionDeleteError,
@@ -110,6 +114,115 @@ async def shortcut_transaction(
     await db.refresh(txn)
     # Duplicate detection: flag + raise a nudge if this looks like a dupe
     # (best-effort, never blocks the capture). Telegram + in-app Alertas.
+    await flag_and_notify(db, user=user, txn=txn)
+    return txn
+
+
+# ── Apple Pay zero-touch capture (iOS App Intent) ───────────────────────────
+
+@router.post("/apple-pay", response_model=TransactionResponse, status_code=201)
+async def apple_pay_capture(
+    payload: ApplePayCapture,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """Zero-touch contactless capture from the iOS App Intent (Wallet trigger).
+
+    iOS is the extractor (structured merchant + amount); deterministic rules
+    decide — no LLM on this path. The row lands `source='apple_pay'`,
+    `status='confirmed'` so it shifts projected spendable funds immediately; the
+    later bank email reconciles INTO this row (reconciler
+    `_find_apple_pay_provisional`), never a second one. Idempotent on
+    `client_event_id` (stored in `source_ref`) so an offline-retry POST of the
+    same tap is a no-op that returns the original row.
+
+    Auth: `Authorization: Bearer <jwt>` (the App Intent reads the session token
+    from the shared Keychain access group), resolved by `current_user`.
+    """
+    magnitude = parse_money_magnitude(payload.amount)
+    if magnitude is None:
+        # Unparseable / non-positive amount → never write a row.
+        raise HTTPException(status_code=400, detail="Monto inválido.")
+    currency = (payload.currency or "CRC").upper()
+    if currency not in ("CRC", "USD"):
+        raise HTTPException(status_code=400, detail="Moneda no soportada.")
+
+    # A contactless purchase is always an expense → negative. Decimal, no float.
+    signed = -magnitude
+    source_ref = f"apple_pay:{payload.client_event_id}"
+
+    # Idempotency: a retried tap (same client_event_id) returns the existing row
+    # instead of double-inserting. The durable guard is the per-user partial
+    # UNIQUE index uq_transactions_user_source_ref (migration 0006).
+    existing = (
+        await db.execute(
+            select(Transaction).where(
+                Transaction.user_id == user.id,
+                Transaction.source_ref == source_ref,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+
+    # Best-effort account routing from the card hint, scoped to the detected
+    # currency. A miss leaves account_id NULL (the "Sin cuenta" flow lets the
+    # user assign it later) — routing must never break capture.
+    account_id: Optional[uuid.UUID] = None
+    if payload.card_hint:
+        try:
+            accounts = list(
+                (
+                    await db.execute(
+                        select(Account).where(
+                            Account.user_id == user.id,
+                            Account.archived.is_(False),
+                            Account.currency == currency,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            match = match_account_hint(payload.card_hint, accounts)
+            if match.status == "matched" and match.account is not None:
+                account_id = match.account.id
+        except Exception:  # noqa: BLE001 — routing must never break capture
+            account_id = None
+
+    txn = Transaction(
+        user_id=user.id,
+        account_id=account_id,
+        amount=signed,
+        currency=currency,
+        merchant=payload.merchant,
+        # CR-tz today, not naive UTC date.today() — a near-midnight tap must
+        # land on the user's calendar day (clock.user_today).
+        transaction_date=payload.transaction_date or user_today(user),
+        source="apple_pay",
+        status="confirmed",
+        source_ref=source_ref,
+    )
+    db.add(txn)
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Concurrent identical tap won the race on the source_ref UNIQUE index.
+        await db.rollback()
+        existing = (
+            await db.execute(
+                select(Transaction).where(
+                    Transaction.user_id == user.id,
+                    Transaction.source_ref == source_ref,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing
+        raise
+    await db.refresh(txn)
+    # Same-channel duplicate detection (e.g. a prior manual capture of the same
+    # purchase). Orthogonal to the Gmail reconciliation merge; best-effort.
     await flag_and_notify(db, user=user, txn=txn)
     return txn
 

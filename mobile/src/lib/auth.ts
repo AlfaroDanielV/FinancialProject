@@ -1,5 +1,7 @@
 import * as SecureStore from "expo-secure-store";
 
+import { clearAppIntentToken, writeAppIntentToken } from "./appIntentToken";
+
 const TOKEN_KEY = "ledger_cr_session_token";
 const EXPIRES_KEY = "ledger_cr_session_expires_at";
 
@@ -35,6 +37,8 @@ export async function setSession(token: string, expiresAtUnix: number): Promise<
   await Promise.all([
     SecureStore.setItemAsync(TOKEN_KEY, token),
     SecureStore.setItemAsync(EXPIRES_KEY, String(expiresAtUnix)),
+    // Share the token with the native Apple Pay App Intent (keychain).
+    writeAppIntentToken(token),
   ]);
   notify();
 }
@@ -45,6 +49,8 @@ export async function clearSession(): Promise<void> {
   await Promise.all([
     SecureStore.deleteItemAsync(TOKEN_KEY),
     SecureStore.deleteItemAsync(EXPIRES_KEY),
+    // Revoke the Intent's copy too — on logout/401 it must stop capturing.
+    clearAppIntentToken(),
   ]);
   notify();
 }
