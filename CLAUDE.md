@@ -1007,10 +1007,62 @@ on-device sign-off pending**. No schema change (`alembic` still `0021`).
   app now handles this gracefully (reconnect anytime), but stopping the weekly
   disconnect requires publishing the consent screen to Production (+ likely
   verification for the sensitive scope) — **P8 work** (tech-debt below).
-- Verification: `tests/test_gmail_native.py` (11: senders bulk-add/cap, sender
-  list/remove, shadow list/confirm-with-overrides/discard, auth, scan
-  guards 409/400, scan status, revoked-run regression, failed-retry) + the full
-  `-k gmail` slice (162) pass; mobile `tsc` clean.
+- Verification: `tests/test_gmail_native.py` (12: senders bulk-add/cap, sender
+  list/remove, **native-connect activation**, shadow list/confirm-with-overrides/
+  discard, auth, scan guards 409/400, scan status, revoked-run regression,
+  failed-retry) + the full `-k gmail` slice pass; mobile `tsc` clean.
+
+### Scheduled daily scan — two-bug fix (2026-06-25, on `dev`)
+
+The Azure cron job `ledger-cr-gmail-daily` (`0 9 * * *` UTC) was firing daily
+and reporting **Succeeded**, but the operator's inbox was never auto-scanned.
+Diagnosis from Log Analytics found **two bugs in series** — fixing the first
+exposed the second. Both are committed on `dev`; the worker-image fix is
+deployed + verified in prod (a manual run created 2 shadow rows), the teardown
+fix lands on the next worker rebuild.
+
+1. **Activation parity gap** (`2ba9344`). The OAuth callback
+   (`api/routers/gmail.py::oauth_callback`) upserts `gmail_credentials` with
+   `granted_at` but **never `activated_at`** — only the bot's bank-confirmation
+   flow (`bot/gmail_handlers.py::_activate_and_persist`) flipped it. The daily
+   worker (`workers/gmail_daily.py`) iterates only
+   `activated_at IS NOT NULL AND revoked_at IS NULL`, so a user who onboards
+   Gmail **entirely in the native app** is silently skipped forever (`users=0`),
+   even though manual in-app scans work (the scan path loads the credential by
+   `user_id`, no `activated_at` filter). Fix: `POST /gmail/senders` now flips
+   `activated_at` on first sender add (granted, not revoked, still NULL),
+   mirroring the bot — configuring senders is the native equivalent of
+   confirming banks and is the single choke point (scan 400s without senders).
+   The operator's existing prod row was backfilled manually (one guarded
+   `UPDATE … SET activated_at = now()`).
+2. **Worker image missing the `azure` extra** (`5d7e786`). Once the worker
+   reached the user, every scan threw `ModuleNotFoundError: No module named
+   'azure'` → `RuntimeError: azure_kv backend requires uv sync --extra azure`,
+   swallowed by `_scan_one_user`'s per-user `except` (logged `daily_scan_error`,
+   `gmail_ingestion_runs.finished_at` left NULL, job still exits 0).
+   `Dockerfile.worker` ran `uv sync` **without `--extra azure`** (while
+   `Dockerfile.prod` has it), so `centro-worker` could never build the
+   `azure_kv` secret store to read the Gmail refresh token from Key Vault. Manual
+   scans worked because they run inside the API container (`centro-api`, which
+   has the azure libs). Fix: add `--extra azure` to `Dockerfile.worker`,
+   restoring the documented "mirror the API builder" intent. **Requires a worker
+   image rebuild + `containerapp job update` to take effect in prod** (done
+   2026-06-25).
+3. **One-shot worker teardown** (`a04bed0`). The worker exited without closing
+   the `azure_kv` store (`DefaultAzureCredential` + `SecretClient`, each owning
+   an aiohttp `ClientSession`) or the redis pool → `Unclosed client session` /
+   `Unclosed connector` / `Event loop is closed` noise via `__del__` after the
+   scan succeeded. Added `AzureKeyVaultStore.aclose()` + module
+   `secrets.close_secret_store()` (no-op for Env/File backends) and call it +
+   `close_redis()` in `main()`'s `finally`. Cosmetic only; deploy on next
+   worker rebuild. Tests: `tests/test_secret_store.py` (+3).
+
+**Lessons:** (a) a per-user `try/except` that swallows a *hard dependency*
+error as a soft per-user failure keeps the job green while doing nothing — infra
+errors deserve a louder signal. (b) `Dockerfile.worker` and `Dockerfile.prod`
+must keep the same `uv sync` extras; any KV-touching worker needs `--extra
+azure`. (c) a one-shot asyncio worker must close singleton network clients in a
+`finally` before the loop tears down.
 
 ---
 
