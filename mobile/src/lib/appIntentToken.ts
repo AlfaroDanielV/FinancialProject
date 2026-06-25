@@ -9,6 +9,12 @@ import * as SecureStore from "expo-secure-store";
  * under this dedicated service. `AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY` so the
  * headless Intent can read it when the app isn't foregrounded (the device is
  * unlocked at tap time), without syncing the credential off-device.
+ *
+ * `requireAuthentication: false` is REQUIRED: (a) the headless Intent must read
+ * the token without a biometric prompt, and (b) expo-secure-store appends
+ * ":no-auth" to the keychainService when requireAuthentication is false — the
+ * Swift Intent queries `ledgercr.appintent:no-auth` (see keychainServiceCandidates
+ * in ApplePayCaptureIntent.swift). Keep these two in sync.
  */
 const APPINTENT_SERVICE = "ledgercr.appintent";
 const APPINTENT_KEY = "session_token";
@@ -16,10 +22,12 @@ const APPINTENT_KEY = "session_token";
 const WRITE_OPTIONS: SecureStore.SecureStoreOptions = {
   keychainService: APPINTENT_SERVICE,
   keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
+  requireAuthentication: false,
 };
 
 const SERVICE_OPTION: SecureStore.SecureStoreOptions = {
   keychainService: APPINTENT_SERVICE,
+  requireAuthentication: false,
 };
 
 export async function writeAppIntentToken(token: string): Promise<void> {

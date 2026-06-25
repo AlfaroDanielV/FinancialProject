@@ -28,11 +28,20 @@ import Security
 // MARK: - Configuration
 
 private enum LedgerConfig {
-    /// The keychain service the JS app writes the bearer token under
-    /// (src/lib/appIntentToken.ts). We query by SERVICE alone (one item under
-    /// it), which is robust against however expo-secure-store names the
-    /// account attribute internally.
-    static let keychainService = "ledgercr.appintent"
+    /// The keychain services the JS app's token may live under. IMPORTANT:
+    /// expo-secure-store APPENDS ":no-auth" / ":auth" to the configured
+    /// `keychainService` based on `requireAuthentication`
+    /// (SecureStoreModule.swift: `service.append(":\(... ? "auth" : "no-auth")")`).
+    /// src/lib/appIntentToken.ts writes with requireAuthentication=false, so the
+    /// item lands under "...:no-auth". We query the candidates in order
+    /// (no-auth → auth → bare legacy) so this stays correct across
+    /// expo-secure-store versions. Querying by SERVICE alone is robust against
+    /// however expo-secure-store names the account attribute internally.
+    static let keychainServiceCandidates = [
+        "ledgercr.appintent:no-auth",
+        "ledgercr.appintent:auth",
+        "ledgercr.appintent",
+    ]
 
     /// App-group + standard UserDefaults key for the offline retry queue.
     static let pendingQueueKey = "ledgercr.applepay.pendingQueue"
@@ -53,23 +62,29 @@ private enum LedgerConfig {
 // MARK: - Keychain
 
 private enum LedgerKeychain {
-    /// Reads the session bearer token. Matches by service only so it does not
-    /// depend on expo-secure-store's internal account-attribute naming.
+    /// Reads the session bearer token. Tries each candidate service (matching by
+    /// service only — robust against expo-secure-store's internal account
+    /// naming) and returns the first non-empty value. expo-secure-store stores
+    /// the value as plaintext keychain Data (no app-level encryption envelope),
+    /// so the bytes ARE the JWT.
     static func sessionToken() -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: LedgerConfig.keychainService,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess,
-              let data = item as? Data,
-              let token = String(data: data, encoding: .utf8),
-              !token.isEmpty
-        else { return nil }
-        return token
+        for service in LedgerConfig.keychainServiceCandidates {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecReturnData as String: true,
+                kSecMatchLimit as String: kSecMatchLimitOne,
+            ]
+            var item: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &item)
+            if status == errSecSuccess,
+               let data = item as? Data,
+               let token = String(data: data, encoding: .utf8),
+               !token.isEmpty {
+                return token
+            }
+        }
+        return nil
     }
 }
 
