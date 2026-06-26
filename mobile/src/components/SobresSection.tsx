@@ -35,6 +35,8 @@ import { CardShadow, Colors, FontSize, Radius, Spacing } from "../theme";
 import { EnvelopeDetailModal } from "./EnvelopeDetailModal";
 import { EnvelopeEditModal } from "./EnvelopeEditModal";
 import { JoinEnvelopeModal } from "./JoinEnvelopeModal";
+import { ReallocateModal } from "./ReallocateModal";
+import { StarterPackModal } from "./StarterPackModal";
 
 export function SobresSection({
   onOpenAnalytics,
@@ -45,7 +47,14 @@ export function SobresSection({
 }) {
   const [createOpen, setCreateOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
+  const [starterOpen, setStarterOpen] = useState(false);
   const [detailItem, setDetailItem] = useState<EnvelopeSummaryItem | null>(null);
+  // Over-limit reallocation target (Phase 8 B6): the over-limit sobre the user
+  // wants to cover by moving budget from another same-level sobre.
+  const [reallocOver, setReallocOver] = useState<EnvelopeSummaryItem | null>(null);
+  // Progressive disclosure: nesting (sub-sobres) is a power feature hidden
+  // behind this toggle so a first-time user sees a flat list.
+  const [advanced, setAdvanced] = useState(false);
 
   const summaryQuery = useQuery({
     queryKey: ["envelopes", "summary"],
@@ -65,11 +74,35 @@ export function SobresSection({
     [summary],
   );
   const grouped = useMemo(() => groupItems(ownItems), [ownItems]);
+  // Progressive disclosure: a parent's allocation jargon ("Sin asignar / Sobre-
+  // asignado") only shows once it actually has sub-sobres. The "Avanzado" toggle
+  // surfaces only once the user already nests, or when they opt in.
+  const parentIdsWithChildren = useMemo(
+    () =>
+      new Set(
+        ownItems.filter((e) => e.parent_id != null).map((e) => e.parent_id as string),
+      ),
+    [ownItems],
+  );
+  const hasAnySubSobres = parentIdsWithChildren.size > 0;
 
   // Tapping an envelope opens the detail (spend bar + this month's expenses
   // with assign toggles + an "Editar" entry). "+ Nuevo" opens the create sheet.
   const openDetail = (item: EnvelopeSummaryItem) => setDetailItem(item);
   const openCreate = () => setCreateOpen(true);
+
+  // Same-level, same-currency own sobres with budget to spare — the candidates
+  // the over-limit sobre can pull from (mirrors the backend reallocate rule).
+  const reallocCandidates = useMemo(() => {
+    if (reallocOver == null) return [];
+    return ownItems.filter(
+      (e) =>
+        e.id !== reallocOver.id &&
+        e.parent_id === reallocOver.parent_id &&
+        e.currency === reallocOver.currency &&
+        (e.available ?? e.remaining ?? 0) > 0,
+    );
+  }, [ownItems, reallocOver]);
 
   const hasEnvelopes = ownItems.length > 0 || sharedItems.length > 0;
 
@@ -109,14 +142,24 @@ export function SobresSection({
       {summaryQuery.isLoading ? (
         <ActivityIndicator color={Colors.accent} style={{ paddingVertical: Spacing.lg }} />
       ) : !hasEnvelopes ? (
-        <Pressable onPress={openCreate} style={styles.emptyCta}>
+        <View style={styles.emptyCta}>
           <Feather name="inbox" size={20} color={Colors.textMuted} />
-          <Text style={styles.emptyTitle}>Creá tu primer sobre</Text>
+          <Text style={styles.emptyTitle}>Armá tu presupuesto en 1 minuto</Text>
           <Text style={styles.emptyBody}>
-            Poné un tope mensual por tipo (necesidades, gustos, ahorro,
-            inversión) y mirá cuánto llevás gastado.
+            Empezá con un paquete de sobres listo (comida, servicios, gustos,
+            ahorro, inversión). Ajustás los montos a tu gusto.
           </Text>
-        </Pressable>
+          <Pressable
+            onPress={() => setStarterOpen(true)}
+            style={({ pressed }) => [styles.emptyPrimaryBtn, pressed && { opacity: 0.85 }]}
+          >
+            <Feather name="zap" size={14} color={Colors.bgCard} />
+            <Text style={styles.emptyPrimaryText}>Armar mi presupuesto</Text>
+          </Pressable>
+          <Pressable onPress={openCreate} hitSlop={8}>
+            <Text style={styles.emptySecondaryText}>o creá un sobre a mano</Text>
+          </Pressable>
+        </View>
       ) : (
         <View style={styles.body}>
           {ENVELOPE_CLASS_ORDER.filter((c) => grouped[c]?.length).map((cls) => {
@@ -152,6 +195,8 @@ export function SobresSection({
                     currency={summary!.currency}
                     color={ENVELOPE_CLASS_COLORS[cls]}
                     onPress={() => openDetail(env)}
+                    hasChildren={parentIdsWithChildren.has(env.id)}
+                    onReallocate={() => setReallocOver(env)}
                   />
                 ))}
               </View>
@@ -163,6 +208,28 @@ export function SobresSection({
               Topes: {formatMoney(summary!.total_limit, summary!.currency)} de{" "}
               {formatMoney(summary!.monthly_income, summary!.currency)} de ingreso mensual
             </Text>
+          )}
+
+          {/* Progressive disclosure: nesting is a power feature. The toggle only
+              shows for a first-timer (no sub-sobres yet); once they nest, the
+              sub-sobre affordance is always available (no toggle needed). */}
+          {ownItems.length > 0 && !hasAnySubSobres && (
+            <Pressable
+              onPress={() => setAdvanced((v) => !v)}
+              hitSlop={6}
+              style={({ pressed }) => [styles.advancedToggle, pressed && { opacity: 0.7 }]}
+            >
+              <Feather
+                name={advanced ? "chevron-up" : "sliders"}
+                size={12}
+                color={Colors.textMuted}
+              />
+              <Text style={styles.advancedText}>
+                {advanced
+                  ? "Ocultar opciones avanzadas"
+                  : "Opciones avanzadas (sub-sobres)"}
+              </Text>
+            </Pressable>
           )}
 
           {sharedItems.length > 0 && (
@@ -201,9 +268,26 @@ export function SobresSection({
 
       <JoinEnvelopeModal visible={joinOpen} onClose={() => setJoinOpen(false)} />
 
+      <StarterPackModal
+        visible={starterOpen}
+        currency={summary?.currency ?? "CRC"}
+        monthlyIncome={summary?.monthly_income ?? null}
+        onClose={() => setStarterOpen(false)}
+        onCreated={() => setStarterOpen(false)}
+      />
+
+      <ReallocateModal
+        visible={reallocOver != null}
+        over={reallocOver}
+        candidates={reallocCandidates}
+        onClose={() => setReallocOver(null)}
+        onDone={() => setReallocOver(null)}
+      />
+
       <EnvelopeDetailModal
         visible={detailItem != null}
         item={detailItem}
+        allowSubSobres={advanced || hasAnySubSobres}
         onClose={() => setDetailItem(null)}
       />
     </View>
@@ -216,6 +300,8 @@ function EnvelopeRow({
   color,
   onPress,
   sharedBy,
+  hasChildren = false,
+  onReallocate,
 }: {
   item: EnvelopeSummaryItem;
   currency: string;
@@ -223,14 +309,18 @@ function EnvelopeRow({
   onPress: () => void;
   // Shared root: "Compartido por X" caption (undefined for own + sub-sobres).
   sharedBy?: string;
+  // Progressive disclosure: allocation jargon only shows when the sobre nests.
+  hasChildren?: boolean;
+  // Phase 8 B6: when over-limit, offer a one-tap reallocation (own rows only —
+  // shared rows you joined can't be reallocated, so this is left undefined).
+  onReallocate?: () => void;
 }) {
   // Money-left bar: starts full, drains with each expense + each reservation,
   // red in the last 5%. `remaining` is the free amount (limit − reserved − spent).
   const { remaining, fraction, low, reserved } = envelopeProgress(item);
-  // Sub-sobres indent under their parent; a parent (allocated > 0) shows how
-  // much of its budget is still unsplit.
+  // Sub-sobres indent under their parent; a parent with sub-sobres shows how
+  // much of its budget is still unsplit (hidden for flat sobres).
   const indent = (item.depth - 1) * 14;
-  const isParent = item.allocated > 0;
   return (
     <Pressable
       onPress={onPress}
@@ -272,11 +362,23 @@ function EnvelopeRow({
         </Text>
       )}
       {item.over_limit && (
-        <Text style={styles.overText}>
-          Te pasaste por {formatMoney(item.spent - item.limit_amount, currency)}
-        </Text>
+        <View style={styles.overRow}>
+          <Text style={styles.overText}>
+            Te pasaste por {formatMoney(item.spent - item.limit_amount, currency)}
+          </Text>
+          {onReallocate && (
+            <Pressable
+              onPress={onReallocate}
+              hitSlop={6}
+              style={({ pressed }) => [styles.coverBtn, pressed && { opacity: 0.7 }]}
+            >
+              <Feather name="repeat" size={12} color={Colors.accent} />
+              <Text style={styles.coverBtnText}>¿Cubrís moviendo de otro sobre?</Text>
+            </Pressable>
+          )}
+        </View>
       )}
-      {isParent &&
+      {hasChildren &&
         (item.over_allocated ? (
           <Text style={styles.overText}>
             Sobreasignado {formatMoney(-item.unallocated, currency)} entre sus sub-sobres
@@ -390,11 +492,32 @@ const styles = StyleSheet.create({
   },
   barTrack: { height: 6, backgroundColor: Colors.border, borderRadius: 3 },
   barFill: { height: 6, borderRadius: 3 },
+  overRow: { gap: 4 },
   overText: {
     fontSize: FontSize.xs,
     color: Colors.expense,
     fontWeight: "500",
   },
+  coverBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 4,
+    borderWidth: 1,
+    borderColor: Colors.accent,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 3,
+  },
+  coverBtnText: { color: Colors.accent, fontSize: FontSize.xs, fontWeight: "600" },
+  advancedToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "center",
+    gap: 4,
+    paddingVertical: Spacing.xs,
+  },
+  advancedText: { fontSize: FontSize.xs, color: Colors.textMuted },
   allocNote: {
     fontSize: FontSize.xs,
     color: Colors.textMuted,
@@ -429,5 +552,22 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
     textAlign: "center",
     lineHeight: 17,
+  },
+  emptyPrimaryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: Colors.accent,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm + 2,
+    marginTop: Spacing.xs,
+  },
+  emptyPrimaryText: { color: Colors.bgCard, fontSize: FontSize.sm, fontWeight: "600" },
+  emptySecondaryText: {
+    fontSize: FontSize.xs,
+    color: Colors.accent,
+    fontWeight: "500",
+    marginTop: 2,
   },
 });

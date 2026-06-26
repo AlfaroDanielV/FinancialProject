@@ -83,21 +83,15 @@ async def build_onboarding_reply(
 
 
 def _is_empty(status: OnboardingStatus) -> bool:
-    return (
-        not status.has_accounts
-        and not status.has_incomes
-        and not status.has_debts
-        and not status.has_recurring_bills
-    )
+    # Phase 8 B2: "empty" = no account yet. The first ask is one balance, not a
+    # four-entity checklist.
+    return not status.has_accounts
 
 
 def _is_complete(status: OnboardingStatus) -> bool:
-    return (
-        status.has_accounts
-        and status.has_incomes
-        and status.has_debts
-        and status.has_recurring_bills
-    )
+    # Phase 8 B2: "ready for daily use" = activated (1 account + a real balance +
+    # 1 expense), NOT the legacy four-quarters check.
+    return status.is_activated
 
 
 def _prefix(*, first_name: str, paired_now: bool) -> str:
@@ -112,13 +106,13 @@ def _prefix(*, first_name: str, paired_now: bool) -> str:
 
 
 def _empty_welcome(*, first_name: str, paired_now: bool) -> str:
+    # Phase 8 B2: chat-led, no guilt. The first ask is ONE balance — a real
+    # number in seconds — not a four-entity setup checklist.
     return (
         _prefix(first_name=first_name, paired_now=paired_now)
-        + "Bienvenido. Para arrancar, registrá al menos una cuenta. "
-        "Podés hacerlo en la app (cuentas, ingresos, deudas y gastos fijos) "
-        "o paso a paso por acá.\n\n"
-        "Si preferís chat, decime algo como: crear cuenta BAC.\n"
-        "Para volver a entrar a la app, mandá /setup."
+        + "Bienvenido. Para arrancar, decime cuánto tenés ahora en la cuenta "
+        "donde te cae el salario (ej: «tengo 200 mil en el BAC») y te la creo.\n\n"
+        "Si preferís, también podés hacerlo en la app: mandá /setup para entrar."
     )
 
 
@@ -128,13 +122,23 @@ def _partial_welcome(
     first_name: str,
     paired_now: bool,
 ) -> str:
-    missing = _missing_labels(status)
-    missing_text = _join_es(missing)
+    # Phase 8 B2: progress framing — one encouraging next step, no "te falta"
+    # checklist. The single next step is the first activation signal missing.
+    if not status.has_balance:
+        next_step = (
+            "Ya tenés tu cuenta. Ahora decime el saldo real "
+            "(ej: «mi saldo es 200 mil»)."
+        )
+    else:  # has_balance but not has_expense
+        next_step = (
+            "Buenísimo, ya va tomando forma. Registrá tu primer gasto "
+            "(ej: «gasté 5000 en el super»)."
+        )
     return (
         _prefix(first_name=first_name, paired_now=paired_now)
-        + f"Ya empezaste. Te falta registrar {missing_text}.\n\n"
-        "Podés seguir en la app con /setup, o hacerlo por acá cuando surja. "
-        "Para cuentas, decime: crear cuenta BAC."
+        + "Ya llevás un buen avance.\n\n"
+        + next_step
+        + "\n\nTambién podés seguir en la app: mandá /setup para entrar."
     )
 
 
@@ -148,26 +152,3 @@ def _complete_help(*, first_name: str, paired_now: bool) -> str:
         "• cuánto gasté esta semana\n\n"
         "Comandos útiles: /setup, /undo, /cancel, /memoria."
     )
-
-
-def _missing_labels(status: OnboardingStatus) -> list[str]:
-    missing: list[str] = []
-    if not status.has_accounts:
-        missing.append("cuentas")
-    if not status.has_incomes:
-        missing.append("ingresos")
-    if not status.has_debts:
-        missing.append("deudas")
-    if not status.has_recurring_bills:
-        missing.append("gastos fijos")
-    return missing
-
-
-def _join_es(items: list[str]) -> str:
-    if not items:
-        return ""
-    if len(items) == 1:
-        return items[0]
-    if len(items) == 2:
-        return f"{items[0]} y {items[1]}"
-    return f"{', '.join(items[:-1])} y {items[-1]}"

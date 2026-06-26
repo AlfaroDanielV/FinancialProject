@@ -264,6 +264,46 @@ export async function assignTransactionEnvelope(
   });
 }
 
+/**
+ * Move budget (limit_amount) between two SAME-LEVEL envelopes (Phase 8 B4):
+ * both roots, or two children of the same parent. Keeps the budget total
+ * invariant (committed_outflows = total_limit). Same-currency only; the backend
+ * 422s an invalid move (different level / currency / over the from-side floor).
+ */
+export async function reallocateEnvelopes(
+  fromId: string,
+  toId: string,
+  amount: number
+): Promise<{ from: EnvelopeResponse; to: EnvelopeResponse }> {
+  const res = await api.post<{ from: EnvelopeResponse; to: EnvelopeResponse }>(
+    "/envelopes/reallocate",
+    { from_id: fromId, to_id: toId, amount }
+  );
+  return res.data;
+}
+
+// ── starter pack (Phase 8 B6) ───────────────────────────────────────────────
+
+export interface StarterPackItem {
+  name: string;
+  envelope_class: EnvelopeClass;
+  limit_amount: number;
+}
+
+/**
+ * Bulk-create a starter set of root envelopes (≤ 8) in one shot — the "armá tu
+ * presupuesto en 1 minuto" empty-state flow. Deterministic on the backend (no
+ * LLM); each item becomes a root in the user's currency.
+ */
+export async function createStarterPack(
+  items: StarterPackItem[]
+): Promise<EnvelopeResponse[]> {
+  const res = await api.post<EnvelopeResponse[]>("/envelopes/starter-pack", {
+    items,
+  });
+  return res.data;
+}
+
 // ── sharing ("Sobres compartidos") ──────────────────────────────────────────
 
 export interface ShareCodeResponse {

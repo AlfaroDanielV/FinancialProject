@@ -31,7 +31,9 @@ interface ModuleTile {
   coming?: string;
 }
 
-const MODULES: ModuleTile[] = [
+// Primary modules — what a first-run user should see. Gmail is deliberately
+// NOT here (Phase 8 B3): it overwhelmed a real user test reached too early.
+const PRIMARY_MODULES: ModuleTile[] = [
   {
     key: "alertas",
     title: "Alertas",
@@ -75,13 +77,6 @@ const MODULES: ModuleTile[] = [
     screen: "CategoriesScreen",
   },
   {
-    key: "gmail",
-    title: "Gmail",
-    subtitle: "Conectar correo, remitentes por banco y revisar hallazgos",
-    icon: "mail",
-    screen: "GmailHome",
-  },
-  {
     key: "memory",
     title: "Memoria y privacidad",
     subtitle: "Insights del asistente y exportación de datos",
@@ -90,7 +85,62 @@ const MODULES: ModuleTile[] = [
   },
 ];
 
+// Advanced / optional power-ups. Always reachable (never gated on state), but
+// clearly de-emphasized so a new user doesn't land on Gmail by accident. The
+// tile routes through the guided opt-in intro (GmailIntro), not straight to
+// sender config.
+const ADVANCED_MODULES: ModuleTile[] = [
+  {
+    key: "gmail",
+    title: "Gmail",
+    subtitle: "Capturá gastos automáticamente desde los avisos del banco",
+    icon: "mail",
+    screen: "GmailIntro",
+  },
+];
+
 export function MasHubScreen({ navigation }: Props) {
+  const renderTile = (mod: ModuleTile) => (
+    <Pressable
+      key={mod.key}
+      style={({ pressed }) => [
+        styles.tile,
+        mod.coming && styles.tileDimmed,
+        pressed && !mod.coming && styles.tilePressed,
+      ]}
+      onPress={() => {
+        if (mod.screen) navigation.navigate(mod.screen as never);
+      }}
+      disabled={Boolean(mod.coming)}
+    >
+      <View
+        style={[
+          styles.iconBox,
+          mod.coming ? styles.iconBoxDimmed : styles.iconBoxActive,
+        ]}
+      >
+        <Feather
+          name={mod.icon}
+          size={20}
+          color={mod.coming ? Colors.textMuted : Colors.accent}
+        />
+      </View>
+      <View style={styles.tileText}>
+        <Text style={[styles.tileTitle, mod.coming && styles.tileTitleDimmed]}>
+          {mod.title}
+        </Text>
+        <Text style={styles.tileSub}>{mod.subtitle}</Text>
+      </View>
+      <View style={styles.tileRight}>
+        {mod.coming ? (
+          <Text style={styles.comingBadge}>{mod.coming}</Text>
+        ) : (
+          <Feather name="chevron-right" size={18} color={Colors.textMuted} />
+        )}
+      </View>
+    </Pressable>
+  );
+
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
@@ -99,48 +149,14 @@ export function MasHubScreen({ navigation }: Props) {
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
-        {MODULES.map((mod) => (
-          <Pressable
-            key={mod.key}
-            style={({ pressed }) => [
-              styles.tile,
-              mod.coming && styles.tileDimmed,
-              pressed && !mod.coming && styles.tilePressed,
-            ]}
-            onPress={() => {
-              if (mod.screen) navigation.navigate(mod.screen as never);
-            }}
-            disabled={Boolean(mod.coming)}
-          >
-            <View
-              style={[
-                styles.iconBox,
-                mod.coming ? styles.iconBoxDimmed : styles.iconBoxActive,
-              ]}
-            >
-              <Feather
-                name={mod.icon}
-                size={20}
-                color={mod.coming ? Colors.textMuted : Colors.accent}
-              />
-            </View>
-            <View style={styles.tileText}>
-              <Text
-                style={[styles.tileTitle, mod.coming && styles.tileTitleDimmed]}
-              >
-                {mod.title}
-              </Text>
-              <Text style={styles.tileSub}>{mod.subtitle}</Text>
-            </View>
-            <View style={styles.tileRight}>
-              {mod.coming ? (
-                <Text style={styles.comingBadge}>{mod.coming}</Text>
-              ) : (
-                <Feather name="chevron-right" size={18} color={Colors.textMuted} />
-              )}
-            </View>
-          </Pressable>
-        ))}
+        {PRIMARY_MODULES.map(renderTile)}
+
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Avanzado</Text>
+          <Text style={styles.sectionCaption}>Funciones opcionales</Text>
+        </View>
+
+        {ADVANCED_MODULES.map(renderTile)}
       </ScrollView>
     </SafeAreaView>
   );
@@ -172,6 +188,23 @@ const styles = StyleSheet.create({
   content: {
     padding: Spacing.md,
     gap: Spacing.sm,
+  },
+  sectionHeader: {
+    marginTop: Spacing.md,
+    marginBottom: Spacing.xs,
+    paddingHorizontal: Spacing.xs,
+  },
+  sectionTitle: {
+    fontSize: FontSize.xs,
+    fontWeight: "700",
+    color: Colors.textMuted,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+  sectionCaption: {
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    marginTop: 2,
   },
   tile: {
     flexDirection: "row",

@@ -68,6 +68,9 @@ alcanza, sobre tu sobrante (nunca un monto inventado).
 impuesto sobre la renta, de forma determinista).
 - Tu tarjeta de crédito: cuánto debés, el pago mínimo de hoy y qué pasa si \
 pagás solo el mínimo (meses, intereses), de forma determinista.
+- De cuáles sobres conviene mover plata si uno se queda corto («¿de dónde muevo \
+plata?»): te muestro los que tienen más presupuesto sin usar y propongo un \
+movimiento concreto (entre sobres del mismo nivel) que confirmás.
 
 No podés:
 - Registrar gastos o ingresos (para eso decile al usuario que escriba \
@@ -95,6 +98,9 @@ alcanza, sobre tu sobrante (nunca un monto inventado).
 impuesto sobre la renta, de forma determinista).
 - Tu tarjeta de crédito: cuánto debés, el pago mínimo de hoy y qué pasa si \
 pagás solo el mínimo (meses, intereses), de forma determinista.
+- De cuáles sobres conviene mover plata si uno se queda corto («¿de dónde muevo \
+plata?»): te muestro los que tienen más presupuesto sin usar y propongo un \
+movimiento concreto (entre sobres del mismo nivel) que confirmás.
 - Memoria del usuario vía get_user_context para personalizar respuestas \
 cuando el contexto ayuda.
 

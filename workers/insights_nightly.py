@@ -39,6 +39,7 @@ from api.services.insights.nightly_runner import (
     NightlyRunStats,
     run_nightly_for_user,
 )
+from api.services.nudges.celebrations import trigger_celebration_nudges
 from api.services.snapshots import capture_user_snapshots
 
 
@@ -97,6 +98,11 @@ async def _run_one_user(*, user_id, now: datetime) -> NightlyRunStats | None:
                     )
         except Exception:
             log.exception("snapshots_capture_failed user=%s", user_id)
+        # Phase 8 B5 — evaluate the earned-celebration nudges AFTER the snapshots
+        # are frozen, so first_full_month + under_budget_month read a complete
+        # period. Own session + own try/except (trigger_celebration_nudges is
+        # already best-effort, but the snapshot block above is the precondition).
+        await trigger_celebration_nudges(user_id=user_id)
         return stats
     except Exception:
         log.exception("insights_nightly_user_failed user=%s", user_id)

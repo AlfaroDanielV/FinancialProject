@@ -48,6 +48,7 @@ from api.services.telegram_dispatcher import (
     ProposeAction,
     Reject,
     ShowHelp,
+    StartAccountCreation,
     UndoRequest,
     dispatch,
 )
@@ -721,6 +722,36 @@ async def _handle_confirm(
         )
         return reply
 
+    if pending.action_type == "reallocate_envelope":
+        # Phase 8 B4: move budget between two same-level envelopes through the
+        # shared `envelopes.reallocate` (committed_outflows = total_limit stays
+        # invariant). The service can 422 if a sobre went archived between
+        # propose and confirm — surface that as Spanish copy, not a raw crash.
+        # Append-style; not in /undo (reverse by reallocating back).
+        try:
+            await commit_pending(user=user, pending=pending, db=db, redis=redis)
+        except HTTPException as exc:
+            await db.rollback()
+            await clear_pending(user_id=user.id, redis=redis)
+            return BotReply(text=str(exc.detail))
+        payload = pending.payload
+        reply = BotReply(
+            text=messages_es.ENVELOPE_REALLOCATED.format(
+                amount=format_amount(
+                    Decimal(payload["amount"]), payload["currency"]
+                ),
+                from_name=payload.get("from_name", ""),
+                to_name=payload.get("to_name", ""),
+            )
+        )
+        await _bridge_to_query_history(
+            user_id=user.id,
+            user_text=source_text,
+            assistant_text=reply.text,
+            redis=redis,
+        )
+        return reply
+
     if pending.action_type == "reconcile_statement":
         # Statement reconciliation: anchor each matched account to its corte
         # balance (+ set loan balances) in one batch. Append-only; not in /undo.
@@ -1059,6 +1090,20 @@ async def _apply_decision(
         if telemetry_persisted:
             await db.commit()
         return BotReply(text=decision.message_es)
+    if isinstance(decision, StartAccountCreation):
+        # Phase 8 B2 chat-led activation: seed the account-creation flow with the
+        # stated balance + currency; it asks only name + type, then creates the
+        # account WITH this real balance (no replay needed). The subsequent
+        # account-creation round-trip (above) drives name → type → confirm.
+        prompt = await start_account_creation(
+            user_id=user.id,
+            redis=redis,
+            currency=decision.currency,
+            initial_balance=decision.initial_balance,
+        )
+        if telemetry_persisted:
+            await db.commit()
+        return BotReply(text=prompt)
     if isinstance(decision, ConfirmResponse):
         return await _handle_confirm(
             user=user, yes=decision.yes, db=db, redis=redis, source_text=source_text

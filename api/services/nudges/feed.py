@@ -61,6 +61,23 @@ def _money(currency: str, raw: Any) -> str:
     return "₡" + f"{int(round(value)):,}".replace(",", ".")
 
 
+_MONTHS_ES = (
+    "",
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "setiembre", "octubre", "noviembre", "diciembre",
+)
+
+
+def _period_es(raw: Any) -> str:
+    """Format a "YYYY-MM" period as "mayo 2026" (deterministic calendar label,
+    not a normalization map). Falls back to the raw string on any surprise."""
+    try:
+        year, month = str(raw).split("-")
+        return f"{_MONTHS_ES[int(month)]} {int(year)}"
+    except (ValueError, IndexError, TypeError):
+        return str(raw or "ese mes")
+
+
 def render_nudge_text(nudge_type: str, payload: dict[str, Any]) -> str:
     """One-to-two sentence CR-voseo card text built from the structured
     payload. Defensive: every field has a fallback so a malformed payload
@@ -136,6 +153,41 @@ def render_nudge_text(nudge_type: str, payload: dict[str, Any]) -> str:
         return (
             f"Tenés {count} {cosa} de Gmail sin revisar (el más viejo hace "
             f"{age} días). ¿{pron} revisás ahora?"
+        )
+
+    # ── Phase 8 B5 — earned celebrations ─────────────────────────────────────
+    if nudge_type == "goal_achieved":
+        name = payload.get("name") or "tu meta"
+        currency = payload.get("currency") or "CRC"
+        monto = _money(currency, payload.get("target_amount"))
+        return (
+            f"🎉 ¡Llegaste a tu meta «{name}»! Apartaste {monto}. "
+            "Lo lograste, ¡felicidades!"
+        )
+
+    if nudge_type == "debt_paid_off":
+        name = payload.get("name") or "tu deuda"
+        return (
+            f"🎉 ¡Saldaste «{name}»! Te quitaste esa deuda de encima. "
+            "¡Pura vida!"
+        )
+
+    if nudge_type == "first_full_month":
+        periodo = _period_es(payload.get("period"))
+        return (
+            f"🎉 ¡Completaste tu primer mes llevando tus finanzas ({periodo})! "
+            "Ese es el hábito que hace la diferencia. Seguí así."
+        )
+
+    if nudge_type == "under_budget_month":
+        name = payload.get("name") or "tu sobre"
+        currency = payload.get("currency") or "CRC"
+        periodo = _period_es(payload.get("period"))
+        gastado = _money(currency, payload.get("spent"))
+        limite = _money(currency, payload.get("limit_amount"))
+        return (
+            f"✅ ¡Cerraste «{name}» sin pasarte en {periodo}! Gastaste "
+            f"{gastado} de {limite}. ¡Bien hecho!"
         )
 
     return "Tenés una notificación pendiente."

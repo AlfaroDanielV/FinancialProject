@@ -19,7 +19,7 @@ import { Feather } from "@expo/vector-icons";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import type { RouteProp } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   postChatImage,
@@ -33,6 +33,7 @@ import {
   type DuplicateWarningPrefill,
   type ReclassifyPrefill,
 } from "../api/chat";
+import { fetchOnboardingStatus } from "../api/onboarding";
 import { actOnNudge, dismissNudge } from "../api/nudges";
 import { deleteTransaction, updateTransaction } from "../api/transactions";
 import { assignTransactionEnvelope } from "../api/envelopes";
@@ -84,6 +85,14 @@ export function ChatScreen() {
     null,
   );
   const listRef = useRef<FlatList<Message>>(null);
+
+  // Phase 8 B2: a not-yet-activated user gets a first-run guidance hint in the
+  // empty state (no fabricated message is auto-sent).
+  const { data: onboarding } = useQuery({
+    queryKey: ["onboarding", "status"],
+    queryFn: fetchOnboardingStatus,
+    staleTime: 60 * 1000,
+  });
 
   const onBotReply = (data: Awaited<ReturnType<typeof postChatMessage>>) => {
     const screen = data.open_screen?.screen;
@@ -481,7 +490,9 @@ export function ChatScreen() {
           }
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
-          ListEmptyComponent={<EmptyHint />}
+          ListEmptyComponent={
+            <EmptyHint firstRun={onboarding ? !onboarding.is_activated : false} />
+          }
         />
 
         <View style={styles.inputBar}>
@@ -545,16 +556,24 @@ export function ChatScreen() {
   );
 }
 
-function EmptyHint() {
+function EmptyHint({ firstRun = false }: { firstRun?: boolean }) {
   return (
     <View style={styles.emptyContainer}>
       <Feather name="message-circle" size={36} color={Colors.border} />
       <Text style={styles.emptyTitle}>Ledger CR</Text>
-      <Text style={styles.emptyBody}>
-        Preguntá lo que quieras.{"\n"}
-        «¿Cuál es mi saldo?» · «¿Cuánto gasté esta semana?»{"\n"}
-        «Registrá ₡5.000 en el súper.»
-      </Text>
+      {firstRun ? (
+        <Text style={styles.emptyBody}>
+          Para arrancar, decime cuánto tenés en tu cuenta donde te cae el
+          salario.{"\n"}
+          Ej: «tengo 200 mil en el BAC».
+        </Text>
+      ) : (
+        <Text style={styles.emptyBody}>
+          Preguntá lo que quieras.{"\n"}
+          «¿Cuál es mi saldo?» · «¿Cuánto gasté esta semana?»{"\n"}
+          «Registrá ₡5.000 en el súper.»
+        </Text>
+      )}
     </View>
   );
 }

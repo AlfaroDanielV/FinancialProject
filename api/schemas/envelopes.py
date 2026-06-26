@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -19,13 +20,39 @@ CurrencyLit = Literal["CRC", "USD"]
 
 class EnvelopeCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
-    envelope_class: EnvelopeClass
+    # Phase 8 B6 (progressive disclosure): `envelope_class` is OPTIONAL with a
+    # sensible default so "tipo" isn't a required upfront choice — a first-time
+    # user creates a sobre and changes the type later. Still validated against
+    # the four classes when provided. For a sub-sobre the value is ignored: the
+    # router overrides it with the parent's class (one tree = one class).
+    envelope_class: EnvelopeClass = "wants"
     limit_amount: float = Field(..., gt=0)
     currency: CurrencyLit = "CRC"
     # Phase 7a: when set, this envelope nests under `parent_id`. The child
     # inherits the parent's class + currency (the values above are ignored for
     # children, validated server-side), and depth = parent.depth + 1 (cap 5).
     parent_id: Optional[uuid.UUID] = None
+
+
+# ── starter pack (Phase 8 B6) ─────────────────────────────────────────────────
+
+
+class StarterPackItem(BaseModel):
+    """One root envelope in a starter pack. No `currency`/`parent_id` — the pack
+    only creates ROOTS in the user's currency."""
+
+    name: str = Field(..., min_length=1, max_length=120)
+    envelope_class: EnvelopeClass
+    limit_amount: float = Field(..., gt=0)
+
+
+class EnvelopeStarterPackRequest(BaseModel):
+    """Bulk-create up to 8 root envelopes in one shot (the "armá tu presupuesto
+    en 1 minuto" empty-state flow). Deterministic — NOT LLM-driven. Only ever
+    offered from the empty state, but it's an explicit endpoint: it never runs
+    on its own, so it can ADD a fresh budget for the user who triggers it."""
+
+    items: list[StarterPackItem] = Field(..., min_length=1, max_length=8)
 
 
 class EnvelopeUpdate(BaseModel):
@@ -67,6 +94,26 @@ class EnvelopeResponse(BaseModel):
     member_count: int = 0
 
     model_config = {"from_attributes": True}
+
+
+# ── reallocation (move budget between two same-level envelopes, Phase 8 B4) ───
+
+
+class EnvelopeReallocateRequest(BaseModel):
+    from_id: uuid.UUID
+    to_id: uuid.UUID
+    amount: Decimal = Field(..., gt=0)
+
+
+class EnvelopeReallocateResponse(BaseModel):
+    # Serialize/accept the source side under the JSON key `from` (a Python
+    # keyword, so the attribute is `from_`). FastAPI serializes response models
+    # by alias (response_model_by_alias defaults True), so the JSON key is `from`;
+    # populate_by_name lets the router construct it as `from_=...`.
+    model_config = {"populate_by_name": True}
+
+    from_: EnvelopeResponse = Field(alias="from")
+    to: EnvelopeResponse
 
 
 # ── summary (home-tab feed) ───────────────────────────────────────────────────

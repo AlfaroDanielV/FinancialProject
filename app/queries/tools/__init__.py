@@ -17,6 +17,7 @@ from .envelopes import register_envelope_tools
 from .financing import register_financing_tools
 from .goals import register_goal_tools
 from .pending import register_pending_tools
+from .reallocation import register_reallocation_tools
 from .salary import register_salary_tools
 from .recurring_bills import register_recurring_bill_tools
 from .transactions import register_transaction_tools
@@ -30,6 +31,7 @@ def register_builtin_tools() -> None:
     register_debt_tools()
     register_pending_tools()
     register_envelope_tools()
+    register_reallocation_tools()
     register_affordability_tools()
     register_financing_tools()
     register_goal_tools()

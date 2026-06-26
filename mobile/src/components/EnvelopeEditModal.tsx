@@ -67,7 +67,10 @@ export function EnvelopeEditModal({
   const qc = useQueryClient();
 
   const [name, setName] = useState("");
-  const [cls, setCls] = useState<EnvelopeClass>("needs");
+  // Phase 8 B6 (progressive disclosure): the class is pre-selected to a sensible
+  // default (matching the backend "wants" default) so it's never a required
+  // upfront gate — the user can change it, but doesn't have to decide first.
+  const [cls, setCls] = useState<EnvelopeClass>("wants");
   const [limit, setLimit] = useState("");
   const [currency, setCurrency] = useState<"CRC" | "USD">("CRC");
   const [error, setError] = useState<string | null>(null);
@@ -75,7 +78,7 @@ export function EnvelopeEditModal({
   useEffect(() => {
     setName(envelope?.name ?? "");
     setCls(
-      envelope?.envelope_class ?? parentEnvelope?.envelope_class ?? "needs",
+      envelope?.envelope_class ?? parentEnvelope?.envelope_class ?? "wants",
     );
     setLimit(envelope ? String(envelope.limit_amount) : "");
     setCurrency(

@@ -27,7 +27,13 @@ from .dispatch.lazy_detection import classify_hint_type, match_account_hint
 from .dispatch.transfer_direction import classify_transfer_direction
 from .accounts import resolve_account, list_active
 from .amortization import compute_french_payment
-from .envelopes import match_envelopes_by_name, match_obligations_by_name
+from .envelopes import (
+    active_children,
+    fetch_envelopes,
+    match_envelopes_by_name,
+    match_obligations_by_name,
+    reallocation_blocker,
+)
 from .income_frequency import per_payment_from_monthly
 from .finance.affordability import (
     SAFETY_MARGIN,
@@ -121,6 +127,19 @@ class OpenScreenAction:
 
 
 @dataclass(frozen=True)
+class StartAccountCreation:
+    """Phase 8 B2 chat-led activation cold start — the user stated a balance
+    (SET_BALANCE) but has no account yet. Seed the 6d B9 account-creation flow
+    with the stated balance + currency so it asks ONLY name + type, then the new
+    account is created WITH this real balance (reconstructed from
+    `initial_balance`, no anchor). The LLM never names the account — the
+    deterministic flow + the user do."""
+
+    initial_balance: str
+    currency: str
+
+
+@dataclass(frozen=True)
 class ConfirmResponse:
     """User said yes/no/cancel. The handler correlates with the Redis
     pending-action key — dispatcher doesn't know if one exists."""
@@ -155,6 +174,7 @@ DispatcherResult = Union[
     OpenScreenAction,
     AskClarification,
     LazyDetectionPrompt,
+    StartAccountCreation,
     ConfirmResponse,
     UndoRequest,
     ShowHelp,
@@ -331,6 +351,11 @@ async def dispatch(
 
     if intent is Intent.SET_BALANCE:
         return await _dispatch_set_balance(
+            extraction=extraction, user=user, db=db
+        )
+
+    if intent is Intent.REALLOCATE_ENVELOPE:
+        return await _dispatch_reallocate(
             extraction=extraction, user=user, db=db
         )
 
@@ -542,6 +567,17 @@ async def _dispatch_set_balance(
         )
 
     accounts = await list_active(user, db)
+    # Phase 8 B2 — chat-led activation cold start: a user with ZERO accounts who
+    # states a balance gets the account-creation flow seeded with that balance +
+    # currency (it asks only name + type). The account is created WITH this real
+    # balance, so the first number the user sees is right. The LLM never names
+    # the account — the deterministic flow + the user do.
+    if not accounts:
+        return StartAccountCreation(
+            initial_balance=str(extraction.amount),
+            currency=(extraction.currency or user.currency),
+        )
+
     # Dual-currency disambiguation (see _accounts_in_currency).
     candidates = (
         _accounts_in_currency(accounts, extraction.currency or user.currency)
@@ -596,6 +632,104 @@ async def _dispatch_set_balance(
     )
     return ProposeAction(
         action_type="set_balance", payload=payload, summary_es=summary
+    )
+
+
+# ── Phase 8 B4: reallocation between envelopes (chat → propose → commit) ──────
+
+
+async def _dispatch_reallocate(
+    *,
+    extraction: ExtractionResult,
+    user: User,
+    db: AsyncSession,
+) -> DispatcherResult:
+    """Move budget between two SAME-LEVEL envelopes ("movéme 15 mil de Ahorro a
+    Gustos"). Resolves both sobres by name deterministically, pre-validates with
+    the SAME rules as the service writer (so a bad move is rejected with the
+    precise reason BEFORE the user confirms), then proposes. The LLM proposes;
+    the commit writes through the shared `envelopes.reallocate`."""
+    envelopes = await fetch_envelopes(db, user_id=user.id, include_archived=False)
+    option_names = [e.name for e in envelopes]
+
+    # FROM side — exactly one name match, else clarify (unmatched OR ambiguous).
+    from_env = None
+    if extraction.reallocate_from_hint:
+        matches = await match_envelopes_by_name(
+            db, user_id=user.id, hint=extraction.reallocate_from_hint
+        )
+        if len(matches) == 1:
+            from_env = matches[0]
+    if from_env is None:
+        return AskClarification(
+            question_es=(
+                "¿De cuál sobre querés mover plata? "
+                "Tocá una opción o escribime el nombre."
+            ),
+            awaiting_field="reallocate_from",
+            partial=extraction.model_dump(mode="json"),
+            options=option_names,
+        )
+
+    # TO side.
+    to_env = None
+    if extraction.reallocate_to_hint:
+        matches = await match_envelopes_by_name(
+            db, user_id=user.id, hint=extraction.reallocate_to_hint
+        )
+        if len(matches) == 1:
+            to_env = matches[0]
+    if to_env is None:
+        return AskClarification(
+            question_es=(
+                "¿A cuál sobre querés mover la plata? "
+                "Tocá una opción o escribime el nombre."
+            ),
+            awaiting_field="reallocate_to",
+            partial=extraction.model_dump(mode="json"),
+            options=option_names,
+        )
+
+    if extraction.amount is None:
+        return AskClarification(
+            question_es="¿Cuánto querés mover? Decime el monto (ej: '15 mil').",
+            awaiting_field="amount",
+            partial=extraction.model_dump(mode="json"),
+        )
+    amount: Decimal = extraction.amount
+
+    # Pre-validate with the SAME rules as the service (same parent, same currency,
+    # from-side floor) so the user sees WHY before confirming.
+    from_children = await active_children(
+        db, user_id=user.id, parent_id=from_env.id
+    )
+    from_children_total = sum(
+        (Decimal(c.limit_amount) for c in from_children), Decimal("0")
+    )
+    blocker = reallocation_blocker(
+        from_env=from_env,
+        to_env=to_env,
+        amount=amount,
+        from_children_total=from_children_total,
+    )
+    if blocker is not None:
+        return Reject(reason_code="reallocate_invalid", message_es=blocker)
+
+    payload = {
+        "action_type": "reallocate_envelope",
+        "from_id": str(from_env.id),
+        "to_id": str(to_env.id),
+        "amount": str(amount),
+        "currency": from_env.currency,
+        "from_name": from_env.name,
+        "to_name": to_env.name,
+    }
+    summary = (
+        f"Voy a mover {_format_amount(amount, from_env.currency)} de "
+        f"«{from_env.name}» a «{to_env.name}». ¿Confirmo?"
+    )
+    return ProposeAction(
+        action_type="reallocate_envelope", payload=payload, summary_es=summary
     )
 
 

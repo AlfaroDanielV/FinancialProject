@@ -182,7 +182,7 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 
 ## Implementation Roadmap
 
-### Current Status: Phases 7/7a/7b/7c/7d/7e code-complete (operator on-device sign-off pending). Phase 7f (Capture & Forms UX) code-complete 2026-06-12; Phase 7g (Income Model Rework) code-complete 2026-06-13. Phase 6f B0–B16 implemented; SPA retired 2026-06-01; native-only daily use ongoing.
+### Current Status: Phases P7/P7a/P7b/P7c/P7d/P7e/P7f/P7g/P7h operator-signed-off 2026-06-26 (P7e on branch `phase-7e-data` and P7h on branch `phase-7h-analytics` are signed off but still pending merge to dev). Phase 6f B0–B16 implemented; SPA retired 2026-06-01; native-only daily use ongoing.
 
 | Phase | Focus | Done When |
 |---|---|---|
@@ -201,15 +201,15 @@ All amounts in Phase 4 tables are `NUMERIC(14,2)`. Dates are calendar `DATE`; ti
 | **6d** ✅ | Onboarding & self-registration | Closed in B13; see "Phase 6d (closed)" below |
 | **6e** ✅ | Centro Financiero SPA | Closed at B13; **retired at 6f B16 (`web/` deleted 2026-06-01)**. B14/B15 dropped; privacy export/delete absorbed into Phase 6f B14. |
 | **6f** 🚧 | Native iOS app (Expo) | B0–B16 implemented. Replaces SPA (B16 retired `web/` + SWA workflow + cookie auth path on 2026-06-01, operator override of the 4-week-dogfood-first gate). In-app chat (reuses `bot/pipeline.py::process_message()`), receipt photo upload (B6), conversational creation (goals/income/bills/debt), device-code `/login` auth (B3). See `docs/phase-6f-decisions.md`. Remaining: operator daily native-only use. |
-| **P7** 🚧 | Affordability / pushback engine + Unified Monthly Cashflow | Code-complete; operator on-device sign-off pending |
-| **P7a** 🚧 | Nested envelopes + context-aware pushback | Code-complete; operator on-device sign-off pending |
-| **P7b** 🚧 | Accounts CRUD + hard delete, transfers, credit-card clarity | Code-complete 2026-06-11; operator on-device sign-off pending |
-| **P7c** 🚧 | UI 2.0: neutral theme + money clarity | Code-complete 2026-06-11; operator on-device sign-off pending |
-| **P7d** 🚧 | Goal funding from accounts + goals full CRUD | Code-complete 2026-06-11; operator on-device sign-off pending |
-| **P7e** 🚧 | Data foundation: advice trace, snapshots, consent ledger (migration 0031) | Code-complete 2026-06-11; operator on-device sign-off pending |
-| **P7f** 🚧 | Capture & Forms UX: account buttons in chat, form polish, envelope indicator, debts in Gastos fijos | Code-complete 2026-06-12; operator on-device sign-off pending |
-| **P7g** 🚧 | Income Model Rework: monthly→per-payment storage (quincenal = 2/month), CR aguinaldo + salario escolar on gross prorated by hire date (migration 0032) | Code-complete 2026-06-13; operator on-device sign-off pending |
-| **P8** | Beta users | Onboard a second person via Telegram with accurate reports within a week |
+| **P7** ✅ | Affordability / pushback engine + Unified Monthly Cashflow | Operator-signed-off 2026-06-26 |
+| **P7a** ✅ | Nested envelopes + context-aware pushback | Operator-signed-off 2026-06-26 |
+| **P7b** ✅ | Accounts CRUD + hard delete, transfers, credit-card clarity | Operator-signed-off 2026-06-26 |
+| **P7c** ✅ | UI 2.0: neutral theme + money clarity | Operator-signed-off 2026-06-26 |
+| **P7d** ✅ | Goal funding from accounts + goals full CRUD | Operator-signed-off 2026-06-26 |
+| **P7e** ✅ | Data foundation: advice trace, snapshots, consent ledger (migration 0031) | Operator-signed-off 2026-06-26 |
+| **P7f** ✅ | Capture & Forms UX: account buttons in chat, form polish, envelope indicator, debts in Gastos fijos | Operator-signed-off 2026-06-26 |
+| **P7g** ✅ | Income Model Rework: monthly→per-payment storage (quincenal = 2/month), CR aguinaldo + salario escolar on gross prorated by hire date (migration 0032) | Operator-signed-off 2026-06-26 |
+| **P8** 🚧 | Beta users | B1 Telegram cold-start registration shipped 2026-06-12; B2–B6 Activation & Advisor UX code-complete 2026-06-26 (operator on-device sign-off pending). Phase done-when: onboard a second person via Telegram with accurate reports within a week |
 | **P9** | SaaS hardening | Multi-tenant auth, billing, compliance, observability |
 
 ### Phase Gate Rule
@@ -1199,11 +1199,10 @@ code-complete, **operator on-device sign-off pending**. Decision note:
 
 ---
 
-## Phase 7a (active) — Nested Envelopes + Context-Aware Pushback
+## Phase 7a (signed off 2026-06-26) — Nested Envelopes + Context-Aware Pushback
 
 Two operator-requested extensions on top of envelopes + the Phase 7
-affordability engine. Backend + mobile **code-complete; operator on-device
-sign-off pending** (do not flip to ✅ until then). Canonical:
+affordability engine. Backend + mobile **operator-signed-off 2026-06-26**. Canonical:
 `docs/phase-7a-decisions.md`; vault `Decision - Nested Envelopes (Sub-Sobres)`
 + `Decision - Context-Aware Pushback`.
 
@@ -1304,10 +1303,10 @@ Phase-7 regression migrated and green; mobile `tsc --noEmit` clean. `alembic
 current → 0027 (head)`. **Remaining polish:** symmetric bills/debts-screen attach
 entry point; "cuota de préstamo" label on debt feed entries.
 
-## Phase 7b (active) — Accounts CRUD + Hard Delete, Transfers, Credit-Card Clarity
+## Phase 7b (signed off 2026-06-26) — Accounts CRUD + Hard Delete, Transfers, Credit-Card Clarity
 
 Three operator asks packaged as one phase (decisions locked 2026-06-11).
-**Code-complete 2026-06-11 — operator on-device sign-off pending.**
+**Operator-signed-off 2026-06-26.**
 Verification: `scripts/test_phase_7b.sh` green (mobile `tsc --noEmit`; 47
 focused + 136 regression incl. the byte-locked unified-cashflow regression);
 `scripts/test_phase_6f.sh` cross-check green; `alembic current → 0029 (head)`.
@@ -1440,12 +1439,11 @@ pending.**
   `automaticallyAdjustKeyboardInsets` to each + bumped `contentContainerStyle`
   `paddingBottom` to `Spacing.xl * 2`. No new dep, no shared component.
 
-## Phase 7c (active) — UI 2.0: Neutral Theme + Money Clarity
+## Phase 7c (signed off 2026-06-26) — UI 2.0: Neutral Theme + Money Clarity
 
 Operator ask 2026-06-11 ("too hard to understand my money; make the UI
 extremely professional/modern, German form-follows-function, subtle icons,
-minimal"). **Code-complete on branch `phase-7c-ui` — operator on-device
-sign-off pending.** Canonical: `docs/phase-7c-decisions.md`; vault
+minimal"). **Code-complete on branch `phase-7c-ui` — operator-signed-off 2026-06-26.** Canonical: `docs/phase-7c-decisions.md`; vault
 `Decision - UI 2.0 - Neutral Theme & Money Clarity`.
 
 - **Theme v2 (token swap, no key renames):** `mobile/src/theme.ts` moves from
@@ -1482,11 +1480,11 @@ sign-off pending.** Canonical: `docs/phase-7c-decisions.md`; vault
 - **Deferred:** full Inter body migration; per-screen layout polish beyond
   Inicio; any trend chart.
 
-## Phase 7e (active) — Data Foundation: Advice Trace, Snapshots, Consent
+## Phase 7e (signed off 2026-06-26) — Data Foundation: Advice Trace, Snapshots, Consent
 
 Strategic data substrate for the long-term counsel/underwriting vision
-(vault: `Long-Term Strategy - Financial Institution`). **Code-complete
-2026-06-11 on branch `phase-7e-data`.** No product behavior changes —
+(vault: `Long-Term Strategy - Financial Institution`). **Operator-signed-off
+2026-06-26; code-complete on branch `phase-7e-data` (still pending merge to dev).** No product behavior changes —
 everything accretes passively. Canonical: `docs/phase-7e-decisions.md`;
 vault `Decision - Data Foundation (Advice Trace, Snapshots, Consent)`.
 
@@ -1538,10 +1536,9 @@ vault `Decision - Data Foundation (Advice Trace, Snapshots, Consent)`.
   consent onboarding UX + `core_service` auto-seed at register (P8);
   snapshot read API; `assess_financing` trace kind.
 
-## Phase 7f (active) — Capture & Forms UX
+## Phase 7f (signed off 2026-06-26) — Capture & Forms UX
 
-Four operator UX asks (2026-06-12), **code-complete same day — operator
-on-device sign-off pending**. Canonical: `docs/phase-7f-decisions.md`; vault
+Four operator UX asks (2026-06-12), **operator-signed-off 2026-06-26**. Canonical: `docs/phase-7f-decisions.md`; vault
 `Decision - Capture & Forms UX (Phase 7f)`. No migration (`0031` head).
 Gate: `scripts/test_phase_7f.sh` (mobile `tsc --noEmit`; 6 focused + 79
 regression); `scripts/test_phase_7b.sh` + `test_phase_6f.sh` +
@@ -1592,10 +1589,9 @@ regression); `scripts/test_phase_7b.sh` + `test_phase_6f.sh` +
   2026-06-13** — see "Categories Reconciled" below: transaction-edit + bills now
   pick from the Categorías-screen list.)
 
-## Phase 7g (active) — Income Model Rework (2026-06-13)
+## Phase 7g (signed off 2026-06-26) — Income Model Rework (2026-06-13)
 
-Two income correctness bugs, **code-complete 2026-06-13 — operator on-device
-sign-off pending**. Migration `0032`. Canonical: `docs/phase-7g-decisions.md`;
+Two income correctness bugs, **operator-signed-off 2026-06-26**. Migration `0032`. Canonical: `docs/phase-7g-decisions.md`;
 vault `Decision - Income Model Rework`. Gate: `scripts/test_phase_7f.sh` +
 7d/7b/6f cross-checks green; mobile `tsc` clean.
 
@@ -1662,56 +1658,107 @@ Cold-Start Registration`.
   limiting per tg id (beta scale doesn't need it), self-serve account
   delete, formal ToS document.
 
-## Phase 8 — Activation & Advisor UX (planned, B2–B6, 2026-06-25)
+## Phase 8 — Activation & Advisor UX (B2–B6, code-complete 2026-06-26)
 
 Driven by the first two non-technical user tests (2026-06-25) + a prior
 UX/psychology audit. **Forks locked by operator:** reactive advisor (not
 proactive) + chat-led first run (not a visual wizard). Principle: **make depth
 optional, make the first win free, reward real progress** — without breaking
-"LLM extracts; rules decide" or chat-first. Canonical: `docs/phase-8-decisions.md`
-(Activation & Advisor UX track); vault `Decision - Activation & Advisor UX
-(Phase 8)`. **PLANNED — not started.**
+"LLM extracts; rules decide" or chat-first. **Code-complete 2026-06-26 (B2–B6);
+operator on-device sign-off pending.** Mostly orchestration over existing
+primitives; hard rules intact (LLM-extracts-rules-decide; unified-cashflow
+byte-lock untouched; no synonym/normalization maps; voseo CR). Canonical:
+`docs/phase-8-decisions.md` (Activation & Advisor UX track); vault
+`Decision - Activation & Advisor UX (Phase 8)`. (B1 cold-start registration
+shipped 2026-06-12 — separate section above.)
 
 - **User-test evidence.** Tester 1 froze after login ("no instructions / no
   step-by-step") and was overwhelmed by Gmail/sender config reached too early →
   B2 + B3. Tester 2 expected an advisor: *"estoy por pasarme de Gustos, ¿de dónde
   muevo plata?"* → B4 + B6 (advice-forward + move-budget-between-sobres +
   over-limit-as-decision).
-- **B2 — Activation: chat-led first run + redefine "activated."** First
-  post-login surface is the chat, zero forms: "¿cuánto tenés en tu cuenta?" →
-  account + balance **anchor** (reuse `Intent.SET_BALANCE` + 6d B9) → real number
-  in ~20s. "Activated" = 1 account + 1 balance + 1 expense (drop the 4-entity
-  gate + the "te falta registrar" guilt copy). Deep-link new registrants into the
-  app (reuse B15 `ledgercr://`), CR bank picker, net-salary fast path, email-taken
-  recovery, dashboard empty-state CTAs.
-- **B3 — Gmail out of the critical path + guided connect.** Gmail becomes an
-  opt-in power-up with a step-by-step guided flow (incl. the ~7-day reconnect
-  caveat); no new user stumbles into sender config. Mobile + copy only.
+- **B2 — Chat-led activation + redefine "activated".** New `StartAccountCreation`
+  dispatcher result: a user with ZERO accounts who states a balance
+  (`Intent.SET_BALANCE`) gets the 6d B9 account-creation flow SEEDED with the
+  stated balance+currency (skips those questions via
+  `account_creation._next_collection_step`), so the first account is born with the
+  real balance via `initial_balance` (no anchor). `onboarding_status` gains
+  `is_activated`/`has_balance`/`has_expense` (1 account + a real balance
+  [`initial_balance>0` or an `account_anchors` row] + 1 real expense [confirmed,
+  non-archived, not transfer/goal/ajuste]; `completeness_score` kept as legacy);
+  `onboarding_welcome` reframed to chat-led empty + progress next-step copy (drops
+  "te falta registrar"); `registration` REGISTER_DONE appends a `ledgercr://` deep
+  link (`/login` fallback). Mobile: `is_activated`-gated `FirstRunCard` (Dashboard)
+  + first-run `EmptyHint` (Chat) + `api/onboarding.ts`. No migration. Tests:
+  `tests/test_phase_8_b2_activation.py` (11) + registration deep-link.
+- **B3 — Gmail out of the first-run path + guided connect.** Mobile/copy only, no
+  backend. Gmail demoted from the primary "Más" grid to a de-emphasized
+  "Avanzado" section; the tile routes through a new `GmailIntroScreen` (4-step
+  voseo opt-in: qué hace / para qué / shadow review / ~7-día reconnect caveat)
+  before sender config. The mid-scan reconnect fallback + 90s timeout in
+  `GmailScreen` preserved.
 - **B4 — Reactive advisor: reallocation-on-request.** New deterministic
-  **move-budget-between-sobres** primitive (atomic, same-currency v1, respects
-  parent/child caps; likely `POST /envelopes/reallocate`) + a read-only tool that
-  computes where to pull from (reuses `compute_envelope_summary`). LLM proposes a
-  specific move, user confirms, deterministic commit; also fires when a sobre
-  limit is hit mid-capture. Reactive only.
-- **B5 — Emotional symmetry: earned-celebration layer.** Real peaks at goal
-  achieved / debt paid off / first full month / stayed-under-budget. The
-  *decision* to celebrate is deterministic (mirrors "LLM never decides
-  whether/when to nudge"); LLM may phrase. **No streaks/points/badges.** Aguinaldo
-  + salario escolar as CR fresh-start anchors.
-- **B6 — Envelope humanization.** Over-limit → "¿cubrís moviendo de otro sobre?"
-  (reuses B4). Progressive disclosure: default the *tipo*, hide allocation jargon
-  until a sobre has children, hide nesting by default, starter-sobres pack. Batch
-  bulk-assign prompt for unassigned gastos. A deterministic **merchant→sobre
-  memory** is a SEPARATE mini-decision (a user-confirmed mapping, NOT an LLM
-  normalization map — the no-synonym-maps rule stands).
+  `api/services/envelopes.py::reallocate` + pure `reallocation_blocker` (shared by
+  REST + chat): amount>0, same currency, **`from.parent_id == to.parent_id`** (the
+  byte-lock guard — keeps `committed_outflows = total_limit = Σ root limits`
+  invariant; root↔root incl. cross-class, or sibling↔sibling; root↔child
+  rejected), from-side floor (`from.limit − amount ≥ Σ active children AND > 0`).
+  `POST /api/v1/envelopes/reallocate`. Read-only `suggest_reallocation_candidates`
+  query tool (reuses `compute_envelope_summary`, ranks by `available` desc,
+  registered BEFORE the `compare_periods` cache anchor). `Intent.REALLOCATE_ENVELOPE`
+  (a command "movéme X de A a B" → write; a question "¿de dónde muevo?" → query) →
+  `_dispatch_reallocate` → `ProposeAction` → `_commit_reallocate` (NOT in /undo,
+  reverse by moving back). System-prompt cap bumped 8900→9100 for one capability
+  bullet (sanctioned bump, as at 7b B4). Mobile `reallocateEnvelopes` helper. No
+  migration. Tests: `tests/test_phase_8_b4_reallocate.py` (13) incl. a `total_limit`
+  before/after invariance proof.
+- **B5 — Earned-celebration layer.** 4 READ-ONLY evaluators (`goal_achieved`,
+  `debt_paid_off`, `first_full_month`, `under_budget_month`) on the Phase 5d
+  dedup/feed/delivery rails (`ALL_EVALUATORS` 7→11); rules decide WHEN, the LLM
+  only phrases; **no streaks/points/badges**. Migration `0042` widens the
+  `nudge_type` CHECK on `user_nudges` + `user_nudge_silences` (downgrade purges the
+  4 new types — the 0041/0033 safeguard). Event-driven immediacy:
+  `api/routers/goals.py` (status→achieved) + `debts.py` (record_payment→0 /
+  delete-at-0) call
+  `api/services/nudges/celebrations.py::trigger_celebration_nudges` **post-commit,
+  in an isolated session, swallow-on-fail** (a celebration can NEVER break a
+  goal/debt write); `first_full_month`/`under_budget_month` ride the nightly worker
+  AFTER `capture_user_snapshots` and read the FROZEN snapshot (never re-fire after a
+  limit edit). Mobile: celebratory render in `AlertsScreen` (`CelebrationModal`
+  deferred — the Alerts feed satisfies the done-when). Tests:
+  `tests/test_phase_8_b5_celebration.py` (13) + 94 nudge regression; migration
+  up/down/up clean.
+- **B6 — Envelope humanization.** `POST /api/v1/envelopes/starter-pack`
+  (deterministic bulk-create ≤8 ROOTS, explicit-trigger only so the byte-lock is
+  untouched); `EnvelopeCreate.envelope_class` now optional, default `wants`
+  (a sub-sobre still inherits the parent's class). Over-limit → one-tap
+  reallocation reusing B4's `reallocate` (mobile `ReallocateModal`, same-level
+  same-currency source picker). Progressive disclosure (hide allocation jargon
+  until a parent nests, nesting behind an "avanzado" toggle), `StarterPackModal`
+  (5 editable starter sobres scaled to monthly income), bulk-assign batch prompt.
+  Deterministic dispatcher `_maybe_append_unassigned_suggestion` ("tenés N gastos
+  sin sobre", once/conversation, mirrors `_maybe_append_attach_suggestion`; counts
+  via `count_unassigned_month_expenses`). **Merchant→sobre memory deliberately NOT
+  built** (stays a future user-confirmed-mapping decision, never an LLM
+  normalization map). No migration. Tests:
+  `tests/test_phase_8_b6_envelope_humanization.py` (11, incl. the ajuste-exclusion
+  regression).
+- **Verification:** full gate `scripts/test_phase_7b.sh` → **141 passed**; mobile
+  `npx tsc --noEmit` clean; `alembic → 0042`. A pre-merge adversarial code-review
+  workflow (5 scopes, find→refute) caught **1** confirmed bug —
+  `count_unassigned_month_expenses` was missing the `AJUSTE_CATEGORY` exclusion (a
+  reconciliation ajuste would wrongly count as an unassigned gasto) — **fixed +
+  regression-tested**; 2 other candidates (float-vs-Decimal on `limit_amount`)
+  were refuted (float is the documented API convention, `NUMERIC(12,2)`
+  quantizes).
 - **Sequence:** B2 → B4 → B6 (B6 reuses B4's primitive); B3 + B5 independent.
   **Deferred:** proactive advisor (flag); cross-currency reallocation;
   merchant→sobre memory (own decision); net-worth trend view; visual wizard.
 
-## Phase 7h (active) — Savings Clarity + Analytics Screen (2026-06-13)
+## Phase 7h (signed off 2026-06-26) — Savings Clarity + Analytics Screen (2026-06-13)
 
-Two operator dogfooding asks. **Code-complete on branch `phase-7h-analytics`
-— on-device sign-off pending.** No migration. Canonical:
+Two operator dogfooding asks. **Operator-signed-off 2026-06-26; code-complete on branch `phase-7h-analytics`
+(still pending merge to dev).** No migration. Canonical:
 `docs/phase-7h-decisions.md`; vault `Decision - Savings Excluded From Available
 Balance`, `Decision - Charts Via react-native-svg`.
 

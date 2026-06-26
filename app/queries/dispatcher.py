@@ -15,7 +15,10 @@ from api.models.llm_query_dispatch import LLMQueryDispatch
 from api.models.user import User
 from api.redis_client import get_redis
 from api.services.budget import assert_within_budget
-from api.services.envelopes import list_unattached_obligations
+from api.services.envelopes import (
+    count_unassigned_month_expenses,
+    list_unattached_obligations,
+)
 from api.services.insights.extractor import (
     compact_transaction_context_from_tools,
     enqueue_insight_extraction,
@@ -111,6 +114,12 @@ _CASHFLOW_TOOLS = frozenset({"assess_purchase", "get_savings_capacity", "assess_
 _ATTACH_SUGGEST_KEY = "chat:fixed_expense_suggested:{user_id}"
 _ATTACH_SUGGEST_TTL_S = 3600  # ~ one conversation window; expires on its own
 
+# B6 — deterministic "tenés N gastos sin sobre" suggestion. Same mechanism as the
+# attach nudge above (own once-per-conversation key), but it counts current-month
+# expenses with no envelope. The dispatcher decides; the LLM never does.
+_UNASSIGNED_SUGGEST_KEY = "chat:unassigned_expenses_suggested:{user_id}"
+_UNASSIGNED_SUGGEST_TTL_S = 3600
+
 
 async def _maybe_append_attach_suggestion(
     text: str, *, db: AsyncSession, user: User, redis, tools_used: list
@@ -138,6 +147,32 @@ async def _maybe_append_attach_suggestion(
         f"{text}\n\nDe paso: tenés {len(unattached)} gasto(s) fijo(s) sin sobre "
         f"asignado ({names}). Asignalos a un sobre para que tu presupuesto refleje "
         "tu situación real."
+    )
+
+
+async def _maybe_append_unassigned_suggestion(
+    text: str, *, db: AsyncSession, user: User, redis, tools_used: list
+) -> str:
+    """Append a gentle "tenés N gastos sin sobre" nudge when (a) the answer used a
+    cashflow tool, (b) the user has ≥ 1 current-month expense with no envelope,
+    and (c) we haven't already suggested this conversation. Deterministic +
+    rate-limited, exactly like `_maybe_append_attach_suggestion`. The LLM never
+    decides to suggest; it only narrates its own answer."""
+    used_names = {
+        (t.get("name") if isinstance(t, dict) else t) for t in (tools_used or [])
+    }
+    if not (used_names & _CASHFLOW_TOOLS):
+        return text
+    key = _UNASSIGNED_SUGGEST_KEY.format(user_id=user.id)
+    if await redis.get(key):
+        return text
+    count = await count_unassigned_month_expenses(db, user=user)
+    if count < 1:
+        return text
+    await redis.setex(key, _UNASSIGNED_SUGGEST_TTL_S, "1")
+    return (
+        f"{text}\n\nTenés {count} gasto(s) sin sobre este mes — asignalos en "
+        "30 segundos para que tu presupuesto refleje lo real."
     )
 
 
@@ -320,6 +355,13 @@ async def run_dispatch(
                 # B4: ephemeral attach nudge — appended to the RETURNED text
                 # only, never persisted to history.
                 text = await _maybe_append_attach_suggestion(
+                    text, db=db, user=user, redis=redis, tools_used=result.tools_used
+                )
+                # B6: ephemeral "gastos sin sobre" nudge — same ephemeral,
+                # rate-limited mechanism (own key). Both can fire in one turn if
+                # the user has BOTH unattached obligations AND unassigned
+                # expenses; each then stays silent for the rest of the window.
+                text = await _maybe_append_unassigned_suggestion(
                     text, db=db, user=user, redis=redis, tools_used=result.tools_used
                 )
         except Exception:

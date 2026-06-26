@@ -28,7 +28,10 @@ from ..schemas.envelope_sharing import (
 )
 from ..schemas.envelopes import (
     EnvelopeCreate,
+    EnvelopeReallocateRequest,
+    EnvelopeReallocateResponse,
     EnvelopeResponse,
+    EnvelopeStarterPackRequest,
     EnvelopeSummaryResponse,
     EnvelopeUpdate,
 )
@@ -44,6 +47,7 @@ from ..services.envelopes import (
     active_children,
     archive_subtree,
     compute_envelope_summary,
+    reallocate,
     set_class_subtree,
 )
 
@@ -177,9 +181,70 @@ async def envelopes_summary(
     return await compute_envelope_summary(db, user=user)
 
 
-# ── sharing ───────────────────────────────────────────────────────────────────
-# Declared before the `/{envelope_id}` routes so the static `/redeem` segment is
-# never captured as an id.
+# ── reallocation + sharing ────────────────────────────────────────────────────
+# Declared before the `/{envelope_id}` routes so the static `/reallocate` and
+# `/redeem` segments are never captured as an id.
+
+
+@router.post("/reallocate", response_model=EnvelopeReallocateResponse)
+async def reallocate_envelopes(
+    payload: EnvelopeReallocateRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """Move budget between two SAME-LEVEL envelopes (both roots, or two children
+    of the same parent). The deterministic `reallocate` service validates the
+    move (same parent, same currency, from-side floor) and writes both limits;
+    this keeps committed_outflows = total_limit invariant. We commit + echo."""
+    from_env, to_env = await reallocate(
+        db,
+        user=user,
+        from_id=payload.from_id,
+        to_id=payload.to_id,
+        amount=payload.amount,
+    )
+    await db.commit()
+    await db.refresh(from_env)
+    await db.refresh(to_env)
+    return EnvelopeReallocateResponse(
+        from_=EnvelopeResponse.model_validate(from_env),
+        to=EnvelopeResponse.model_validate(to_env),
+    )
+
+
+@router.post(
+    "/starter-pack", response_model=list[EnvelopeResponse], status_code=201
+)
+async def create_starter_pack(
+    payload: EnvelopeStarterPackRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """Bulk-create a starter set of ROOT envelopes (≤ 8) in one transaction —
+    the "armá tu presupuesto en 1 minuto" empty-state flow. Deterministic, never
+    LLM-driven, and never auto-run: the caller (the empty-state UI) explicitly
+    triggers it, so adding allocations here is the user's intended new budget.
+    Each item creates a fresh root (parent_id=None, depth=1) in the user's
+    currency. Envelopes have no name-uniqueness constraint, so a repeated name
+    simply creates another sobre (no crash)."""
+    currency = user.currency or "CRC"
+    created: list[Envelope] = []
+    for item in payload.items:
+        env = Envelope(
+            user_id=user.id,
+            parent_id=None,
+            depth=1,
+            name=item.name,
+            envelope_class=item.envelope_class,
+            limit_amount=item.limit_amount,
+            currency=currency,
+        )
+        db.add(env)
+        created.append(env)
+    await db.commit()
+    for env in created:
+        await db.refresh(env)
+    return created
 
 
 @router.post("/redeem", response_model=EnvelopeResponse)

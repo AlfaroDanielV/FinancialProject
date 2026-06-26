@@ -123,6 +123,28 @@ _BUTTONS: dict[str, list[NudgeButton]] = {
         NudgeButton("Revisar", "act"),
         NudgeButton("Descartar", "dismiss"),
     ],
+    # ── Phase 8 B5 — earned celebrations ─────────────────────────────────────
+    # Positive nudges: minimal, no "No mostrar más" guilt. `act` ("Ver") routes
+    # to the relevant screen (goal/debt/sobres); `dismiss` ("Cerrar") just
+    # closes the card. Each celebration has a unique dedup_key (per goal / debt
+    # / period), so it can't repeat — the auto-silence on dismiss is largely
+    # moot here.
+    "goal_achieved": [
+        NudgeButton("Ver meta", "act"),
+        NudgeButton("Cerrar", "dismiss"),
+    ],
+    "debt_paid_off": [
+        NudgeButton("Ver deuda", "act"),
+        NudgeButton("Cerrar", "dismiss"),
+    ],
+    # No screen to "ver" for the first-month milestone — just acknowledge.
+    "first_full_month": [
+        NudgeButton("Cerrar", "dismiss"),
+    ],
+    "under_budget_month": [
+        NudgeButton("Ver sobres", "act"),
+        NudgeButton("Cerrar", "dismiss"),
+    ],
 }
 
 

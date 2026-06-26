@@ -108,6 +108,12 @@ def merge_reply(
         merged["transfer_from_hint"] = reply
     elif field == "transfer_to":
         merged["transfer_to_hint"] = reply
+    elif field == "reallocate_from":
+        # Phase 8 B4 reallocation — raw pass-through; the dispatcher matches the
+        # sobre by name and re-asks (listing the envelope names) if unmatched.
+        merged["reallocate_from_hint"] = reply
+    elif field == "reallocate_to":
+        merged["reallocate_to_hint"] = reply
     elif field == "amount":
         amount = _parse_amount_es(reply)
         if amount is None:

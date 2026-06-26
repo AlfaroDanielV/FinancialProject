@@ -35,6 +35,7 @@ from api.services.consents import record_consent
 from api.services.users import create_user_with_defaults
 
 from . import messages_es
+from .deep_link import mint_native_deep_link
 from .redis_keys import REGISTRATION_TTL_S, registration_key
 
 # Bump when the ToS/consent copy shown in REGISTER_CONFIRM changes.
@@ -180,9 +181,25 @@ async def handle_registration_text(
         await clear_registration(
             telegram_user_id=telegram_user_id, redis=redis
         )
-        return messages_es.REGISTER_DONE.format(
+        done = messages_es.REGISTER_DONE.format(
             name=user.full_name, token=user.shortcut_token
         )
+        # Phase 8 B2: deep-link the new registrant straight into the app so they
+        # skip the /login code dance. Swallow-on-fail → a /login fallback line.
+        deep_link = await mint_native_deep_link(
+            db, user_id=user.id, purpose="onboarding"
+        )
+        if deep_link:
+            await db.commit()  # mint persisted a magic_link_tokens row
+            done += (
+                "\n\nTocá este link desde tu teléfono para entrar "
+                "(válido 30 min, un solo uso):\n" + deep_link
+            )
+        else:
+            done += (
+                "\n\nPara entrar a la app, mandá /login y te doy un código."
+            )
+        return done
 
     # Unknown step (stale/corrupt state): reset cleanly.
     await clear_registration(telegram_user_id=telegram_user_id, redis=redis)

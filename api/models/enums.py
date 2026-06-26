@@ -76,6 +76,11 @@ class NudgeType(str, Enum):
     STALE_PENDING_CONFIRMATION = "stale_pending_confirmation"
     UPCOMING_BILL = "upcoming_bill"
     SHADOW_REVIEW_PENDING = "shadow_review_pending"
+    # Phase 8 B5 — earned-celebration layer (positive milestones).
+    GOAL_ACHIEVED = "goal_achieved"
+    DEBT_PAID_OFF = "debt_paid_off"
+    FIRST_FULL_MONTH = "first_full_month"
+    UNDER_BUDGET_MONTH = "under_budget_month"
 
 
 class NudgePriority(str, Enum):

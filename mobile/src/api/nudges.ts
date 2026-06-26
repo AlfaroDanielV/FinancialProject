@@ -27,6 +27,22 @@ interface NudgeFeedResponse {
   items: NudgeFeedItem[];
 }
 
+/**
+ * Phase 8 B5 — earned-celebration nudge types. Positive milestones rendered
+ * with a celebratory style in the Alertas feed (green award icon, no "No
+ * mostrar más" guilt) instead of the problem-focused bell/alert-triangle.
+ */
+export const CELEBRATION_NUDGE_TYPES = new Set<string>([
+  "goal_achieved",
+  "debt_paid_off",
+  "first_full_month",
+  "under_budget_month",
+]);
+
+export function isCelebrationNudge(type: string): boolean {
+  return CELEBRATION_NUDGE_TYPES.has(type);
+}
+
 export async function fetchNudgeFeed(): Promise<NudgeFeedItem[]> {
   const res = await api.get<NudgeFeedResponse>("/nudges/feed");
   return res.data.items;

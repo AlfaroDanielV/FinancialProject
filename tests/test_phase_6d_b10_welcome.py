@@ -20,6 +20,7 @@ from api.models.debt import Debt
 from api.models.magic_link_token import MagicLinkToken
 from api.models.recurring_bill import RecurringBill
 from api.models.recurring_income import RecurringIncome
+from api.models.transaction import Transaction
 from api.models.user import User
 from bot import handlers, onboarding_handlers
 from bot.onboarding_welcome import build_onboarding_reply, build_setup_reply
@@ -74,18 +75,31 @@ async def _magic_links(session, user_id):
 
 
 async def _seed_complete_onboarding(session, user_id):
+    # Phase 8 B2: "complete" now means ACTIVATED (1 account + a real balance +
+    # 1 expense), so the account carries a positive balance and we add an
+    # expense alongside the income/debt/bill.
     today = date(2026, 5, 12)
     account = Account(
         user_id=user_id,
         name="BAC",
         account_type="savings",
         currency="CRC",
-        initial_balance=Decimal("0"),
+        initial_balance=Decimal("500000"),
     )
     session.add(account)
     await session.flush()
     session.add_all(
         [
+            Transaction(
+                user_id=user_id,
+                account_id=account.id,
+                amount=Decimal("-5000"),
+                currency="CRC",
+                merchant="Super",
+                transaction_date=today,
+                source="manual",
+                status="confirmed",
+            ),
             RecurringIncome(
                 user_id=user_id,
                 name="Salario",
@@ -148,8 +162,8 @@ async def test_empty_start_reply_generates_setup_link(db_with_user):
     )
 
     assert "Hola, Dani." in reply.text
-    assert "registrá al menos una cuenta" in reply.text
-    assert "crear cuenta BAC" in reply.text
+    # Phase 8 B2: chat-led empty welcome — ask one balance, no setup checklist.
+    assert "decime cuánto tenés ahora en la cuenta" in reply.text
     assert "ledgercr://exchange?token=" in reply.text
     links = await _magic_links(session, user_id)
     assert len(links) == 1
@@ -157,10 +171,11 @@ async def test_empty_start_reply_generates_setup_link(db_with_user):
 
 
 @pytest.mark.asyncio
-async def test_partial_reply_lists_missing_entities_without_link_by_default(
+async def test_partial_reply_shows_progress_next_step_without_link_by_default(
     db_with_user,
 ):
     session, user_id = db_with_user
+    # An account with no real balance yet → activation's next step is the saldo.
     session.add(
         Account(
             user_id=user_id,
@@ -177,8 +192,10 @@ async def test_partial_reply_lists_missing_entities_without_link_by_default(
         db=session,
     )
 
-    assert "Te falta registrar ingresos, deudas y gastos fijos" in reply.text
-    assert "crear cuenta BAC" in reply.text
+    # Phase 8 B2: progress framing — no "te falta" checklist; one next step.
+    assert "Te falta registrar" not in reply.text
+    assert "Ya tenés tu cuenta" in reply.text
+    assert "decime el saldo real" in reply.text
     assert "ledgercr://" not in reply.text
     assert await _magic_links(session, user_id) == []
 
@@ -234,7 +251,7 @@ async def test_on_start_empty_user_sends_setup_link(db_with_user):
 
     assert len(msg.answers) == 1
     text, reply_markup = msg.answers[0]
-    assert "registrá al menos una cuenta" in text
+    assert "decime cuánto tenés ahora en la cuenta" in text
     assert reply_markup is None  # deep link is in text, not an inline button
     assert "ledgercr://exchange?token=" in text
 

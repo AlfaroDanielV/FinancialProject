@@ -28,7 +28,8 @@ from app.queries.prompts.system import (
 # leaves headroom for a couple more few-shots before forcing review.
 # Going above this should require an intentional bump + cache-rate check.
 # Bumped 8500 → 8900 at Phase 7b B4 (card-analysis capability bullet).
-MAX_PROMPT_CHARS = 8900
+# Bumped 8900 → 9100 at Phase 8 B4 (reallocation "¿de dónde muevo plata?" bullet).
+MAX_PROMPT_CHARS = 9100
 
 
 def _user(

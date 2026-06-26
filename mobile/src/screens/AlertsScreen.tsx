@@ -27,12 +27,17 @@ import {
   actOnNudge,
   dismissNudge,
   fetchNudgeFeed,
+  isCelebrationNudge,
   type NudgeFeedItem,
 } from "../api/nudges";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
 
 function labelFor(item: NudgeFeedItem, verb: string, fallback: string): string {
   return item.buttons.find((b) => b.verb === verb)?.label ?? fallback;
+}
+
+function hasVerb(item: NudgeFeedItem, verb: string): boolean {
+  return item.buttons.some((b) => b.verb === verb);
 }
 
 export function AlertsScreen() {
@@ -101,67 +106,125 @@ export function AlertsScreen() {
         renderItem={({ item }) => {
           const isBusy = busy(item.id);
           const high = item.priority === "high";
+          const celebrate = isCelebrationNudge(item.nudge_type);
           return (
-            <View style={styles.card}>
+            <View style={[styles.card, celebrate && styles.cardCelebrate]}>
               <View style={styles.cardTop}>
-                <View style={[styles.iconBox, high && styles.iconBoxHigh]}>
+                <View
+                  style={[
+                    styles.iconBox,
+                    high && styles.iconBoxHigh,
+                    celebrate && styles.iconBoxCelebrate,
+                  ]}
+                >
                   <Feather
-                    name={high ? "alert-triangle" : "bell"}
+                    name={celebrate ? "award" : high ? "alert-triangle" : "bell"}
                     size={18}
-                    color={high ? Colors.warning : Colors.accent}
+                    color={
+                      celebrate
+                        ? Colors.income
+                        : high
+                          ? Colors.warning
+                          : Colors.accent
+                    }
                   />
                 </View>
-                {high && <Text style={styles.highChip}>Importante</Text>}
+                {celebrate ? (
+                  <Text style={styles.celebrateChip}>¡Logro!</Text>
+                ) : (
+                  high && <Text style={styles.highChip}>Importante</Text>
+                )}
               </View>
 
               <Text style={styles.cardText}>{item.text}</Text>
 
-              <View style={styles.actions}>
-                <Pressable
-                  onPress={() => actM.mutate(item.id)}
-                  disabled={isBusy}
-                  style={({ pressed }) => [
-                    styles.btn,
-                    styles.btnPrimary,
-                    isBusy && styles.btnDisabled,
-                    pressed && !isBusy && { opacity: 0.85 },
-                  ]}
-                >
-                  {isBusy ? (
-                    <ActivityIndicator size="small" color={Colors.textOnDark} />
-                  ) : (
-                    <Text style={styles.btnPrimaryLabel}>
-                      {labelFor(item, "act", "Revisar")}
-                    </Text>
+              {celebrate ? (
+                // Positive nudges: only the buttons the server sent (act/dismiss),
+                // no "Más tarde". act → screen, dismiss ("Cerrar") closes the card.
+                <View style={styles.actions}>
+                  {hasVerb(item, "act") && (
+                    <Pressable
+                      onPress={() => actM.mutate(item.id)}
+                      disabled={isBusy}
+                      style={({ pressed }) => [
+                        styles.btn,
+                        styles.btnCelebrate,
+                        isBusy && styles.btnDisabled,
+                        pressed && !isBusy && { opacity: 0.85 },
+                      ]}
+                    >
+                      {isBusy ? (
+                        <ActivityIndicator size="small" color={Colors.textOnDark} />
+                      ) : (
+                        <Text style={styles.btnPrimaryLabel}>
+                          {labelFor(item, "act", "Ver")}
+                        </Text>
+                      )}
+                    </Pressable>
                   )}
-                </Pressable>
-                <Pressable
-                  onPress={() => later(item.id)}
-                  disabled={isBusy}
-                  style={({ pressed }) => [
-                    styles.btn,
-                    pressed && { opacity: 0.6 },
-                  ]}
-                >
-                  <Text style={styles.btnGhostLabel}>
-                    {labelFor(item, "later", "Más tarde")}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => dismissM.mutate(item.id)}
-                  disabled={isBusy}
-                  style={({ pressed }) => [
-                    styles.btn,
-                    styles.btnOutline,
-                    isBusy && styles.btnDisabled,
-                    pressed && !isBusy && { opacity: 0.7 },
-                  ]}
-                >
-                  <Text style={styles.btnOutlineLabel}>
-                    {labelFor(item, "dismiss", "No mostrar más")}
-                  </Text>
-                </Pressable>
-              </View>
+                  <Pressable
+                    onPress={() => dismissM.mutate(item.id)}
+                    disabled={isBusy}
+                    style={({ pressed }) => [
+                      styles.btn,
+                      styles.btnOutline,
+                      isBusy && styles.btnDisabled,
+                      pressed && !isBusy && { opacity: 0.7 },
+                    ]}
+                  >
+                    <Text style={styles.btnOutlineLabel}>
+                      {labelFor(item, "dismiss", "Cerrar")}
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : (
+                <View style={styles.actions}>
+                  <Pressable
+                    onPress={() => actM.mutate(item.id)}
+                    disabled={isBusy}
+                    style={({ pressed }) => [
+                      styles.btn,
+                      styles.btnPrimary,
+                      isBusy && styles.btnDisabled,
+                      pressed && !isBusy && { opacity: 0.85 },
+                    ]}
+                  >
+                    {isBusy ? (
+                      <ActivityIndicator size="small" color={Colors.textOnDark} />
+                    ) : (
+                      <Text style={styles.btnPrimaryLabel}>
+                        {labelFor(item, "act", "Revisar")}
+                      </Text>
+                    )}
+                  </Pressable>
+                  <Pressable
+                    onPress={() => later(item.id)}
+                    disabled={isBusy}
+                    style={({ pressed }) => [
+                      styles.btn,
+                      pressed && { opacity: 0.6 },
+                    ]}
+                  >
+                    <Text style={styles.btnGhostLabel}>
+                      {labelFor(item, "later", "Más tarde")}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => dismissM.mutate(item.id)}
+                    disabled={isBusy}
+                    style={({ pressed }) => [
+                      styles.btn,
+                      styles.btnOutline,
+                      isBusy && styles.btnDisabled,
+                      pressed && !isBusy && { opacity: 0.7 },
+                    ]}
+                  >
+                    <Text style={styles.btnOutlineLabel}>
+                      {labelFor(item, "dismiss", "No mostrar más")}
+                    </Text>
+                  </Pressable>
+                </View>
+              )}
             </View>
           );
         }}
@@ -222,6 +285,7 @@ const styles = StyleSheet.create({
     padding: Spacing.md,
     gap: Spacing.sm,
   },
+  cardCelebrate: { borderColor: Colors.income },
   cardTop: { flexDirection: "row", alignItems: "center", gap: Spacing.sm },
   iconBox: {
     width: 34,
@@ -232,11 +296,22 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.accentBg,
   },
   iconBoxHigh: { backgroundColor: Colors.warningBg },
+  iconBoxCelebrate: { backgroundColor: "#E4F0E8" },
   highChip: {
     fontSize: FontSize.xs,
     fontWeight: "700",
     color: Colors.warning,
     backgroundColor: Colors.warningBg,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 2,
+    overflow: "hidden",
+  },
+  celebrateChip: {
+    fontSize: FontSize.xs,
+    fontWeight: "700",
+    color: Colors.income,
+    backgroundColor: "#E4F0E8",
     borderRadius: Radius.sm,
     paddingHorizontal: Spacing.sm,
     paddingVertical: 2,
@@ -261,6 +336,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   btnPrimary: { backgroundColor: Colors.accent },
+  btnCelebrate: { backgroundColor: Colors.income },
   btnPrimaryLabel: { fontSize: FontSize.sm, fontWeight: "700", color: Colors.textOnDark },
   btnGhostLabel: { fontSize: FontSize.sm, fontWeight: "600", color: Colors.textMuted },
   btnOutline: { borderWidth: 1, borderColor: Colors.border },

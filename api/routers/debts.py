@@ -67,6 +67,17 @@ def _canonical_debt_type(debt_type: str) -> str:
     return debt_type
 
 
+async def _maybe_celebrate_debt_paid(user_id: uuid.UUID) -> None:
+    """Phase 8 B5 — best-effort earned-celebration trigger for a paid-off debt.
+    Isolated session, swallow-on-fail; never breaks the debt write."""
+    from ..services.nudges.celebrations import trigger_celebration_nudges
+    from ..services.nudges.evaluators import DebtPaidOffEvaluator
+
+    await trigger_celebration_nudges(
+        user_id=user_id, evaluators=[DebtPaidOffEvaluator()]
+    )
+
+
 @router.post("", response_model=DebtResponse, status_code=201)
 async def create_debt(
     payload: DebtCreate,
@@ -387,6 +398,13 @@ async def delete_debt(
     debt.archived = True
     await db.commit()
     await db.refresh(debt)
+
+    # Phase 8 B5 — a debt deleted at zero balance is a paid-off win. The
+    # evaluator only fires for balance <= 0, so an archived-but-unpaid debt
+    # (write-off) is not celebrated. Idempotent with the record_payment trigger.
+    if float(debt.current_balance) <= 0:
+        await _maybe_celebrate_debt_paid(user.id)
+
     return debt
 
 
@@ -443,6 +461,13 @@ async def record_payment(
     debt.payments_made = (debt.payments_made or 0) + 1
     await db.commit()
     await db.refresh(payment)
+
+    # Phase 8 B5 — celebrate the moment a payment kills the debt (balance → 0).
+    # Best-effort / isolated session; idempotent (dedup on debt_paid:{id}, which
+    # also collapses a later delete of the same debt into one celebration).
+    if float(remaining) <= 0:
+        await _maybe_celebrate_debt_paid(user.id)
+
     return payment
 
 

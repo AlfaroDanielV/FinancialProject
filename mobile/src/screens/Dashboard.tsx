@@ -37,6 +37,7 @@ import {
   type DashboardPeriod,
   type UpcomingFeedItem,
 } from "../api/dashboard";
+import { fetchOnboardingStatus } from "../api/onboarding";
 import { SobresSection } from "../components/SobresSection";
 import type { InicioStackParamList } from "../navigation/InicioNavigator";
 import { formatMoney } from "../lib/format";
@@ -377,6 +378,40 @@ function ResumenCard() {
   );
 }
 
+// ── first-run CTA (Phase 8 B2) — chat-led activation ──────────────────────────
+
+// Minimal cross-tab navigation typing: jump to the Chat tab (React Navigation
+// resolves the tab from any nested screen). No fabricated message is sent.
+type ChatTabJump = { navigate: (tab: "Chat") => void };
+
+function FirstRunCard() {
+  const { data } = useQuery({
+    queryKey: ["onboarding", "status"],
+    queryFn: fetchOnboardingStatus,
+    staleTime: 60 * 1000,
+  });
+  const nav = useNavigation() as unknown as ChatTabJump;
+  // Only for not-yet-activated users; existing users never see it.
+  if (!data || data.is_activated) return null;
+  return (
+    <Pressable
+      onPress={() => nav.navigate("Chat")}
+      style={({ pressed }) => [styles.firstRunCard, pressed && { opacity: 0.85 }]}
+    >
+      <View style={styles.firstRunIcon}>
+        <Feather name="message-circle" size={18} color={Colors.textOnDark} />
+      </View>
+      <View style={styles.firstRunBody}>
+        <Text style={styles.firstRunTitle}>Arranquemos en el chat</Text>
+        <Text style={styles.firstRunSub}>
+          Decime cuánto tenés en tu cuenta y te la creo en segundos.
+        </Text>
+      </View>
+      <Feather name="chevron-right" size={18} color={Colors.textOnDark} />
+    </Pressable>
+  );
+}
+
 // ── disponible strip (Phase 7h) — the home headline (savings excluded) ─────────
 
 function DisponibleStrip() {
@@ -457,6 +492,7 @@ export function DashboardScreen() {
       >
         <Text style={styles.dateLine}>{headerDateLine()}</Text>
 
+        <FirstRunCard />
         <DisponibleStrip />
         <UpcomingCard />
         <SobresSection onOpenAnalytics={() => nav.navigate("Analytics")} />
@@ -695,6 +731,41 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xs,
     color: Colors.textMuted,
     fontVariant: ["tabular-nums"],
+  },
+
+  // ── first-run CTA (Phase 8 B2) ───────────────────────────────────────────────
+  firstRunCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+    backgroundColor: Colors.accent,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    ...CardShadow,
+  },
+  firstRunIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.15)",
+  },
+  firstRunBody: {
+    flex: 1,
+  },
+  firstRunTitle: {
+    fontFamily: Fonts.semibold,
+    fontSize: FontSize.md,
+    color: Colors.textOnDark,
+  },
+  firstRunSub: {
+    fontFamily: Fonts.regular,
+    fontSize: FontSize.sm,
+    color: Colors.textOnDark,
+    opacity: 0.85,
+    marginTop: 2,
   },
 
   // ── disponible strip (Phase 7h) ──────────────────────────────────────────────

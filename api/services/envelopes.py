@@ -12,6 +12,7 @@ from decimal import Decimal
 import uuid
 from typing import Optional
 
+from fastapi import HTTPException
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -289,6 +290,41 @@ async def list_unattached_obligations(
     return out
 
 
+async def count_unassigned_month_expenses(
+    db: AsyncSession, *, user: User, today: Optional[date] = None
+) -> int:
+    """How many current-month confirmed EXPENSES the user has with no envelope
+    (envelope_id IS NULL). Drives the Phase 8 B6 "tenés N gastos sin sobre" chat
+    nudge. Excludes transfer legs, goal flows, AND reconciliation ajustes — the
+    same "real expense" filter onboarding `_has_expense` and the dashboard P&L
+    aggregators use, so a balance-correction artifact never reads as a gasto the
+    user should file into a sobre."""
+    # Reconciliation ajustes are confirmed negative rows with envelope_id IS NULL
+    # (anchors.apply_anchor) — they'd otherwise be miscounted as spendable gastos.
+    from .anchors import AJUSTE_CATEGORY
+
+    today = today or _user_today(user)
+    start = date(today.year, today.month, 1)
+    end = _next_month_start(start)
+    row = await db.execute(
+        select(func.count())
+        .select_from(Transaction)
+        .where(
+            Transaction.user_id == user.id,
+            Transaction.envelope_id.is_(None),
+            Transaction.amount < 0,
+            Transaction.archived.is_(False),
+            Transaction.status == "confirmed",
+            Transaction.transfer_id.is_(None),
+            Transaction.goal_id.is_(None),
+            Transaction.category.is_distinct_from(AJUSTE_CATEGORY),
+            Transaction.transaction_date >= start,
+            Transaction.transaction_date < end,
+        )
+    )
+    return int(row.scalar_one() or 0)
+
+
 async def active_children(
     db: AsyncSession, *, user_id: uuid.UUID, parent_id: uuid.UUID
 ) -> list[Envelope]:
@@ -365,6 +401,111 @@ async def set_class_subtree(
         .where(Envelope.id.in_(ids))
         .values(envelope_class=new_class)
     )
+
+
+# ── reallocation: move budget between two same-level envelopes (Phase 8 B4) ──
+
+
+def _money(amount: Decimal, currency: str) -> str:
+    symbol = "$" if (currency or "CRC").upper() == "USD" else "₡"
+    return f"{symbol}{amount:,.0f}"
+
+
+def reallocation_blocker(
+    *,
+    from_env: Envelope,
+    to_env: Envelope,
+    amount: Decimal,
+    from_children_total: Decimal,
+) -> Optional[str]:
+    """Pure validation for a reallocation. Returns a voseo error message when the
+    move is invalid, else None. Shared by the service writer (raises 422) and the
+    chat dispatcher (returns a Reject) so the user sees the SAME reason.
+
+    The CRITICAL byte-lock invariant — committed_outflows = total_limit =
+    Σ over ROOT envelopes of root.limit (in summary currency) — must stay
+    invariant across a reallocation. That holds iff `from.parent_id ==
+    to.parent_id`: root↔root keeps Σ(root limits) fixed (one root grows by
+    exactly what the other shrinks); sibling↔sibling keeps the shared parent's
+    allocation fixed AND leaves every root untouched. A root↔child move would
+    change Σ(root limits) and silently shrink the budget — rejected here.
+    """
+    if amount <= 0:
+        return "El monto a mover debe ser mayor que cero."
+    if from_env.id == to_env.id:
+        return "El sobre de origen y el de destino no pueden ser el mismo."
+    if from_env.archived or to_env.archived:
+        return "No se puede mover presupuesto desde o hacia un sobre archivado."
+    if from_env.currency != to_env.currency:
+        return "Los dos sobres deben estar en la misma moneda."
+    if from_env.parent_id != to_env.parent_id:
+        return (
+            "Solo se puede mover presupuesto entre sobres del mismo nivel "
+            "(dos sobres principales, o dos sub-sobres del mismo padre)."
+        )
+    # From-side floor: the source can't drop below what its own children already
+    # have allocated, and never to zero-or-less.
+    new_from = Decimal(from_env.limit_amount) - amount
+    floor = max(from_children_total, Decimal("0"))
+    if new_from < floor or new_from <= 0:
+        max_movable = Decimal(from_env.limit_amount) - floor
+        return (
+            f"No podés mover tanto de «{from_env.name}». Lo máximo disponible es "
+            f"{_money(max_movable, from_env.currency)}."
+        )
+    return None
+
+
+async def reallocate(
+    db: AsyncSession,
+    *,
+    user: User,
+    from_id: uuid.UUID,
+    to_id: uuid.UUID,
+    amount: Decimal,
+) -> tuple[Envelope, Envelope]:
+    """Move `amount` of budget (limit_amount) from one envelope to another,
+    deterministically. The LLM never computes this — the dispatcher proposes and
+    this writes. Used by BOTH the REST endpoint and the chat commit; the CALLER
+    commits (mirrors create_transfer_with_transactions usage).
+    """
+    amount = Decimal(amount)
+    from_env = (
+        await db.execute(
+            select(Envelope).where(
+                Envelope.id == from_id, Envelope.user_id == user.id
+            )
+        )
+    ).scalar_one_or_none()
+    to_env = (
+        await db.execute(
+            select(Envelope).where(
+                Envelope.id == to_id, Envelope.user_id == user.id
+            )
+        )
+    ).scalar_one_or_none()
+    if from_env is None or to_env is None:
+        raise HTTPException(status_code=404, detail="Sobre no encontrado.")
+
+    from_children = await active_children(
+        db, user_id=user.id, parent_id=from_env.id
+    )
+    from_children_total = sum(
+        (Decimal(c.limit_amount) for c in from_children), Decimal("0")
+    )
+    blocker = reallocation_blocker(
+        from_env=from_env,
+        to_env=to_env,
+        amount=amount,
+        from_children_total=from_children_total,
+    )
+    if blocker is not None:
+        raise HTTPException(status_code=422, detail=blocker)
+
+    from_env.limit_amount = Decimal(from_env.limit_amount) - amount
+    to_env.limit_amount = Decimal(to_env.limit_amount) + amount
+    await db.flush()
+    return from_env, to_env
 
 
 async def compute_envelope_summary(

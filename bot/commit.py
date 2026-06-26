@@ -76,6 +76,11 @@ async def commit_pending(
             user=user, pending=pending, db=db, redis=redis
         )
 
+    if pending.action_type == "reallocate_envelope":
+        return await _commit_reallocate(
+            user=user, pending=pending, db=db, redis=redis
+        )
+
     if pending.action_type == "reconcile_statement":
         return await _commit_reconcile_statement(
             user=user, pending=pending, db=db, redis=redis
@@ -255,6 +260,42 @@ async def _commit_set_balance(
 
     await clear_pending(user_id=user.id, redis=redis)
     return res.anchor_id
+
+
+async def _commit_reallocate(
+    *,
+    user: User,
+    pending: PendingAction,
+    db: AsyncSession,
+    redis: Redis,
+) -> uuid.UUID:
+    """Move budget between two same-level envelopes from a confirmed
+    reallocate_envelope proposal (Phase 8 B4). Goes through the shared
+    `envelopes.reallocate` — the same writer the REST endpoint uses — so the
+    committed_outflows = total_limit invariant holds.
+
+    Append-style and deliberately NOT in the /undo chain (no save_last_action):
+    a wrong move is reversed by reallocating back, consistent with set_balance.
+    Returns the destination envelope id (sentinel)."""
+    from api.services.envelopes import reallocate
+
+    payload = pending.payload
+    await reallocate(
+        db,
+        user=user,
+        from_id=uuid.UUID(payload["from_id"]),
+        to_id=uuid.UUID(payload["to_id"]),
+        amount=Decimal(payload["amount"]),
+    )
+    await db.commit()
+
+    await resolve_from_pending(
+        session=db, pending=pending, resolution="confirmed"
+    )
+    await db.commit()
+
+    await clear_pending(user_id=user.id, redis=redis)
+    return uuid.UUID(payload["to_id"])
 
 
 async def _commit_reconcile_statement(

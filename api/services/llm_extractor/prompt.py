@@ -38,6 +38,7 @@ Reglas duras:
    - "create_card": el usuario quiere REGISTRAR su TARJETA DE CRÉDITO como cuenta ("registrá mi tarjeta del BAC", "tengo una tarjeta de crédito con límite de 2 millones", "agregá mi Visa Promerica"). OJO la diferencia con create_debt: una TARJETA DE CRÉDITO es create_card; un préstamo / crédito de carro / hipoteca / crédito personal es create_debt. Pagar la tarjeta es log_transfer, y una compra CON la tarjeta es log_expense.
    - "attach_expense": el usuario quiere ASIGNAR un gasto fijo / recibo / deuda YA EXISTENTE a un sobre ("poné el recibo del ICE en el sobre Servicios", "asigná la cuota del préstamo al sobre Deudas", "meté la factura de internet en el sobre Casa"). Llená expense_hint con el nombre del gasto o deuda y envelope_hint con el nombre del sobre. NO es create_bill (eso configura uno nuevo) ni log_expense (eso registra una compra única).
    - "set_balance": el usuario quiere CORREGIR / ACTUALIZAR el saldo REAL de una de sus cuentas para que cuadre con el banco ("corregí mi saldo", "mi saldo real en el BAC es 82 mil", "actualizá el saldo de ahorros a 500000", "el banco me muestra 1 millón en la corriente"). Llená amount con el saldo real (magnitud positiva) y account_hint con la cuenta. NO es log_income ni log_expense (eso registra un movimiento): set_balance FIJA el saldo y el sistema calcula la diferencia como un ajuste de reconciliación. Es solo para cuentas propias de débito/ahorro, NO tarjetas.
+   - "reallocate_envelope": el usuario ORDENA mover / pasar / reasignar presupuesto de UN SOBRE a OTRO ("movéme 15 mil de Ahorro a Gustos", "pasá 10000 del sobre Súper al de Salud", "reasigná 20 mil de Ocio a Comida"). Llená reallocate_from_hint (sobre de DONDE sale), reallocate_to_hint (sobre a DONDE va) y amount con el monto. OJO: si el usuario PREGUNTA de dónde sacar plata o pide un consejo ("¿de dónde muevo plata para Gustos?", "me estoy pasando de Gustos, ¿de dónde saco?") eso NO es reallocate_envelope — es una consulta (intent="query", dispatcher="query"), porque pide una recomendación, no ordena un movimiento concreto.
    - "query": cualquier pregunta o solicitud de informacion de solo lectura. Incluye análisis de accesibilidad y simulación de financiamiento sin registrar nada ("¿me alcanza para X?", "¿cuánto sería la cuota de un préstamo de X a N años al T%?", "¿me conviene financiar este carro?").
    - "confirm_yes": confirma un paso previo ("sí", "dale", "ok", "correcto", "confirmá").
    - "confirm_no": cancela un paso previo ("no", "cancelar", "mejor no").
@@ -55,6 +56,7 @@ Reglas duras:
    - Una transferencia entre cuentas propias o un pago de tarjeta ("log_transfer") también va a dispatcher="write".
    - Registrar una tarjeta de crédito ("create_card") también va a dispatcher="write".
    - Corregir / actualizar el saldo real de una cuenta ("set_balance") también va a dispatcher="write".
+   - Mover / reasignar presupuesto entre sobres ("reallocate_envelope") también va a dispatcher="write".
    - Si el usuario da un comando, confirma, cancela, pide ayuda, deshace o el mensaje no tiene sentido,
      usa dispatcher="control".
 
@@ -154,6 +156,12 @@ salud / ocio / vivienda / deudas / otros). Recibos de servicios → "servicios",
    - Como placeholder poné intent="log_transfer" y dispatcher="write"; el servidor reemplaza la dirección.
    - OJO: esto es SOLO para un comprobante que nombra a un tercero. Si el usuario escribe en PRIMERA persona ("me pagaron", "me transfirieron", "pagué", "le pasé a Juan") NO es un comprobante: usá log_income / log_expense / log_transfer normal con is_transfer_receipt=false.
 
+17. Reasignar presupuesto entre sobres (solo cuando intent="reallocate_envelope"):
+   - amount: el monto a mover (magnitud positiva; reusá el mismo campo).
+   - reallocate_from_hint: el sobre de DONDE sale el presupuesto, tal cual ("Ahorro", "el sobre del súper"). Si no lo dice, null — el servidor pregunta.
+   - reallocate_to_hint: el sobre a DONDE va el presupuesto, tal cual ("Gustos", "Salud"). Si no lo dice, null.
+   - NO uses account_hint ni envelope_hint para esto; usá los campos reallocate_*.
+
 Ejemplos:
 - Usuario: "gasté 5000 en el super"
   Tool input: {"intent":"log_expense","dispatcher":"write","amount":5000,"currency":null,"merchant":"super","category_hint":"supermercado","account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.95,"raw_notes":null}
@@ -211,6 +219,10 @@ Ejemplos:
   Tool input: {"intent":"query","dispatcher":"query","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.88,"raw_notes":"explora financiar: 20 años al 45%"}
 - Usuario: "cuánto sería la cuota de un préstamo de 50 millones a 20 años al 45%"
   Tool input: {"intent":"query","dispatcher":"query","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.92,"raw_notes":"simular préstamo 50M, 240 meses, 45%"}
+- Usuario: "movéme 15 mil de Ahorro a Gustos" (ORDEN concreta de mover presupuesto)
+  Tool input: {"intent":"reallocate_envelope","dispatcher":"write","amount":15000,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"reallocate_from_hint":"Ahorro","reallocate_to_hint":"Gustos","confidence":0.93,"raw_notes":null}
+- Usuario: "me estoy pasando de Gustos, ¿de dónde muevo plata?" (PREGUNTA un consejo, NO ordena un movimiento)
+  Tool input: {"intent":"query","dispatcher":"query","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.9,"raw_notes":"de dónde reasignar para Gustos"}
 """
 
 
@@ -238,6 +250,7 @@ TOOL_DEFINITION = {
                     "create_card",
                     "attach_expense",
                     "set_balance",
+                    "reallocate_envelope",
                     "query",
                     "confirm_yes",
                     "confirm_no",
@@ -480,6 +493,23 @@ TOOL_DEFINITION = {
                 "description": (
                     "attach_expense only. Name of the envelope/sobre to attach the "
                     "bill or debt to ('Servicios', 'Deudas')."
+                ),
+            },
+            "reallocate_from_hint": {
+                "type": ["string", "null"],
+                "maxLength": 120,
+                "description": (
+                    "reallocate_envelope only. Source envelope (sobre) the budget "
+                    "moves FROM, as the user said it ('Ahorro', 'el sobre del "
+                    "súper'). Null if not mentioned — the server asks."
+                ),
+            },
+            "reallocate_to_hint": {
+                "type": ["string", "null"],
+                "maxLength": 120,
+                "description": (
+                    "reallocate_envelope only. Destination envelope the budget "
+                    "moves TO ('Gustos', 'Salud')."
                 ),
             },
             "confidence": {

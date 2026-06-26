@@ -137,17 +137,66 @@ def is_awaiting_start_answer(text: str) -> bool:
 
 
 async def start_account_creation(
-    *, user_id: uuid.UUID, redis: Redis, name: Optional[str] = None
+    *,
+    user_id: uuid.UUID,
+    redis: Redis,
+    name: Optional[str] = None,
+    currency: Optional[str] = None,
+    initial_balance: Optional[str] = None,
 ) -> str:
+    """Start the conversational account-creation flow.
+
+    `currency`/`initial_balance` can be SEEDED (Phase 8 B2 chat-led activation:
+    the user stated a balance but has no account). Seeded fields are skipped by
+    `_next_collection_step`, so a cold start only asks name + type, then the
+    account is created WITH that real balance. Nothing seeded ⇒ the original
+    name → type → currency → balance → confirm order is unchanged.
+    """
     step: AccountCreationStep = "asking_type" if name else "asking_name"
     await save_account_creation(
         user_id=user_id,
         redis=redis,
-        state=AccountCreationState(step=step, name=name),
+        state=AccountCreationState(
+            step=step,
+            name=name,
+            currency=currency,
+            initial_balance=initial_balance,
+        ),
     )
     if name:
         return _ask_type(name)
+    if initial_balance is not None:
+        return (
+            "Perfecto. Te creo la cuenta donde tenés ese saldo. ¿Cómo se "
+            "llama? (ej: BAC, cuenta del salario)."
+        )
     return "Dale. ¿Cómo se llama la cuenta? Ej: BAC ahorros."
+
+
+def _next_collection_step(state: AccountCreationState) -> AccountCreationStep:
+    """The first UNFILLED collection step, in order. Seeded fields are skipped,
+    so a cold start that already carries currency + balance jumps straight to
+    confirming after the type is chosen."""
+    if state.account_type is None:
+        return "asking_type"
+    if state.currency is None:
+        return "asking_currency"
+    if state.initial_balance is None:
+        return "asking_balance"
+    return "confirming"
+
+
+def _prompt_for_step(state: AccountCreationState) -> str:
+    """The question to ask for the current collection step."""
+    if state.step == "asking_type":
+        return _ask_type(state.name or "esa cuenta")
+    if state.step == "asking_currency":
+        return "¿En qué moneda está? CRC o USD."
+    if state.step == "asking_balance":
+        return "¿Con qué saldo inicial arranca? Podés poner 0."
+    if state.step == "confirming":
+        return _confirmation_text(state)
+    return _ask_type(state.name or "esa cuenta")
 
 
 async def handle_account_creation_reply(
@@ -173,9 +222,10 @@ async def handle_account_creation_reply(
         if len(reply) < 2:
             return AccountCreationOutcome(text="Poné al menos 2 caracteres para el nombre.")
         state.name = reply
-        state.step = "asking_type"
+        # _next_collection_step skips any seeded field (cold-start currency/balance).
+        state.step = _next_collection_step(state)
         await save_account_creation(user_id=user.id, state=state, redis=redis)
-        return AccountCreationOutcome(text=_ask_type(reply))
+        return AccountCreationOutcome(text=_prompt_for_step(state))
 
     if state.step == "asking_type":
         account_type = _parse_account_type(reply)
@@ -187,20 +237,18 @@ async def handle_account_creation_reply(
                 )
             )
         state.account_type = account_type
-        state.step = "asking_currency"
+        state.step = _next_collection_step(state)
         await save_account_creation(user_id=user.id, state=state, redis=redis)
-        return AccountCreationOutcome(text="¿En qué moneda está? CRC o USD.")
+        return AccountCreationOutcome(text=_prompt_for_step(state))
 
     if state.step == "asking_currency":
         currency = _parse_currency(reply)
         if currency is None:
             return AccountCreationOutcome(text="La moneda puede ser CRC o USD.")
         state.currency = currency
-        state.step = "asking_balance"
+        state.step = _next_collection_step(state)
         await save_account_creation(user_id=user.id, state=state, redis=redis)
-        return AccountCreationOutcome(
-            text="¿Con qué saldo inicial arranca? Podés poner 0."
-        )
+        return AccountCreationOutcome(text=_prompt_for_step(state))
 
     if state.step == "asking_balance":
         balance = _parse_balance(reply)

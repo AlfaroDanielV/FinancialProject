@@ -153,6 +153,14 @@ def build_user_prompt(nudge_type: str, payload: dict[str, Any]) -> str:
         return _prompt_envelope_near_limit(payload)
     if nudge_type == "shadow_review_pending":
         return _prompt_shadow_review_pending(payload)
+    if nudge_type == "goal_achieved":
+        return _prompt_goal_achieved(payload)
+    if nudge_type == "debt_paid_off":
+        return _prompt_debt_paid_off(payload)
+    if nudge_type == "first_full_month":
+        return _prompt_first_full_month(payload)
+    if nudge_type == "under_budget_month":
+        return _prompt_under_budget_month(payload)
     return (
         "Escribí un recordatorio breve al usuario. "
         f"Contexto raw: {payload!r}"
@@ -319,4 +327,76 @@ def _prompt_shadow_review_pending(payload: dict[str, Any]) -> str:
         "movimientos de Gmail tiene sin revisar y que llevan días esperando, "
         "(2) preguntale si los revisa ahora. No inventés montos ni comercios "
         "fuera del contexto."
+    )
+
+
+# ── Phase 8 B5 — earned celebrations. These are POSITIVE: celebrate, don't
+# warn. Same rule as every other prompt — use ONLY the numbers in the context,
+# never invent. The deterministic feed renderer (feed.py) words the same data.
+
+
+def _fmt_money(payload: dict[str, Any], key: str) -> str:
+    currency = payload.get("currency") or "CRC"
+    raw = payload.get(key)
+    try:
+        return f"{currency} {float(raw):,.0f}"
+    except (TypeError, ValueError):
+        return "monto desconocido"
+
+
+def _prompt_goal_achieved(payload: dict[str, Any]) -> str:
+    name = payload.get("name") or "su meta"
+    monto = _fmt_money(payload, "target_amount")
+    return (
+        "Contexto: ¡el usuario ALCANZÓ una meta de ahorro! Es un logro real "
+        "que merece celebrarse.\n"
+        f"- Meta: \"{name}\"\n"
+        f"- Monto alcanzado: {monto}\n"
+        "\n"
+        "Escribí un mensaje CORTO y genuinamente celebratorio (no exagerado): "
+        "(1) felicitalo por llegar a la meta nombrándola, (2) reconocé el "
+        "esfuerzo. Cálido y motivador. Usá solo las cifras del contexto."
+    )
+
+
+def _prompt_debt_paid_off(payload: dict[str, Any]) -> str:
+    name = payload.get("name") or "su deuda"
+    return (
+        "Contexto: ¡el usuario TERMINÓ de pagar una deuda! Quedó en cero. Es "
+        "uno de los logros financieros más importantes.\n"
+        f"- Deuda saldada: \"{name}\"\n"
+        "\n"
+        "Escribí un mensaje CORTO y celebratorio: (1) felicitalo por saldar "
+        "esa deuda nombrándola, (2) animalo a seguir. Cálido, directo, sin "
+        "inventar montos."
+    )
+
+
+def _prompt_first_full_month(payload: dict[str, Any]) -> str:
+    periodo = payload.get("period", "")
+    return (
+        "Contexto: el usuario completó su PRIMER mes llevando sus finanzas en "
+        "la app. Es el hábito que hace la diferencia y vale reconocerlo.\n"
+        f"- Primer mes registrado: {periodo}\n"
+        "\n"
+        "Escribí un mensaje CORTO y motivador: (1) felicitalo por completar su "
+        "primer mes de seguimiento, (2) animalo a seguir. Sin inventar cifras."
+    )
+
+
+def _prompt_under_budget_month(payload: dict[str, Any]) -> str:
+    name = payload.get("name") or "un sobre"
+    periodo = payload.get("period", "")
+    gastado = _fmt_money(payload, "spent")
+    limite = _fmt_money(payload, "limit_amount")
+    return (
+        "Contexto: el usuario cerró el mes SIN pasarse del límite de uno de "
+        "sus sobres (presupuesto). Cumplió su presupuesto.\n"
+        f"- Sobre: \"{name}\"\n"
+        f"- Mes: {periodo}\n"
+        f"- Gastado: {gastado} de un límite de {limite}\n"
+        "\n"
+        "Escribí un mensaje CORTO y celebratorio: (1) felicitalo por respetar "
+        "ese sobre nombrándolo y el mes, (2) reconocé la disciplina. Usá solo "
+        "las cifras del contexto, sin inventar."
     )

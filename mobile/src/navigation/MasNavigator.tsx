@@ -30,6 +30,7 @@ import { GoalsScreen } from "../screens/GoalsScreen";
 import { GoalDetailScreen } from "../screens/GoalDetailScreen";
 import { CategoriesScreen } from "../screens/CategoriesScreen";
 import { MemoryScreen } from "../screens/MemoryScreen";
+import { GmailIntroScreen } from "../screens/GmailIntroScreen";
 import { GmailScreen } from "../screens/GmailScreen";
 import { GmailSendersScreen } from "../screens/GmailSendersScreen";
 import { GmailReviewScreen } from "../screens/GmailReviewScreen";
@@ -53,6 +54,7 @@ export type MasStackParamList = {
   GoalDetail: { goalId: string };
   CategoriesScreen: undefined;
   MemoryScreen: undefined;
+  GmailIntro: undefined;
   GmailHome: undefined;
   GmailSenders: undefined;
   GmailReview: undefined;
@@ -133,6 +135,11 @@ export function MasNavigator() {
       <Stack.Screen
         name="MemoryScreen"
         component={MemoryScreen}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="GmailIntro"
+        component={GmailIntroScreen}
         options={{ headerShown: false }}
       />
       <Stack.Screen

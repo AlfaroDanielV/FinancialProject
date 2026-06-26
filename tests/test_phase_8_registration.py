@@ -57,11 +57,19 @@ async def _purge_user(session, email: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_full_flow_creates_user_with_consent(db_with_user):
+async def test_full_flow_creates_user_with_consent(db_with_user, monkeypatch):
     session, _existing_uid = db_with_user
     redis = get_redis()
     tg = _tg_id()
     email = _email()
+
+    # Phase 8 B2: the confirm message deep-links the new registrant into the app.
+    # Monkeypatch the minter to a fixed URL — deterministic + skips writing a
+    # magic_link_tokens row (so the test's user purge stays simple).
+    async def _fake_link(*_args, **_kwargs):
+        return "ledgercr://exchange?token=fixed-test-token"
+
+    monkeypatch.setattr("bot.registration.mint_native_deep_link", _fake_link)
     try:
         start = await begin_registration(telegram_user_id=tg, redis=redis)
         assert start == messages_es.REGISTER_START
@@ -80,6 +88,8 @@ async def test_full_flow_creates_user_with_consent(db_with_user):
             telegram_user_id=tg, text="Sí ✅", db=session, redis=redis
         )
         assert "Cuenta creada" in r3
+        # Phase 8 B2: the native deep link is appended to the done message.
+        assert "ledgercr://exchange?token=fixed-test-token" in r3
 
         user = (
             await session.execute(select(User).where(User.email == email))

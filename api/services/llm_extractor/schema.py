@@ -26,6 +26,7 @@ class Intent(str, Enum):
     CREATE_CARD = "create_card"
     ATTACH_EXPENSE = "attach_expense"
     SET_BALANCE = "set_balance"
+    REALLOCATE_ENVELOPE = "reallocate_envelope"
     QUERY = "query"
     CONFIRM_YES = "confirm_yes"
     CONFIRM_NO = "confirm_no"
@@ -115,6 +116,12 @@ class ExtractionResult(BaseModel):
     # ("ICE", "préstamo del carro"); envelope_hint = the sobre name ("Servicios").
     expense_hint: Optional[str] = Field(default=None, max_length=255)
     envelope_hint: Optional[str] = Field(default=None, max_length=120)
+    # Phase 8 B4 — reallocation between envelopes (intent=reallocate_envelope).
+    # A COMMAND to move budget from one sobre to another ("movéme 15 mil de
+    # Ahorro a Gustos"); amount is reused. A QUESTION asking where to pull from
+    # is a query (the read-only suggest_reallocation_candidates answers).
+    reallocate_from_hint: Optional[str] = Field(default=None, max_length=120)
+    reallocate_to_hint: Optional[str] = Field(default=None, max_length=120)
     confidence: float = Field(..., ge=0.0, le=1.0)
     raw_notes: Optional[str] = Field(default=None, max_length=500)
 
@@ -154,6 +161,7 @@ class ExtractionResult(BaseModel):
         "debt_name", "debt_lender", "expense_hint", "envelope_hint",
         "transfer_from_hint", "transfer_to_hint", "card_name", "card_issuer",
         "sender_name", "recipient_name",
+        "reallocate_from_hint", "reallocate_to_hint",
     )
     @classmethod
     def _normalize_strings(cls, v: Optional[str]) -> Optional[str]:

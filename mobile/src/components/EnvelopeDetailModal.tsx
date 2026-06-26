@@ -45,17 +45,29 @@ import { attachDebtToEnvelope, fetchDebts } from "../api/debts";
 import { formatMoney } from "../lib/format";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
 import { EnvelopeEditModal } from "./EnvelopeEditModal";
+import { ReallocateModal } from "./ReallocateModal";
 
 interface Props {
   visible: boolean;
   item: EnvelopeSummaryItem | null;
+  // Progressive disclosure (Phase 8 B6): when false, the "+ Sub-sobre" creation
+  // affordance is hidden so a first-time user isn't shown nesting. Existing
+  // sub-sobres always render. Defaults true to preserve other callers.
+  allowSubSobres?: boolean;
   onClose: () => void;
 }
 
-export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
+export function EnvelopeDetailModal({
+  visible,
+  item,
+  allowSubSobres = true,
+  onClose,
+}: Props) {
   const qc = useQueryClient();
   const [editOpen, setEditOpen] = useState(false);
   const [subOpen, setSubOpen] = useState(false);
+  // Phase 8 B6: over-limit one-tap reallocation source picker.
+  const [reallocOpen, setReallocOpen] = useState(false);
   // Phase 7f: expenses already assigned to ANOTHER envelope live in a
   // separate collapsed section so they can't be mistaken for assignable rows.
   const [othersOpen, setOthersOpen] = useState(false);
@@ -91,6 +103,18 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
   const toggle = useMutation({
     mutationFn: ({ txId, envelopeId }: { txId: string; envelopeId: string | null }) =>
       assignTransactionEnvelope(txId, envelopeId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["envelopes"] });
+      void qc.invalidateQueries({ queryKey: ["transactions"] });
+    },
+  });
+
+  // Phase 8 B6: assign every still-unassigned gasto of the month to one sobre
+  // in one pass — a gentle batch over the existing per-row assign mechanism.
+  const bulkAssign = useMutation({
+    mutationFn: async ({ txIds, envelopeId }: { txIds: string[]; envelopeId: string }) => {
+      for (const id of txIds) await assignTransactionEnvelope(id, envelopeId);
+    },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["envelopes"] });
       void qc.invalidateQueries({ queryKey: ["transactions"] });
@@ -182,6 +206,19 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
   );
   const envelopeById = new Map(all.map((e) => [e.id, e]));
 
+  // Phase 8 B6: same-level, same-currency own sobres with budget to spare — the
+  // candidates an over-limit sobre can pull from (mirrors the backend rule).
+  const reallocCandidates = all.filter(
+    (e) =>
+      !e.is_shared &&
+      e.id !== active.id &&
+      e.parent_id === active.parent_id &&
+      e.currency === active.currency &&
+      (e.available ?? e.remaining ?? 0) > 0,
+  );
+  // Unassigned gastos in the assignable list — drives the bulk-assign prompt.
+  const unassignedInList = assignable.filter((tx) => tx.envelope_id == null);
+
   const goBack = () => setStack((s) => s.slice(0, -1));
 
   const Header = (
@@ -214,6 +251,15 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
             ? `Te pasaste por ${formatMoney(active.spent - active.limit_amount, active.currency)}`
             : `Gastado: ${formatMoney(active.spent, active.currency)}`}
         </Text>
+        {active.over_limit && !isMember && (
+          <Pressable
+            onPress={() => setReallocOpen(true)}
+            style={({ pressed }) => [styles.coverBtn, pressed && { opacity: 0.7 }]}
+          >
+            <Feather name="repeat" size={13} color={Colors.accent} />
+            <Text style={styles.coverBtnText}>¿Cubrís moviendo de otro sobre?</Text>
+          </Pressable>
+        )}
         {active.allocated > 0 && (
           <Text style={styles.summarySub}>
             {`Sin asignar ${formatMoney(available, active.currency)} del presupuesto`}
@@ -248,7 +294,7 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
         </>
       )}
 
-      {!isMember && active.depth < 5 && (
+      {!isMember && allowSubSobres && active.depth < 5 && (
         <Pressable
           onPress={() => setSubOpen(true)}
           style={({ pressed }) => [styles.subBtn, pressed && { opacity: 0.7 }]}
@@ -321,6 +367,30 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
       )}
 
       <Text style={styles.listTitle}>Gastos de este mes</Text>
+      {unassignedInList.length > 0 && (
+        <Pressable
+          onPress={() =>
+            bulkAssign.mutate({
+              txIds: unassignedInList.map((tx) => tx.id),
+              envelopeId: active.id,
+            })
+          }
+          disabled={bulkAssign.isPending}
+          style={({ pressed }) => [styles.bulkBtn, pressed && { opacity: 0.7 }]}
+        >
+          {bulkAssign.isPending ? (
+            <ActivityIndicator color={Colors.accent} size="small" />
+          ) : (
+            <>
+              <Feather name="check-circle" size={14} color={Colors.accent} />
+              <Text style={styles.bulkBtnText}>
+                Asignar {unassignedInList.length}{" "}
+                {unassignedInList.length === 1 ? "gasto" : "gastos"} a este sobre
+              </Text>
+            </>
+          )}
+        </Pressable>
+      )}
       {expensesQuery.isLoading && (
         <ActivityIndicator color={Colors.accent} style={{ marginTop: Spacing.md }} />
       )}
@@ -460,6 +530,14 @@ export function EnvelopeDetailModal({ visible, item, onClose }: Props) {
           }}
           onClose={() => setSubOpen(false)}
           onSaved={() => setSubOpen(false)}
+        />
+
+        <ReallocateModal
+          visible={reallocOpen}
+          over={active}
+          candidates={reallocCandidates}
+          onClose={() => setReallocOpen(false)}
+          onDone={() => setReallocOpen(false)}
         />
       </SafeAreaView>
     </Modal>
@@ -803,6 +881,33 @@ const styles = StyleSheet.create({
   barTrack: { height: 6, backgroundColor: Colors.border, borderRadius: 3 },
   barFill: { height: 6, borderRadius: 3 },
   summarySub: { fontSize: FontSize.xs, color: Colors.textMuted },
+  coverBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 6,
+    marginTop: 2,
+    borderWidth: 1,
+    borderColor: Colors.accent,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 5,
+  },
+  coverBtnText: { color: Colors.accent, fontSize: FontSize.xs, fontWeight: "600" },
+  bulkBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 6,
+    marginHorizontal: Spacing.md,
+    marginTop: Spacing.xs,
+    borderWidth: 1,
+    borderColor: Colors.accent,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 5,
+  },
+  bulkBtnText: { color: Colors.accent, fontSize: FontSize.xs, fontWeight: "600" },
 
   subBtn: {
     flexDirection: "row",

@@ -52,8 +52,8 @@ REGISTER_DONE = (
     "¡Cuenta creada, {name}! 🎉 Ya quedaste vinculado a este Telegram.\n\n"
     "Tu token para el iPhone Shortcut (guardalo, no se vuelve a mostrar):\n"
     "<code>{token}</code>\n\n"
-    "Siguiente paso: mandá /setup para configurar tus cuentas, ingresos y "
-    "gastos fijos."
+    "Para arrancar, abrí la app de LedgerCR — desde ahí registrás tu saldo y "
+    "tus gastos en segundos."
 )
 PAIR_BAD_CODE = (
     "Ese código no es válido o ya expiró. Pedí uno nuevo en la API y volvé a probar."
@@ -110,6 +110,12 @@ COMMITTED_DISCARDED = "Listo, no guardé nada."
 RECLASSIFY_CONFIRM = "¿Cambio el último movimiento a {kind} {amount}?"
 RECLASSIFIED_TO_INCOME = "Listo, cambié el último movimiento a ingreso."
 RECLASSIFIED_TO_EXPENSE = "Listo, cambié el último movimiento a gasto."
+
+# Phase 8 B4 — reallocation between envelopes ("movéme X de A a B").
+ENVELOPE_REALLOCATED = (
+    "Listo, moví {amount} de «{from_name}» a «{to_name}». Tu presupuesto total "
+    "no cambia."
+)
 
 # Re-anchor / heal-drift (bank reconciliation) — chat "corregí mi saldo".
 BALANCE_SET = (
@@ -402,7 +408,7 @@ GMAIL_SCAN_INVALID_GRANT = (
     "permiso expiró). Volvé a conectar con /conectar_gmail."
 )
 GMAIL_SCAN_NO_WHITELIST = (
-    "No tengo bancos en tu whitelist. Agregá al menos uno con "
+    "No tengo bancos en tu lista de correos. Agregá al menos uno con "
     "/agregar_banco antes de la próxima corrida."
 )
 GMAIL_SCAN_NO_RESULTS_FIRST_BACKFILL = (
@@ -415,17 +421,17 @@ GMAIL_SCAN_NO_RESULTS_MANUAL = (
     "aparece algo en la próxima corrida automática."
 )
 GMAIL_SCAN_FINISH_SHADOW_TPL = (
-    "Listo. Revisé {scanned} correos: {matched} ya estaban registradas, "
-    "{created} son nuevas en <b>modo sombra</b> esta semana{detail}. "
-    "Mañana te mando un resumen y podés decidir si las apruebo o no."
+    "Hola {name}. Revisé {scanned} facturas que se encontraban en tu correo: {matched} ya estaban registradas, "
+    "{created} son nuevas, cuando tengas un momento revisalas y confirmalas."
+    "Las encuentras en el app>mas>gmail>revisar o bien puedes mandarme /revisar_correos para verlas desde acá."
 )
 GMAIL_SCAN_FINISH_BATCH_TPL = (
     "Encontré {created} transacciones nuevas en {scanned} correos:\n{lines}"
     "{tail}"
 )
 GMAIL_SCAN_FINISH_QUIET_TPL = (
-    "Listo. Revisé {scanned} correos: {matched} ya estaban registradas, "
-    "{created} son nuevas{detail}."
+ "Hola {name}. Revisé {scanned} facturas que se encontraban en tu correo: {matched} ya estaban registradas, "
+    "{created} son nuevas, cuando tengas un momento revisalas y confirmalas."
 )
 # Fragments composed into the "{detail}" suffix of the finish templates so the
 # user sees how many emails were skipped vs errored (otherwise "0 nuevas" hides

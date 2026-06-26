@@ -212,6 +212,18 @@ async def update_goal(
 
     await db.commit()
     await db.refresh(goal)
+
+    # Phase 8 B5 — fire the earned-celebration nudge the moment a goal flips to
+    # achieved (peak-end rule). Best-effort / isolated session: a celebration
+    # must never break the goal write. Idempotent (dedup on goal_achieved:{id}).
+    if goal.status == "achieved":
+        from ..services.nudges.celebrations import trigger_celebration_nudges
+        from ..services.nudges.evaluators import GoalAchievedEvaluator
+
+        await trigger_celebration_nudges(
+            user_id=user.id, evaluators=[GoalAchievedEvaluator()]
+        )
+
     return goal
 
 
