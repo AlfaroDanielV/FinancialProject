@@ -37,7 +37,7 @@ export async function biometricGateAvailable(): Promise<boolean> {
 export async function promptBiometric(): Promise<boolean> {
   try {
     const result = await LocalAuthentication.authenticateAsync({
-      promptMessage: "Desbloqueá Ledger CR",
+      promptMessage: "Desbloqueá Ledger",
       cancelLabel: "Cancelar",
       disableDeviceFallback: false,
     });

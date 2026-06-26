@@ -37,7 +37,7 @@ export function LockScreen() {
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
       <View style={styles.center}>
         <Feather name="lock" size={36} color={Colors.accent} />
-        <Text style={styles.title}>Ledger CR</Text>
+        <Text style={styles.title}>Ledger</Text>
         <Text style={styles.subtitle}>
           Desbloqueá con Face ID para continuar.
         </Text>

@@ -571,7 +571,7 @@ RESUMEN_EMPTY_TPL = "Aún no tengo registros para {period}."
 # ── /login (Phase 6f B3) ─────────────────────────────────────────────────────
 
 LOGIN_CODE_REPLY = (
-    "<b>Tu código para Ledger CR:</b>\n\n"
+    "<b>Tu código para Ledger:</b>\n\n"
     "<code>{code}</code>\n\n"
     "Pegalo en la app antes de 5 minutos. Es de un solo uso."
 )

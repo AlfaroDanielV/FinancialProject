@@ -79,7 +79,7 @@ export function LoginScreen() {
             showsVerticalScrollIndicator={false}
           >
             <View style={styles.wordmark}>
-              <Text style={styles.wordmarkText}>Ledger CR</Text>
+              <Text style={styles.wordmarkText}>Ledger</Text>
               <Text style={styles.wordmarkSub}>Finanzas personales</Text>
             </View>
 

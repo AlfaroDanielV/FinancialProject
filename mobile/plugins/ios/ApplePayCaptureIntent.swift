@@ -222,7 +222,7 @@ private enum LedgerAPI {
 struct ApplePayCaptureIntent: AppIntent {
     static var title: LocalizedStringResource = "Registrar compra de Apple Pay"
     static var description = IntentDescription(
-        "Registra una compra sin contacto (Apple Pay) en Ledger CR."
+        "Registra una compra sin contacto (Apple Pay) en Ledger."
     )
     // Run silently in the background — true zero-touch.
     static var openAppWhenRun: Bool = false
@@ -241,7 +241,7 @@ struct ApplePayCaptureIntent: AppIntent {
             // No session in the keychain → the user hasn't logged in (or logged
             // out). Surface a voseo hint; nothing to retry.
             throw AppIntentError.message(
-                "Abrí Ledger CR e ingresá con /login para registrar tus compras."
+                "Abrí Ledger e ingresá con /login para registrar tus compras."
             )
         }
 
@@ -264,7 +264,7 @@ struct ApplePayCaptureIntent: AppIntent {
             return .result()
         case .unauthorized:
             throw AppIntentError.message(
-                "Tu sesión venció. Abrí Ledger CR y reingresá con /login."
+                "Tu sesión venció. Abrí Ledger y reingresá con /login."
             )
         }
     }

@@ -421,7 +421,7 @@ export function ChatScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Ledger CR</Text>
+        <Text style={styles.headerTitle}>Ledger</Text>
         <Pressable
           onPress={newConversation}
           disabled={messages.length === 0 || resetMutation.isPending}
@@ -560,7 +560,7 @@ function EmptyHint({ firstRun = false }: { firstRun?: boolean }) {
   return (
     <View style={styles.emptyContainer}>
       <Feather name="message-circle" size={36} color={Colors.border} />
-      <Text style={styles.emptyTitle}>Ledger CR</Text>
+      <Text style={styles.emptyTitle}>Ledger</Text>
       {firstRun ? (
         <Text style={styles.emptyBody}>
           Para arrancar, decime cuánto tenés en tu cuenta donde te cae el

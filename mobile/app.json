@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Ledger CR",
+    "name": "Ledger",
     "slug": "ledger-cr",
     "scheme": "ledgercr",
     "version": "0.1.0",
@@ -11,7 +11,7 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#0B1220"
+      "backgroundColor": "#2F3A22"
     },
     "ios": {
       "supportsTablet": false,
@@ -21,7 +21,7 @@
         "NSCameraUsageDescription": "Tomá una foto del recibo para registrar la transacción automáticamente.",
         "NSPhotoLibraryUsageDescription": "Elegí una foto del recibo para registrar la transacción automáticamente."
       },
-      "buildNumber": "5"
+      "buildNumber": "6"
     },
     "web": {
       "bundler": "metro",
@@ -40,7 +40,7 @@
       [
         "expo-local-authentication",
         {
-          "faceIDPermission": "Usá Face ID para entrar a Ledger CR."
+          "faceIDPermission": "Usá Face ID para entrar a Ledger."
         }
       ],
       "./plugins/withApplePayIntent"
