@@ -25,11 +25,15 @@ from api.models.transaction import Transaction
 from api.models.user_nudge import UserNudge, UserNudgeSilence
 from api.services.nudges.evaluators import (
     MissingIncomeEvaluator,
+    ShadowReviewPendingEvaluator,
     StalePendingEvaluator,
     UpcomingBillEvaluator,
 )
 from api.services.nudges.orchestrator import evaluate_all
-from api.services.nudges.policy import REASON_AUTO_DISMISSED_2X
+from api.services.nudges.policy import (
+    REASON_AUTO_DISMISSED_2X,
+    SHADOW_REVIEW_PENDING_REREMIND_INTERVAL_DAYS,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -563,3 +567,150 @@ async def test_upcoming_bill_dedup_key_stable(db_with_user):
     keys_1 = [c.dedup_key for c in run1 if c.user_id == user_id]
     keys_2 = [c.dedup_key for c in run2 if c.user_id == user_id]
     assert keys_1 == keys_2 == [f"upcoming_bill:{nid}"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# shadow_review_pending
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def _insert_shadow_gmail(
+    session,
+    user_id: uuid.UUID,
+    *,
+    created_at: datetime,
+    merchant: str = "ICE",
+    status: str = "shadow",
+    source: str = "gmail",
+):
+    session.add(
+        Transaction(
+            user_id=user_id,
+            amount=Decimal("-12345"),
+            currency="CRC",
+            merchant=merchant,
+            transaction_date=created_at.date(),
+            source=source,
+            status=status,
+            created_at=created_at,
+        )
+    )
+    await session.commit()
+
+
+async def test_shadow_review_positive(db_with_user):
+    session, user_id = db_with_user
+    now = datetime(2026, 4, 22, 15, 0, tzinfo=timezone.utc)
+    await _insert_shadow_gmail(
+        session, user_id, created_at=now - timedelta(days=3)
+    )
+    await _insert_shadow_gmail(
+        session, user_id, created_at=now - timedelta(days=5),
+        merchant="AutoMercado",
+    )
+
+    candidates = await ShadowReviewPendingEvaluator().evaluate(session, now)
+    mine = [c for c in candidates if c.user_id == user_id]
+
+    assert len(mine) == 1
+    c = mine[0]
+    assert c.priority == "normal"
+    assert c.payload["count"] == 2
+    assert c.payload["oldest_age_days"] == 5
+    assert set(c.payload["sample_merchants"]) == {"ICE", "AutoMercado"}
+    assert c.dedup_key.startswith(f"shadow_review_pending:{user_id}:")
+
+
+async def test_shadow_review_counts_all_pending_not_just_aged(db_with_user):
+    """Count must match the review screen (ALL pending shadow rows). The age
+    threshold is only the GATE — applied to the oldest row — not a filter on
+    what gets counted, so a fresh row alongside an aged one is still counted."""
+    session, user_id = db_with_user
+    now = datetime(2026, 4, 22, 15, 0, tzinfo=timezone.utc)
+    await _insert_shadow_gmail(
+        session, user_id, created_at=now - timedelta(days=5)
+    )
+    await _insert_shadow_gmail(
+        session, user_id, created_at=now - timedelta(hours=12), merchant="Uber"
+    )
+
+    candidates = await ShadowReviewPendingEvaluator().evaluate(session, now)
+    mine = [c for c in candidates if c.user_id == user_id]
+
+    assert len(mine) == 1
+    assert mine[0].payload["count"] == 2  # both, including the 12h-old row
+    assert mine[0].payload["oldest_age_days"] == 5
+
+
+async def test_shadow_review_negative_too_recent(db_with_user):
+    session, user_id = db_with_user
+    now = datetime(2026, 4, 22, 15, 0, tzinfo=timezone.utc)
+    # Younger than MIN_AGE_DAYS (2) — the at-scan ping already covered it.
+    await _insert_shadow_gmail(
+        session, user_id, created_at=now - timedelta(hours=12)
+    )
+
+    candidates = await ShadowReviewPendingEvaluator().evaluate(session, now)
+    assert [c for c in candidates if c.user_id == user_id] == []
+
+
+async def test_shadow_review_negative_confirmed_or_non_gmail(db_with_user):
+    session, user_id = db_with_user
+    now = datetime(2026, 4, 22, 15, 0, tzinfo=timezone.utc)
+    old = now - timedelta(days=5)
+    # Already reviewed (confirmed) — excluded.
+    await _insert_shadow_gmail(session, user_id, created_at=old, status="confirmed")
+    # Shadow but not from Gmail — excluded.
+    await _insert_shadow_gmail(session, user_id, created_at=old, source="manual")
+
+    candidates = await ShadowReviewPendingEvaluator().evaluate(session, now)
+    assert [c for c in candidates if c.user_id == user_id] == []
+
+
+async def test_shadow_review_dedup_stable_within_bucket(db_with_user):
+    session, user_id = db_with_user
+    now = datetime(2026, 4, 22, 2, 0, tzinfo=timezone.utc)
+    await _insert_shadow_gmail(
+        session, user_id, created_at=now - timedelta(days=5)
+    )
+
+    run1 = await ShadowReviewPendingEvaluator().evaluate(session, now)
+    run2 = await ShadowReviewPendingEvaluator().evaluate(
+        session, now + timedelta(hours=6)
+    )
+    keys_1 = {c.dedup_key for c in run1 if c.user_id == user_id}
+    keys_2 = {c.dedup_key for c in run2 if c.user_id == user_id}
+    assert keys_1 == keys_2 and keys_1 != set()
+
+
+async def test_shadow_review_reremind_next_bucket(db_with_user):
+    session, user_id = db_with_user
+    now = datetime(2026, 4, 22, 15, 0, tzinfo=timezone.utc)
+    await _insert_shadow_gmail(
+        session, user_id, created_at=now - timedelta(days=5)
+    )
+
+    run1 = await ShadowReviewPendingEvaluator().evaluate(session, now)
+    later = now + timedelta(days=SHADOW_REVIEW_PENDING_REREMIND_INTERVAL_DAYS)
+    run2 = await ShadowReviewPendingEvaluator().evaluate(session, later)
+    keys_1 = {c.dedup_key for c in run1 if c.user_id == user_id}
+    keys_2 = {c.dedup_key for c in run2 if c.user_id == user_id}
+    # Same still-pending batch, but a full interval later → a fresh dedup_key so
+    # the reminder fires again instead of being deduped forever.
+    assert keys_1 and keys_2 and keys_1 != keys_2
+
+
+async def test_shadow_review_no_early_refire_within_interval(db_with_user):
+    """Age-based bucketing: a reminder at age 2d and the next day at age 3d
+    share a dedup_key (interval=2), so there is NO 1-day-early re-fire at a
+    calendar boundary — the gap to a fresh key is a full interval."""
+    session, user_id = db_with_user
+    base = datetime(2026, 4, 22, 9, 0, tzinfo=timezone.utc)
+    await _insert_shadow_gmail(session, user_id, created_at=base)
+    ev = ShadowReviewPendingEvaluator()
+
+    day2 = await ev.evaluate(session, base + timedelta(days=2, hours=1))
+    day3 = await ev.evaluate(session, base + timedelta(days=3, hours=1))
+    k2 = {c.dedup_key for c in day2 if c.user_id == user_id}
+    k3 = {c.dedup_key for c in day3 if c.user_id == user_id}
+    assert k2 and k2 == k3  # same age bucket → would dedup, no early re-fire

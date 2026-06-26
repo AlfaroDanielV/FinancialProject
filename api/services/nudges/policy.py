@@ -78,6 +78,15 @@ OVER_COMMITMENT_RATIO = 0.85
 # bar the user sees. Once per envelope per stage per calendar month (dedup).
 ENVELOPE_NEAR_LIMIT_RATIO = 0.90
 
+# shadow_review_pending: remind about Gmail-parsed transactions left in shadow
+# status (source='gmail') and unreviewed for at least MIN_AGE_DAYS, then
+# re-remind every REREMIND_INTERVAL_DAYS while still unreviewed (rolling dedup
+# bucket). The at-scan Gmail notifier already pings ONCE when rows arrive; this
+# is the follow-up for ignored rows, capped by the four anti-saturation rules.
+# Priority 'normal' (a standing chore, not a timed emergency).
+SHADOW_REVIEW_PENDING_MIN_AGE_DAYS = 2
+SHADOW_REVIEW_PENDING_REREMIND_INTERVAL_DAYS = 2
+
 
 # ── Silence reasons (string enum, free-form) ─────────────────────────────────
 REASON_AUTO_DISMISSED_2X = "auto_dismissed_2x"

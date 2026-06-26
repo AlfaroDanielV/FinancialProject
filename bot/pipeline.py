@@ -1302,6 +1302,8 @@ def _nudge_act_reply(nudge_type: str) -> str:
         return messages_es.NUDGE_ACK_ACT_STALE_PENDING
     if nudge_type == "upcoming_bill":
         return messages_es.NUDGE_ACK_ACT_UPCOMING_BILL
+    if nudge_type == "shadow_review_pending":
+        return messages_es.NUDGE_ACK_ACT_SHADOW_REVIEW
     return messages_es.NUDGE_ACK_DISMISS_SOFT
 
 

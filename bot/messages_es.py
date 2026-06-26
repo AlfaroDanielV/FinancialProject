@@ -674,6 +674,10 @@ NUDGE_ACK_ACT_UPCOMING_BILL = (
     "¡Genial! Si querés registrar el pago, mandame algo como "
     "«gasté ₡35000 en ICE»."
 )
+NUDGE_ACK_ACT_SHADOW_REVIEW = (
+    "¡Dale! Abrí la app en Gmail → Revisar para verlas una por una, o "
+    "mandame /aprobar_shadow para confirmarlas todas de una."
+)
 NUDGE_ACK_DISMISS_HARD = (
     "Entendido. Por 2 semanas no te molesto con recordatorios de este tipo."
 )

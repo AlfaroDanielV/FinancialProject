@@ -12,6 +12,7 @@ from .duplicate_transaction import DuplicateTransactionEvaluator
 from .envelope_near_limit import EnvelopeNearLimitEvaluator
 from .missing_income import MissingIncomeEvaluator
 from .over_commitment import OverCommitmentEvaluator
+from .shadow_review_pending import ShadowReviewPendingEvaluator
 from .stale_pending import StalePendingEvaluator
 from .upcoming_bill import UpcomingBillEvaluator
 
@@ -23,6 +24,7 @@ ALL_EVALUATORS: list[BaseNudgeEvaluator] = [
     OverCommitmentEvaluator(),
     DuplicateTransactionEvaluator(),
     EnvelopeNearLimitEvaluator(),
+    ShadowReviewPendingEvaluator(),
 ]
 
 __all__ = [
@@ -31,6 +33,7 @@ __all__ = [
     "DuplicateTransactionEvaluator",
     "EnvelopeNearLimitEvaluator",
     "MissingIncomeEvaluator",
+    "ShadowReviewPendingEvaluator",
     "StalePendingEvaluator",
     "UpcomingBillEvaluator",
     "OverCommitmentEvaluator",

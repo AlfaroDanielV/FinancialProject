@@ -151,6 +151,8 @@ def build_user_prompt(nudge_type: str, payload: dict[str, Any]) -> str:
         return _prompt_duplicate_transaction(payload)
     if nudge_type == "envelope_near_limit":
         return _prompt_envelope_near_limit(payload)
+    if nudge_type == "shadow_review_pending":
+        return _prompt_shadow_review_pending(payload)
     return (
         "Escribí un recordatorio breve al usuario. "
         f"Contexto raw: {payload!r}"
@@ -297,4 +299,24 @@ def _prompt_envelope_near_limit(payload: dict[str, Any]) -> str:
         "\n"
         f"{instruccion} No des consejo numérico ni inventés montos; usá solo "
         "las cifras del contexto."
+    )
+
+
+def _prompt_shadow_review_pending(payload: dict[str, Any]) -> str:
+    count = payload.get("count", 0)
+    age = payload.get("oldest_age_days", 0)
+    merchants = payload.get("sample_merchants") or []
+    ejemplos = ", ".join(m for m in merchants[:3] if m)
+    detalle = f" (por ejemplo: {ejemplos})" if ejemplos else ""
+    return (
+        "Contexto: el usuario tiene transacciones que llegaron por correo "
+        "(Gmail) y quedaron en modo sombra esperando que las revise y "
+        "apruebe.\n"
+        f"- Cantidad sin revisar: {count}\n"
+        f"- La más vieja lleva {age} días esperando{detalle}\n"
+        "\n"
+        "Escribí un recordatorio breve y amable: (1) decile cuántos "
+        "movimientos de Gmail tiene sin revisar y que llevan días esperando, "
+        "(2) preguntale si los revisa ahora. No inventés montos ni comercios "
+        "fuera del contexto."
     )

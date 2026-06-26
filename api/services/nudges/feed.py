@@ -128,6 +128,16 @@ def render_nudge_text(nudge_type: str, payload: dict[str, Any]) -> str:
             f"{disponible}. ¿Querés revisarlo?"
         )
 
+    if nudge_type == "shadow_review_pending":
+        count = payload.get("count", 0)
+        age = payload.get("oldest_age_days", 0)
+        cosa = "movimiento" if count == 1 else "movimientos"
+        pron = "Lo" if count == 1 else "Los"
+        return (
+            f"Tenés {count} {cosa} de Gmail sin revisar (el más viejo hace "
+            f"{age} días). ¿{pron} revisás ahora?"
+        )
+
     return "Tenés una notificación pendiente."
 
 

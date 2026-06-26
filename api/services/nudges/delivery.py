@@ -114,6 +114,15 @@ _BUTTONS: dict[str, list[NudgeButton]] = {
         NudgeButton("Más tarde", "later"),
         NudgeButton("No mostrar más", "dismiss"),
     ],
+    # Shadow-review reminder: `act` ("Revisar") marks acted_on + points the user
+    # to the Gmail review (app screen / /aprobar_shadow); `dismiss` ("Descartar")
+    # → 2 dismissals in 30d silence the type for 14d (policy rule 2). No "Más
+    # tarde": the 2-day re-remind already IS the implicit "later", and routing a
+    # `later` through mark_dismissed would let a deferral trip the auto-silence.
+    "shadow_review_pending": [
+        NudgeButton("Revisar", "act"),
+        NudgeButton("Descartar", "dismiss"),
+    ],
 }
 
 

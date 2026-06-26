@@ -1662,6 +1662,52 @@ Cold-Start Registration`.
   limiting per tg id (beta scale doesn't need it), self-serve account
   delete, formal ToS document.
 
+## Phase 8 — Activation & Advisor UX (planned, B2–B6, 2026-06-25)
+
+Driven by the first two non-technical user tests (2026-06-25) + a prior
+UX/psychology audit. **Forks locked by operator:** reactive advisor (not
+proactive) + chat-led first run (not a visual wizard). Principle: **make depth
+optional, make the first win free, reward real progress** — without breaking
+"LLM extracts; rules decide" or chat-first. Canonical: `docs/phase-8-decisions.md`
+(Activation & Advisor UX track); vault `Decision - Activation & Advisor UX
+(Phase 8)`. **PLANNED — not started.**
+
+- **User-test evidence.** Tester 1 froze after login ("no instructions / no
+  step-by-step") and was overwhelmed by Gmail/sender config reached too early →
+  B2 + B3. Tester 2 expected an advisor: *"estoy por pasarme de Gustos, ¿de dónde
+  muevo plata?"* → B4 + B6 (advice-forward + move-budget-between-sobres +
+  over-limit-as-decision).
+- **B2 — Activation: chat-led first run + redefine "activated."** First
+  post-login surface is the chat, zero forms: "¿cuánto tenés en tu cuenta?" →
+  account + balance **anchor** (reuse `Intent.SET_BALANCE` + 6d B9) → real number
+  in ~20s. "Activated" = 1 account + 1 balance + 1 expense (drop the 4-entity
+  gate + the "te falta registrar" guilt copy). Deep-link new registrants into the
+  app (reuse B15 `ledgercr://`), CR bank picker, net-salary fast path, email-taken
+  recovery, dashboard empty-state CTAs.
+- **B3 — Gmail out of the critical path + guided connect.** Gmail becomes an
+  opt-in power-up with a step-by-step guided flow (incl. the ~7-day reconnect
+  caveat); no new user stumbles into sender config. Mobile + copy only.
+- **B4 — Reactive advisor: reallocation-on-request.** New deterministic
+  **move-budget-between-sobres** primitive (atomic, same-currency v1, respects
+  parent/child caps; likely `POST /envelopes/reallocate`) + a read-only tool that
+  computes where to pull from (reuses `compute_envelope_summary`). LLM proposes a
+  specific move, user confirms, deterministic commit; also fires when a sobre
+  limit is hit mid-capture. Reactive only.
+- **B5 — Emotional symmetry: earned-celebration layer.** Real peaks at goal
+  achieved / debt paid off / first full month / stayed-under-budget. The
+  *decision* to celebrate is deterministic (mirrors "LLM never decides
+  whether/when to nudge"); LLM may phrase. **No streaks/points/badges.** Aguinaldo
+  + salario escolar as CR fresh-start anchors.
+- **B6 — Envelope humanization.** Over-limit → "¿cubrís moviendo de otro sobre?"
+  (reuses B4). Progressive disclosure: default the *tipo*, hide allocation jargon
+  until a sobre has children, hide nesting by default, starter-sobres pack. Batch
+  bulk-assign prompt for unassigned gastos. A deterministic **merchant→sobre
+  memory** is a SEPARATE mini-decision (a user-confirmed mapping, NOT an LLM
+  normalization map — the no-synonym-maps rule stands).
+- **Sequence:** B2 → B4 → B6 (B6 reuses B4's primitive); B3 + B5 independent.
+  **Deferred:** proactive advisor (flag); cross-currency reallocation;
+  merchant→sobre memory (own decision); net-worth trend view; visual wizard.
+
 ## Phase 7h (active) — Savings Clarity + Analytics Screen (2026-06-13)
 
 Two operator dogfooding asks. **Code-complete on branch `phase-7h-analytics`

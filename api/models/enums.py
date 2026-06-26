@@ -75,6 +75,7 @@ class NudgeType(str, Enum):
     MISSING_INCOME = "missing_income"
     STALE_PENDING_CONFIRMATION = "stale_pending_confirmation"
     UPCOMING_BILL = "upcoming_bill"
+    SHADOW_REVIEW_PENDING = "shadow_review_pending"
 
 
 class NudgePriority(str, Enum):
