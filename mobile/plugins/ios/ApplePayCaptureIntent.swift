@@ -219,6 +219,11 @@ private enum LedgerAPI {
 
 // MARK: - App Intent
 
+// App Intents require iOS 16.0+. The app's deployment target is lower (Expo SDK
+// 54 defaults to iOS 15.1), so every App-Intents type MUST be availability-gated
+// or the Swift compiler rejects the iOS-16 symbols. On iOS 15 the intent simply
+// doesn't exist (App Intents can't run there anyway); on 16+ it works.
+@available(iOS 16.0, *)
 struct ApplePayCaptureIntent: AppIntent {
     static var title: LocalizedStringResource = "Registrar compra de Apple Pay"
     static var description = IntentDescription(
@@ -271,6 +276,7 @@ struct ApplePayCaptureIntent: AppIntent {
 }
 
 /// A simple user-facing error for the few cases worth surfacing.
+@available(iOS 16.0, *)
 private enum AppIntentError: Error, CustomLocalizedStringResourceConvertible {
     case message(String)
     var localizedStringResource: LocalizedStringResource {
@@ -282,6 +288,7 @@ private enum AppIntentError: Error, CustomLocalizedStringResourceConvertible {
 
 /// Surfaces the intent in Shortcuts / Siri / the Wallet trigger automation
 /// automatically — no Info.plist registration needed.
+@available(iOS 16.0, *)
 struct LedgerAppShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
