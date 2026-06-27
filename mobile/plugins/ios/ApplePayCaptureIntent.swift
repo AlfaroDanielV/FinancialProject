@@ -225,9 +225,13 @@ private enum LedgerAPI {
 // doesn't exist (App Intents can't run there anyway); on 16+ it works.
 @available(iOS 16.0, *)
 struct ApplePayCaptureIntent: AppIntent {
-    static var title: LocalizedStringResource = "Registrar compra de Apple Pay"
+    // App Store validation (ITMS-90626 "Invalid Siri Support") rejects App
+    // Intent metadata — title / description / phrases — that contains the word
+    // "Apple". Keep these strings Apple-free; "sin contacto" (contactless) is
+    // accurate since the tap is NFC. (Comments aren't scanned metadata.)
+    static var title: LocalizedStringResource = "Registrar compra sin contacto"
     static var description = IntentDescription(
-        "Registra una compra sin contacto (Apple Pay) en Ledger."
+        "Registra una compra sin contacto en Ledger."
     )
     // Run silently in the background — true zero-touch.
     static var openAppWhenRun: Bool = false
