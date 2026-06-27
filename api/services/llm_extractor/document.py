@@ -301,7 +301,10 @@ _STATEMENT_PROMPT = (
     "anterior. Copiá TODOS los saldos que aparezcan con su rol; NO elijas vos "
     "cuál es el correcto.\n\n"
     "identifiers = IBAN / número de cuenta / últimos 4 dígitos si aparecen. "
-    "period_end = la fecha de corte como YYYY-MM-DD (solo el día)."
+    "period_end = la fecha de corte como YYYY-MM-DD (solo el día).\n\n"
+    "confidence = qué tan seguro estás de la extracción, de 0 a 1 (bajo si el "
+    "PDF es un escaneo borroso o no parece un estado de cuenta). SIEMPRE incluí "
+    "este campo."
 )
 
 _BALANCE_ROLES = [
@@ -677,8 +680,21 @@ async def _run_one(
 
     latency_ms = int((time.perf_counter() - t0) * 1000)
 
+    # Anthropic tool-use does NOT hard-enforce a tool's `required` fields, so a
+    # model (Haiku especially) occasionally omits `confidence`. Treat a
+    # missing/null confidence as low (0.0) instead of 500-ing on validation:
+    # on the Haiku pass it forces the Sonnet retry, and a still-missing value
+    # surfaces a low-confidence review note downstream rather than a crash.
+    tool_input = raw.tool_input
+    if (
+        isinstance(tool_input, dict)
+        and "confidence" in result_model.model_fields
+        and tool_input.get("confidence") is None
+    ):
+        tool_input = {**tool_input, "confidence": 0.0}
+
     try:
-        result = result_model.model_validate(raw.tool_input)
+        result = result_model.model_validate(tool_input)
     except ValidationError as e:
         await _log(
             db=db,

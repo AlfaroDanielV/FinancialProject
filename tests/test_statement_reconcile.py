@@ -192,6 +192,39 @@ async def test_extract_statement_parses_and_logs(db_with_user):
     assert "pdf_b64" in rows[0].extraction
 
 
+@pytest.mark.asyncio
+async def test_extract_statement_missing_confidence_does_not_crash(db_with_user):
+    """Anthropic tool-use does not enforce `required`, so the model can omit
+    `confidence` (the prod 500 on a Promerica statement, 2026-06-27). It must
+    default to 0.0 — which forces the Sonnet retry — instead of raising."""
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+
+    no_conf = {k: v for k, v in _STATEMENT.tool_input.items() if k != "confidence"}
+    assert "confidence" not in no_conf
+
+    calls: list[str] = []
+
+    class _Client:
+        async def extract(self, **kwargs) -> RecordedLLMResponse:
+            calls.append(kwargs["model"])
+            return RecordedLLMResponse(tool_input=dict(no_conf))
+
+    result = await extract_statement(
+        user=user,
+        pdf_bytes=_TINY_PDF,
+        client=_Client(),
+        haiku_model="claude-haiku-4-5",
+        sonnet_model="claude-sonnet-4-5",
+        db=session,
+    )
+    # No crash; a missing confidence is coerced to 0.0 ...
+    assert result.confidence == 0.0
+    assert len(result.accounts) == 2
+    # ... and 0.0 < threshold forces the Haiku→Sonnet retry.
+    assert calls == ["claude-haiku-4-5", "claude-sonnet-4-5"]
+
+
 # ── 2. deposit reconcile honors the corte (strict >) ──────────────────────────
 
 

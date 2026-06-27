@@ -1,3 +1,4 @@
+import logging
 import uuid
 from typing import Iterable
 
@@ -55,6 +56,8 @@ from ..services.statements import (
 from bot.app import get_llm_client
 
 router = APIRouter(prefix="/api/v1/accounts", tags=["accounts"])
+
+log = logging.getLogger("api.routers.accounts")
 
 _PDF_MIME_TYPE = "application/pdf"
 _MAX_PDF_BYTES = 4 * 1024 * 1024  # 4 MB pre-base64, same cap as debts
@@ -289,14 +292,29 @@ async def parse_statement(
             detail=f"PDF exceeds {_MAX_PDF_BYTES // (1024 * 1024)} MB limit.",
         )
 
-    extraction = await extract_statement(
-        user=user,
-        pdf_bytes=pdf_bytes,
-        client=get_llm_client(),
-        haiku_model=settings.llm_extraction_model,
-        sonnet_model=settings.llm_query_model,
-        db=db,
-    )
+    # An LLM-document path must never surface a raw 500 to the native form;
+    # a flaky extraction (malformed tool call, model/network error) returns a
+    # clean Spanish error instead. The full traceback is still logged loudly.
+    try:
+        extraction = await extract_statement(
+            user=user,
+            pdf_bytes=pdf_bytes,
+            client=get_llm_client(),
+            haiku_model=settings.llm_extraction_model,
+            sonnet_model=settings.llm_query_model,
+            db=db,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("parse_statement_failed user_id=%s", user.id)
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "No pude leer el estado de cuenta. Probá de nuevo o subí "
+                "otro archivo."
+            ),
+        )
     accounts = list(
         (
             await db.execute(
