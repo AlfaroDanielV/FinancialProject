@@ -43,8 +43,8 @@ import { fetchAccounts, type AccountResponse } from "../api/accounts";
 import { fetchDebts, type DebtSummary } from "../api/debts";
 import { AccountPickerModal } from "../components/AccountPickerModal";
 import { DebtPickerModal } from "../components/DebtPickerModal";
+import { AmountInput } from "../components/fields/AmountInput";
 import { DateField } from "../components/fields/DateField";
-import { formatMoney } from "../lib/format";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
 import type { AccountsStackParamList } from "../navigation/AccountsNavigator";
 
@@ -70,6 +70,25 @@ function reviewLabel(p: StatementProduct): string {
 interface RowState {
   enabled: boolean;
   targetId: string | null;
+  /** Editable closing balance, raw numeric string (AmountInput convention). */
+  amount: string;
+}
+
+/** Parse an AmountInput raw string ("268207,37") to a non-negative number, or
+ *  null when blank/invalid. 0 is valid (a paid-off loan / empty account); a row
+ *  the LLM left null starts blank + OFF, so the app never auto-anchors a ₡0. */
+function parseAmount(raw: string): number | null {
+  const t = (raw ?? "").trim();
+  if (!t) return null;
+  const n = Number(t.replace(",", "."));
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+/** A row anchors iff the user enabled it, chose a target, and its amount parses.
+ *  ONE predicate for the count, the submit payload, AND the switch's lit state —
+ *  so the green toggle can never imply a row that submit silently drops. */
+function rowSubmittable(row: RowState | undefined): boolean {
+  return Boolean(row?.enabled && row.targetId && parseAmount(row.amount) != null);
 }
 
 export function StatementReconcileScreen() {
@@ -113,11 +132,12 @@ export function StatementReconcileScreen() {
           const suggested =
             p.kind === "loan" ? p.suggested_debt_id : p.suggested_account_id;
           // Conservation-flagged rows default OFF — the user confirms them. A
-          // row with no resolved balance can't anchor anything.
+          // row with no resolved balance starts blank for the user to fill in.
           return {
             enabled:
               Boolean(suggested) && !p.needs_review && p.closing_balance != null,
             targetId: suggested,
+            amount: p.closing_balance != null ? String(p.closing_balance) : "",
           };
         }),
       );
@@ -135,18 +155,23 @@ export function StatementReconcileScreen() {
       const items: StatementReconcileItem[] = [];
       (extraction?.products ?? []).forEach((p, i) => {
         const row = rows[i];
-        if (row?.enabled && row.targetId && p.closing_balance != null) {
+        const amount = row ? parseAmount(row.amount) : null;
+        const targetId = row?.targetId;
+        // amount/targetId checks also narrow the types rowSubmittable can't.
+        if (rowSubmittable(row) && amount != null && targetId) {
           // Self-stamp identity onto the target only for a confident identity
           // match the user did NOT override — otherwise we'd poison the next
           // statement's deterministic resolution.
           const suggestedId =
             p.kind === "loan" ? p.suggested_debt_id : p.suggested_account_id;
           const stampable =
-            (p.match_confidence ?? 0) >= 1 && row.targetId === suggestedId;
+            (p.match_confidence ?? 0) >= 1 && targetId === suggestedId;
           items.push({
             kind: p.kind,
-            target_id: row.targetId,
-            closing_balance: String(p.closing_balance),
+            target_id: targetId,
+            // The user-confirmed amount is the anchor — they verify it against
+            // the printed statement, including completing a row the LLM left null.
+            closing_balance: String(amount),
             currency: p.currency,
             iban: stampable ? p.iban : null,
             account_number: stampable ? p.account_number : null,
@@ -195,11 +220,8 @@ export function StatementReconcileScreen() {
     return accountsById.get(targetId)?.name ?? "Cuenta";
   };
 
-  const enabledCount = rows.filter((r, i) => {
-    return (
-      r.enabled && r.targetId && extraction?.products[i]?.closing_balance != null
-    );
-  }).length;
+  const hasProducts = (extraction?.products.length ?? 0) > 0;
+  const enabledCount = rows.filter(rowSubmittable).length;
   const canSubmit = enabledCount > 0 && Boolean(corte) && !reconcileMutation.isPending;
 
   const pickerProduct =
@@ -235,15 +257,28 @@ export function StatementReconcileScreen() {
               </>
             )}
           </Pressable>
-          {lowConf && (
+          {lowConf && hasProducts && (
             <Text style={styles.lowConf}>
               Leí el documento pero no estoy seguro de todos los montos. Revisalos
-              antes de reconciliar.
+              y corregilos antes de reconciliar.
             </Text>
           )}
         </View>
 
-        {extraction && (
+        {/* ── empty extraction: honest state + recovery, never a dead end ───── */}
+        {extraction && !hasProducts && (
+          <View style={styles.emptyCard}>
+            <Feather name="file-text" size={22} color={Colors.textMuted} />
+            <Text style={styles.emptyTitle}>No encontré cuentas en este estado</Text>
+            <Text style={styles.emptyBody}>
+              Revisá que el PDF sea un estado de cuenta y probá con “Subir otro
+              estado”. También podés corregir el saldo a mano desde cada cuenta
+              con “Corregí mi saldo”.
+            </Text>
+          </View>
+        )}
+
+        {extraction && hasProducts && (
           <>
             <View style={styles.metaRow}>
               <Text style={styles.metaBank}>{extraction.bank ?? "Estado de cuenta"}</Text>
@@ -265,7 +300,11 @@ export function StatementReconcileScreen() {
 
             {extraction.products.map((p, i) => {
               const row = rows[i];
-              const active = row?.enabled ?? false;
+              const amountOk = parseAmount(row?.amount ?? "") != null;
+              // The switch lights only when the row is fully submittable, so
+              // clearing the target (allowClear) greys it off instead of leaving
+              // a green toggle that the count/submit silently exclude.
+              const active = rowSubmittable(row);
               return (
                 <View key={i} style={[styles.row, active && styles.rowActive]}>
                   <View style={styles.rowHeader}>
@@ -282,7 +321,7 @@ export function StatementReconcileScreen() {
                     </View>
                     <Switch
                       value={active}
-                      disabled={p.closing_balance == null}
+                      disabled={!amountOk || !row?.targetId}
                       onValueChange={(v) => setRow(i, { enabled: v })}
                       trackColor={{ false: Colors.border, true: Colors.accentSoft }}
                       thumbColor={active ? Colors.accent : Colors.bgCard}
@@ -306,16 +345,20 @@ export function StatementReconcileScreen() {
                     </Text>
                   ) : null}
 
-                  <Text style={styles.rowBalance}>
-                    {p.closing_balance != null ? (
-                      <>
-                        {formatMoney(p.closing_balance, p.currency)}{" "}
-                        <Text style={styles.rowBalanceCur}>{p.currency}</Text>
-                      </>
-                    ) : (
-                      <Text style={styles.rowBalanceCur}>Sin saldo aplicable</Text>
-                    )}
-                  </Text>
+                  <Text style={styles.amountLabel}>Saldo al corte</Text>
+                  <View style={styles.amountRow}>
+                    <AmountInput
+                      value={row?.amount ?? ""}
+                      onChangeValue={(raw) => setRow(i, { amount: raw })}
+                      maxDecimals={2}
+                      placeholder={
+                        p.closing_balance == null ? "Escribí el saldo" : "0"
+                      }
+                      placeholderTextColor={Colors.textMuted}
+                      style={[styles.amountInput, !amountOk && styles.amountInputEmpty]}
+                    />
+                    <Text style={styles.amountCur}>{p.currency}</Text>
+                  </View>
 
                   <Pressable
                     onPress={() => setPickerRow(i)}
@@ -344,6 +387,13 @@ export function StatementReconcileScreen() {
                 </View>
               );
             })}
+
+            {!canSubmit && !reconcileMutation.isPending && (
+              <Text style={styles.submitHint}>
+                Activá al menos un producto, elegí su cuenta y confirmá el monto
+                para reconciliar.
+              </Text>
+            )}
 
             <Pressable
               onPress={() => canSubmit && reconcileMutation.mutate()}
@@ -478,6 +528,27 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
   },
   rowTitle: { flex: 1, fontSize: FontSize.sm, color: Colors.textPrimary },
+  emptyCard: {
+    backgroundColor: Colors.bgCard,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    padding: Spacing.lg,
+    gap: Spacing.sm,
+    alignItems: "center",
+  },
+  emptyTitle: {
+    fontSize: FontSize.md,
+    fontWeight: "700",
+    color: Colors.textPrimary,
+    textAlign: "center",
+  },
+  emptyBody: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    lineHeight: 19,
+    textAlign: "center",
+  },
   reviewBadge: {
     flexDirection: "row",
     alignItems: "center",
@@ -486,8 +557,26 @@ const styles = StyleSheet.create({
   reviewBadgeText: { fontSize: FontSize.xs, color: Colors.warning, flex: 1 },
   unverified: { fontSize: FontSize.xs, color: Colors.textMuted },
   instruments: { fontSize: FontSize.xs, color: Colors.textMuted },
-  rowBalance: { fontSize: FontSize.lg, fontWeight: "700", color: Colors.textPrimary },
-  rowBalanceCur: { fontSize: FontSize.xs, color: Colors.textMuted, fontWeight: "500" },
+  amountLabel: {
+    fontSize: FontSize.xs,
+    fontWeight: "600",
+    color: Colors.textSecondary,
+  },
+  amountRow: { flexDirection: "row", alignItems: "center", gap: Spacing.sm },
+  amountInput: {
+    flex: 1,
+    backgroundColor: Colors.bgInput,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm + 2,
+    fontSize: FontSize.lg,
+    fontWeight: "700",
+    color: Colors.textPrimary,
+  },
+  amountInputEmpty: { borderColor: Colors.warning },
+  amountCur: { fontSize: FontSize.sm, color: Colors.textMuted, fontWeight: "500" },
   targetBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -512,4 +601,10 @@ const styles = StyleSheet.create({
   },
   submitDisabled: { backgroundColor: Colors.border },
   submitLabel: { fontSize: FontSize.md, fontWeight: "600", color: Colors.textOnDark },
+  submitHint: {
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    textAlign: "center",
+    lineHeight: 17,
+  },
 });

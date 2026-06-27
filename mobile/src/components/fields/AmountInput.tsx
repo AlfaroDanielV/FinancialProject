@@ -34,19 +34,34 @@ export function formatAmountDisplay(raw: string): string {
   return grouped + tail;
 }
 
+/** Cap the fractional part to `places` digits (money = 2). A live input mask, so
+ *  it truncates the in-progress value — the user simply can't type past the cap,
+ *  which keeps the displayed value === what gets submitted (and a strict
+ *  2-decimal backend Decimal can never 422 on a stray 3rd digit). */
+export function capDecimals(raw: string, places: number): string {
+  const sep = raw.search(/[.,]/);
+  if (sep < 0) return raw;
+  return raw.slice(0, sep + 1 + places);
+}
+
 interface Props
   extends Omit<TextInputProps, "value" | "onChangeText" | "keyboardType"> {
   /** Raw numeric string: digits + at most one "." or ",". */
   value: string;
   onChangeValue: (raw: string) => void;
+  /** Cap fractional digits (e.g. 2 for a strict-cents backend field). Default: uncapped. */
+  maxDecimals?: number;
 }
 
-export function AmountInput({ value, onChangeValue, ...rest }: Props) {
+export function AmountInput({ value, onChangeValue, maxDecimals, ...rest }: Props) {
   return (
     <TextInput
       {...rest}
       value={formatAmountDisplay(value)}
-      onChangeText={(t) => onChangeValue(sanitizeAmountInput(t))}
+      onChangeText={(t) => {
+        const raw = sanitizeAmountInput(t);
+        onChangeValue(maxDecimals == null ? raw : capDecimals(raw, maxDecimals));
+      }}
       keyboardType="decimal-pad"
       inputMode="decimal"
     />

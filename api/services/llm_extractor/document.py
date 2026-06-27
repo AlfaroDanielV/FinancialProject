@@ -273,6 +273,11 @@ _STATEMENT_SYSTEM_PROMPT = (
 _STATEMENT_PROMPT = (
     "Adjunté mi estado de cuenta. Llamá extract_statement con UNA entrada por "
     "cada CUENTA o producto (no por cada tarjeta física).\n\n"
+    "Un estado de cuenta SIEMPRE tiene al menos una cuenta: incluí TODO lo que "
+    "encontrés (cuentas de depósito, tarjetas de crédito, préstamos, líneas de "
+    "crédito, inversiones). Una tarjeta de crédito es una cuenta válida. NUNCA "
+    "devolvás 'accounts' vacío si el documento es un estado de cuenta; si dudás "
+    "de un saldo, igual incluí la cuenta y dejá ese monto en null.\n\n"
     "account_type: 'checking'/'savings' para cuentas a la vista o de ahorro, "
     "'credit_card' para tarjeta de crédito, 'loan' para préstamo, "
     "'line_of_credit' para línea de crédito, 'investment' para inversión.\n\n"
@@ -592,6 +597,11 @@ async def extract_statement(
         tool=_STATEMENT_TOOL,
         result_model=StatementExtractionV2,
         intent="parse_statement",
+        # An empty `accounts` means Haiku couldn't read the statement (often a
+        # card/dual-currency layout) — force the Sonnet retry the same way a low
+        # confidence does, so we give the stronger model a second pass before
+        # the user sees "0 productos".
+        is_empty=lambda r: not r.accounts,
     )
 
 
@@ -608,6 +618,7 @@ async def _extract_document(
     tool: dict,
     result_model,
     intent: str,
+    is_empty=None,
 ):
     pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("ascii")
     content_blocks: list[dict] = [
@@ -636,7 +647,9 @@ async def _extract_document(
         intent=intent,
     )
 
-    if result.confidence < _CONFIDENCE_THRESHOLD:
+    if result.confidence < _CONFIDENCE_THRESHOLD or (
+        is_empty is not None and is_empty(result)
+    ):
         result = await _run_one(
             user=user,
             content_blocks=content_blocks,

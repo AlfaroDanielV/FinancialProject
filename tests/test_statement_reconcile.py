@@ -225,6 +225,38 @@ async def test_extract_statement_missing_confidence_does_not_crash(db_with_user)
     assert calls == ["claude-haiku-4-5", "claude-sonnet-4-5"]
 
 
+@pytest.mark.asyncio
+async def test_extract_statement_empty_accounts_forces_sonnet_retry(db_with_user):
+    """A Haiku pass returning accounts=[] (even with HIGH confidence) must force
+    the Sonnet retry — the prod '0 productos' on a Promerica statement was Haiku
+    reading zero accounts, which low-confidence alone would not catch."""
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+
+    calls: list[str] = []
+
+    class _Client:
+        async def extract(self, **kwargs) -> RecordedLLMResponse:
+            calls.append(kwargs["model"])
+            if kwargs["model"] == "claude-haiku-4-5":
+                # Confidently returns nothing useful — the bug we now recover from.
+                return RecordedLLMResponse(
+                    tool_input={"bank": "Promerica", "accounts": [], "confidence": 0.9}
+                )
+            return _STATEMENT  # the Sonnet retry reads the real accounts
+
+    result = await extract_statement(
+        user=user,
+        pdf_bytes=_TINY_PDF,
+        client=_Client(),
+        haiku_model="claude-haiku-4-5",
+        sonnet_model="claude-sonnet-4-5",
+        db=session,
+    )
+    assert calls == ["claude-haiku-4-5", "claude-sonnet-4-5"]
+    assert len(result.accounts) == 2  # the Sonnet retry's non-empty result wins
+
+
 # ── 2. deposit reconcile honors the corte (strict >) ──────────────────────────
 
 

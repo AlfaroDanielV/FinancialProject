@@ -338,6 +338,16 @@ async def parse_statement(
         ).scalars()
     )
     plan = build_reconcile_plan(extraction, accounts=accounts, debts=debts)
+    if not plan.legs:
+        # Extraction succeeded (200) but read no accounts/products — the mobile
+        # form shows an empty-state + recovery actions. Log it so a recurring
+        # "0 productos" on a real statement is visible (no silent failures).
+        log.warning(
+            "parse_statement_empty user_id=%s bank=%s confidence=%.2f",
+            user.id,
+            extraction.bank,
+            extraction.confidence,
+        )
     return plan_to_extraction(plan, confidence=extraction.confidence)
 
 
