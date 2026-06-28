@@ -1,4 +1,4 @@
-import { api } from "./client";
+import { api, LLM_UPLOAD_TIMEOUT_MS } from "./client";
 
 export interface ChatButton {
   label: string;
@@ -139,6 +139,7 @@ export async function postChatImage(
   form.append("file", { uri, type: mediaType, name: filename } as unknown as Blob);
   const { data } = await api.post<ChatMessageResponse>("/chat/image", form, {
     headers: { "Content-Type": "multipart/form-data" },
+    timeout: LLM_UPLOAD_TIMEOUT_MS,
   });
   return data;
 }

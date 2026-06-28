@@ -6,7 +6,7 @@
  * The analysis is computed server-side by the deterministic revolving engine
  * over the LIVE balance — the app never reimplements the interest math.
  */
-import { api } from "./client";
+import { api, LLM_UPLOAD_TIMEOUT_MS } from "./client";
 
 export interface CardTermsPayload {
   annual_interest_rate: string; // 0–1 fraction
@@ -124,7 +124,10 @@ export async function parseCardDocument(
   const { data } = await api.post<CardTermsExtraction>(
     "/accounts/parse-card-document",
     form,
-    { headers: { "Content-Type": "multipart/form-data" } },
+    {
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: LLM_UPLOAD_TIMEOUT_MS,
+    },
   );
   return data;
 }

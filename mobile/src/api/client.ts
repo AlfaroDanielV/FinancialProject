@@ -39,4 +39,11 @@ function buildClient(): AxiosInstance {
   return instance;
 }
 
+// LLM document/vision uploads (statement / card / debt PDF parse, receipt vision)
+// run a multi-page-PDF extraction that takes ~50-90s server-side — far past the
+// 15s default. They pass this per-call so a slow-but-successful parse isn't
+// abandoned client-side (which surfaced as a false "No pude leer el estado").
+// Comfortably exceeds the server's 120s statement timeout + a 2-pass retry.
+export const LLM_UPLOAD_TIMEOUT_MS = 150_000;
+
 export const api = buildClient();

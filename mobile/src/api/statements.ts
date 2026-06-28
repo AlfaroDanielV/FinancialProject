@@ -7,7 +7,7 @@
  * corte balance and setting each loan's current_balance. Mirrors the
  * parseDebtDocument FormData shape; "LLM extracts, rules decide".
  */
-import { api } from "./client";
+import { api, LLM_UPLOAD_TIMEOUT_MS } from "./client";
 
 export type StatementKind = "deposit" | "credit" | "loan";
 
@@ -87,7 +87,10 @@ export async function parseStatement(uri: string): Promise<StatementExtraction> 
   const { data } = await api.post<StatementExtraction>(
     "/accounts/parse-statement",
     form,
-    { headers: { "Content-Type": "multipart/form-data" } },
+    {
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: LLM_UPLOAD_TIMEOUT_MS,
+    },
   );
   return data;
 }

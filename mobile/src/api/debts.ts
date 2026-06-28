@@ -1,4 +1,4 @@
-import { api } from "./client";
+import { api, LLM_UPLOAD_TIMEOUT_MS } from "./client";
 
 export interface DebtSummary {
   id: string;
@@ -260,6 +260,7 @@ export async function parseDebtDocument(uri: string): Promise<DebtTermsExtractio
   } as unknown as Blob);
   const { data } = await api.post<DebtTermsExtraction>("/debts/parse-document", form, {
     headers: { "Content-Type": "multipart/form-data" },
+    timeout: LLM_UPLOAD_TIMEOUT_MS,
   });
   return data;
 }
