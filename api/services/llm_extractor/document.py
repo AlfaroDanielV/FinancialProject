@@ -34,6 +34,15 @@ from .client import LLMClient, LLMClientError
 _CONFIDENCE_THRESHOLD = 0.65
 _DOCUMENT_TIMEOUT_S = 30.0
 _PDF_MEDIA_TYPE = "application/pdf"
+# A bank statement normalizes into a large NESTED tool-use JSON
+# (accounts[] -> currency_legs[] -> flows[] + closing_candidates[]). The default
+# 512-token cap (fine for a one-line transaction or the flat debt/card schemas)
+# TRUNCATES that JSON mid-`accounts`, so it validated into an empty extraction
+# (`accounts=[]`) and surfaced as "No pude leer el estado" / 0 productos. Real CR
+# statements need 1.3k-5.8k output tokens (a BAC 5-product bundle measured 5754),
+# so the statement path asks for generous headroom. max_tokens is a CEILING billed
+# only on tokens actually generated, so the extra room is free.
+_STATEMENT_MAX_TOKENS = 8192
 
 _DOCUMENT_SYSTEM_PROMPT = (
     "Sos un extractor de términos de préstamos para un sistema financiero "
@@ -597,11 +606,13 @@ async def extract_statement(
         tool=_STATEMENT_TOOL,
         result_model=StatementExtractionV2,
         intent="parse_statement",
-        # An empty `accounts` means Haiku couldn't read the statement (often a
-        # card/dual-currency layout) — force the Sonnet retry the same way a low
-        # confidence does, so we give the stronger model a second pass before
-        # the user sees "0 productos".
+        # An empty `accounts` means the model couldn't read the statement (often a
+        # card/dual-currency layout) — force the retry the same way a low
+        # confidence does, so we give a second pass before the user sees
+        # "0 productos".
         is_empty=lambda r: not r.accounts,
+        # Statements emit a large nested JSON; the default 512 cap truncates them.
+        max_tokens=_STATEMENT_MAX_TOKENS,
     )
 
 
@@ -619,6 +630,7 @@ async def _extract_document(
     result_model,
     intent: str,
     is_empty=None,
+    max_tokens: int = 512,
 ):
     pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("ascii")
     content_blocks: list[dict] = [
@@ -645,6 +657,7 @@ async def _extract_document(
         tool=tool,
         result_model=result_model,
         intent=intent,
+        max_tokens=max_tokens,
     )
 
     if result.confidence < _CONFIDENCE_THRESHOLD or (
@@ -662,6 +675,7 @@ async def _extract_document(
             tool=tool,
             result_model=result_model,
             intent=intent,
+            max_tokens=max_tokens,
         )
 
     return result
@@ -680,6 +694,7 @@ async def _run_one(
     tool: dict = _LOAN_TERMS_TOOL,
     result_model=DebtTermsExtraction,
     intent: str = "parse_debt_document",
+    max_tokens: int = 512,
 ):
     t0 = time.perf_counter()
     raw = await client.extract(
@@ -689,6 +704,7 @@ async def _run_one(
         tool=tool,
         model=model,
         timeout_s=_DOCUMENT_TIMEOUT_S,
+        max_tokens=max_tokens,
     )
 
     latency_ms = int((time.perf_counter() - t0) * 1000)
@@ -719,6 +735,7 @@ async def _run_one(
                 "raw": raw.tool_input,
                 "document": True,
                 "is_retry": is_retry,
+                "stop_reason": raw.stop_reason,
             },
             latency_ms=latency_ms,
             input_tokens=raw.input_tokens,
@@ -734,6 +751,9 @@ async def _run_one(
     payload["pdf_b64"] = pdf_b64
     payload["document"] = True
     payload["is_retry"] = is_retry
+    # Audit the truncation signal: a `max_tokens` stop on a statement is exactly
+    # the failure that hid as a silent empty extraction (see _STATEMENT_MAX_TOKENS).
+    payload["stop_reason"] = raw.stop_reason
 
     await _log(
         db=db,

@@ -1224,10 +1224,15 @@ async def handle_statement_document(
         # The one collapse point — identical to the REST/native write items.
         items.append(leg_to_item(leg).model_dump(mode="json"))
         name = leg.resolution.target_name or leg_label
-        lines.append(
+        line = (
             f"• {name}: "
             f"{format_amount(Decimal(str(leg.reconcile_value)), leg.currency)}"
         )
+        # An auto-included leg whose conservation cross-check failed is trusted
+        # (the printed balance) but flagged so the user confirms it knowingly.
+        if leg.conservation_ok is False:
+            line += " (no verificado)"
+        lines.append(line)
 
     if not items:
         return BotReply(

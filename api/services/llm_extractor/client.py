@@ -48,6 +48,7 @@ class LLMClient(Protocol):
         tool: dict[str, Any],
         model: str,
         timeout_s: float,
+        max_tokens: int = 512,
     ) -> RecordedLLMResponse:  # pragma: no cover - protocol
         ...
 
@@ -69,6 +70,7 @@ class AnthropicLLMClient:
         tool: dict[str, Any],
         model: str,
         timeout_s: float,
+        max_tokens: int = 512,
     ) -> RecordedLLMResponse:
         # Cache on the tool definition (large, rarely changes) and on the
         # system prompt (very large, never changes between calls). Anthropic
@@ -92,7 +94,7 @@ class AnthropicLLMClient:
         try:
             resp = await self._client.messages.create(
                 model=model,
-                max_tokens=512,
+                max_tokens=max_tokens,
                 system=system_blocks,
                 tools=[cached_tool],
                 tool_choice={"type": "tool", "name": tool["name"]},
@@ -145,6 +147,9 @@ class FixtureLLMClient:
     ):
         self._default = default
         self._by_message = by_message or {}
+        # Records the max_tokens of each call so tests can assert the statement
+        # path asks for headroom (8192) while the transaction/doc paths stay 512.
+        self.max_tokens_calls: list[int] = []
 
     async def extract(
         self,
@@ -155,7 +160,9 @@ class FixtureLLMClient:
         tool: dict[str, Any],
         model: str,
         timeout_s: float,
+        max_tokens: int = 512,
     ) -> RecordedLLMResponse:
+        self.max_tokens_calls.append(max_tokens)
         # Vision calls pass a list (content blocks) — not hashable, skip lookup.
         try:
             if user_message in self._by_message:

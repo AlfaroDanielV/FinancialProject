@@ -329,14 +329,29 @@ def build_reconcile_plan(
                 review_reason = "no_target_role"
             else:
                 reconcile_value = target_mag
-                if ok is False:
-                    needs_review = True
-                    review_reason = "conservation_mismatch"
-                elif ambiguous and ok is not True:
-                    # The role was tagged twice with different amounts and
-                    # conservation can't tell us which — don't silently pick one.
+                if ambiguous and ok is not True:
+                    # The target role was printed twice with DIFFERENT amounts and
+                    # conservation can't disambiguate — we genuinely don't know
+                    # which number to anchor. Block for manual review.
                     needs_review = True
                     review_reason = "ambiguous_role"
+                elif ok is False:
+                    # Conservation failed, but we DID resolve the policy's single
+                    # authoritative printed balance (payoff / closing /
+                    # principal_outstanding). That printed figure is the bank's own
+                    # number; flow-level reconciliation is fragile on dense
+                    # dual-currency / many-line statements (the LLM must tag 30+
+                    # interleaved movements perfectly to hit it within 5 céntimos),
+                    # so a mismatch here is far more often noisy flows than a wrong
+                    # field. Trust the printed balance: AUTO-INCLUDE it
+                    # (needs_review stays False) with a SOFT "no verificado"
+                    # caution instead of a hard "revisar" block — the reconcile is
+                    # always user-confirmed, so a human still sees + approves the
+                    # number, and conservation_ok=False carries the caution to the
+                    # UI. Ambiguity (above) and no_target_role still block.
+                    # Operator decision 2026-06-27,
+                    # [[Decision - Statement Conservation - Trust Printed Balance]].
+                    review_reason = "unverified_balance"
 
             resolution = _resolve(group, leg, policy, accounts, debts, identity)
             legs_out.append(

@@ -186,7 +186,7 @@ class AnthropicQueryClient:
     ) -> Any:
         kwargs: dict[str, Any] = {
             "model": model,
-            "max_tokens": 700,
+            "max_tokens": 1000,
             "system": [
                 {
                     "type": "text",

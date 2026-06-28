@@ -2314,6 +2314,63 @@ account-duplication.
   clean; `alembic current → 0038`. **Deferred (unchanged):** movement-level import;
   live BCCR FX (₡500 placeholder); investment is experimental.
 
+### Parse Fix — max_tokens + Opus, & Conservation "Trust Printed Balance" (2026-06-27)
+
+Operator dogfood: statement reconciliation kept failing with **"No pude leer el
+estado de cuenta"** / silent "0 productos" (a Promerica dual-currency card and a BAC
+4-account + loan bundle). **Code-complete on `dev`; operator on-device sign-off
+pending.** No migration (`0040` head). `committed_outflows`/cashflow byte-lock
+untouched. Canonical: vault `Decision - Statement Conservation - Trust Printed
+Balance`.
+
+**Root cause (proven by a real-API repro on both PDFs — NOT the PDF or the model):**
+a hardcoded **`max_tokens=512`** on the single shared Anthropic call
+(`api/services/llm_extractor/client.py`) truncated the statement's large nested
+tool-use JSON (`accounts[] → currency_legs[] → flows[] + closing_candidates[]`)
+mid-`accounts` (`stop_reason=max_tokens`). `StatementExtractionV2.accounts` defaults
+to `[]` and only `confidence` is required, so the truncated call validated into an
+empty extraction → `parse_statement_empty`. Measured output: Promerica ~1.3k tokens,
+the BAC bundle **5754** — 11× the old cap. The plan builder is provably lossless
+(`plan.legs == [] ⟺ extraction.accounts == []`), so the empty plan was always an
+extraction-truncation artifact, never a normalize/policy/conservation bug.
+
+- **Fix (the real one, model-agnostic):** `max_tokens` is threaded through
+  `client.extract → _run_one → _extract_document → extract_statement`; the statement
+  path requests **`_STATEMENT_MAX_TOKENS = 8192`** while every other extractor
+  (transaction, vision, debt-contract, card-terms) keeps **512** (hot paths
+  byte-identical). `max_tokens` is a ceiling billed only on generated tokens, so the
+  headroom is free. `stop_reason` is now logged into `llm_extractions` so a future
+  truncation is never again an invisible silent-empty.
+- **Dedicated `llm_statement_model = claude-opus-4-8`** (env `LLM_STATEMENT_MODEL`),
+  on BOTH passes at the two statement callsites (`api/routers/accounts.py`,
+  `bot/handlers.py`); the shared `llm_extraction_model`/`llm_query_model` (per-txn
+  extractor + query dispatcher) are untouched. Operator chose Opus for
+  future-proofing — NOTE the repro showed Opus was NOT clearly better here (it
+  mis-typed BAC savings as `investment` + flagged more legs); the `max_tokens` fix is
+  what makes it work.
+- **Conservation "trust the printed balance"** (`statement_normalize.py::
+  build_reconcile_plan`): a leg that resolves the policy's single authoritative
+  printed balance (payoff/closing/principal_outstanding) but FAILS the flow
+  conservation cross-check now **auto-includes with a soft `unverified_balance`
+  caution** (`needs_review=False`; `conservation_ok=False` carries the warning)
+  instead of a hard `conservation_mismatch` review block. **`ambiguous_role`,
+  `no_target_role`, and `no_balance` still block** (ambiguity is checked first). The
+  reconcile is always user-confirmed; native row defaults ON with an ochre "No pude
+  verificar… confirmá que sea correcto" badge, chat auto-proposes it tagged "(no
+  verificado)". **Supersedes** the "conservation mismatch → needs_review, excluded"
+  clause of the Generalized decision (it weakens the automated Bug-1 backstop for
+  fewer false flags; mitigations: always user-confirmed, ambiguity still blocks,
+  single clean target only, delta visible).
+- **Verification:** `tests/test_statement_max_tokens.py` (3: statement→8192,
+  debt→512, empty-retry→both 8192) + `tests/test_statement_plan.py` (conservation
+  test flipped to auto-include-with-caution; ambiguous still blocks) +
+  `scripts/test_phase_7b.sh` (141, byte-lock + mobile `tsc`) +
+  `tests/test_statement_reconcile.py` (14) green. No migration.
+- **Deferred:** auto-escalate the cap past 8192 (16384 + streaming) + an honest "el
+  estado es muy largo" error if a larger bundle truncates beyond it; an optional
+  egregious-delta hard block to keep more Bug-1 protection; revisit Opus-vs-Haiku if
+  the account-type mis-classification recurs.
+
 ## Apple Pay → Zero-Touch Capture (iOS, 2026-06-25)
 
 Operator ask: an iOS Shortcuts **Wallet/Transaction trigger** automation logs a
@@ -2632,6 +2689,7 @@ TELEGRAM_MODE=disabled          # disabled | polling | webhook
 TELEGRAM_BOT_TOKEN=...
 LLM_EXTRACTION_MODEL=claude-haiku-4-5
 LLM_QUERY_MODEL=claude-sonnet-4-5
+LLM_STATEMENT_MODEL=claude-opus-4-8   # statement-PDF reconciliation ONLY (both passes); rare + high-value; statements run at max_tokens=8192
 LLM_DAILY_TOKEN_BUDGET_PER_USER=100000
 
 # Gmail (Phase 6b) — see Phase-6b-Gmail-Ingestion.md

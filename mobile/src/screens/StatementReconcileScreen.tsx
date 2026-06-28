@@ -60,6 +60,10 @@ function todayIso(): string {
 }
 
 function reviewLabel(p: StatementProduct): string {
+  // Soft caution: the printed balance is trusted + the row is ON by default
+  // (needs_review=false); we just couldn't cross-check it against the movements.
+  if (p.review_reason === "unverified_balance")
+    return "No pude verificar este saldo contra los movimientos — confirmá que sea correcto";
   if (p.review_reason === "conservation_mismatch")
     return "Revisar — el saldo no cuadra con los movimientos";
   if (p.review_reason === "no_target_role")

@@ -9,7 +9,8 @@ Covers:
   (dedup of supplementary cards), payoff selected, conservation verified, the
   current-period interest excluded as contingent.
 - Bug 1 (wrong field): policy selects `payoff` over `available`/`financed`.
-- Conservation mismatch → needs_review, excluded from the auto-include set.
+- Conservation mismatch on a single printed balance → soft "no verificado"
+  caution, AUTO-INCLUDED (operator decision 2026-06-27); ambiguity still blocks.
 - No opening balance → auto-include, conservation unverifiable (decision 6).
 - Loan via policy → collapses to kind="loan" against a Debt.
 - Identity priority: an exact last4 / IBAN beats fuzzy and beats ambiguity.
@@ -133,21 +134,29 @@ def test_bug1_policy_selects_payoff_over_other_roles():
     assert str(crc_leg.reconcile_value) == "193289.65"
 
 
-def test_conservation_mismatch_flags_and_excludes():
+def test_conservation_mismatch_auto_includes_with_caution():
     crc = _acct("Promerica ₡", "CRC")
     usd = _acct("Promerica $", "USD")
-    # A fake ₡50 000 outflow makes the payoff candidate inconsistent with flows.
+    # A fake ₡50 000 outflow makes the flow-sum disagree with the printed payoff.
+    # Operator decision 2026-06-27: trust the bank's printed authoritative balance
+    # — AUTO-INCLUDE it with a soft "no verificado" caution, NOT a hard review
+    # block (the reconcile is always user-confirmed). Ambiguity still blocks
+    # (see test_ambiguous_role_flags_review).
     plan = build_reconcile_plan(
         _promerica_extraction(perturb=50000), accounts=[crc, usd], debts=[]
     )
     crc_leg = next(l for l in plan.legs if l.currency == "CRC")
-    assert crc_leg.conservation_ok is False
-    assert crc_leg.needs_review is True
-    assert crc_leg.review_reason == "conservation_mismatch"
+    assert crc_leg.conservation_ok is False  # the cross-check still records it
+    assert crc_leg.needs_review is False  # but it no longer blocks
+    assert crc_leg.review_reason == "unverified_balance"
+    assert str(crc_leg.reconcile_value) == "193289.65"  # the printed payoff, trusted
 
     items = auto_includable_items(plan)
-    # The flagged CRC leg is withheld; the clean USD leg still auto-includes.
-    assert {i.currency for i in items} == {"USD"}
+    # Both legs auto-include now; the CRC item carries the conservation caution.
+    assert {i.currency for i in items} == {"CRC", "USD"}
+    crc_item = next(i for i in items if i.currency == "CRC")
+    assert crc_item.conservation_ok is False
+    assert crc_item.needs_review is False
 
 
 def test_no_opening_balance_auto_includes_unverified():

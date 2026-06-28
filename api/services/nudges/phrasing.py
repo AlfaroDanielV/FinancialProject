@@ -70,7 +70,7 @@ class AnthropicPhrasingClient:
         try:
             resp = await self._client.messages.create(
                 model=model,
-                max_tokens=200,
+                max_tokens=250,
                 system=system_blocks,
                 messages=[{"role": "user", "content": user_prompt}],
                 timeout=timeout_s,

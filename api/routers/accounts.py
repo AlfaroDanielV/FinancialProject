@@ -300,8 +300,9 @@ async def parse_statement(
             user=user,
             pdf_bytes=pdf_bytes,
             client=get_llm_client(),
-            haiku_model=settings.llm_extraction_model,
-            sonnet_model=settings.llm_query_model,
+            # Statement parsing runs on the dedicated (Opus) model on both passes.
+            haiku_model=settings.llm_statement_model,
+            sonnet_model=settings.llm_statement_model,
             db=db,
         )
     except HTTPException:

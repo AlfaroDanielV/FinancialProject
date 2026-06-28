@@ -479,8 +479,9 @@ async def on_document(message: Message) -> None:
                 db=db,
                 redis=get_redis(),
                 llm_client=get_llm_client(),
-                haiku_model=settings.llm_extraction_model,
-                sonnet_model=settings.llm_query_model,
+                # Statement parsing runs on the dedicated (Opus) model both passes.
+                haiku_model=settings.llm_statement_model,
+                sonnet_model=settings.llm_statement_model,
             )
         await _send(message, reply)
 

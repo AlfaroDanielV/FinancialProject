@@ -138,8 +138,11 @@ class LegPlan(BaseModel):
     conservation_ok: Optional[bool] = None
     conservation_delta: Optional[Decimal] = None
     needs_review: bool = False
-    # conservation_mismatch | no_target_role | unknown_account_type
-    # | unresolved_target | ambiguous_target | None
+    # Hard-review reasons (BLOCK auto-include): no_target_role | ambiguous_role
+    # | unknown_account_type | no_balance. Soft caution (AUTO-INCLUDES;
+    # needs_review stays False): unverified_balance — conservation failed but the
+    # single printed authoritative balance is trusted (operator decision
+    # 2026-06-27). None = clean/verified.
     review_reason: Optional[str] = None
     attributed_instruments: list[str] = Field(default_factory=list)
     resolution: ResolvedTarget
