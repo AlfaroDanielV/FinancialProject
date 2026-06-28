@@ -21,7 +21,7 @@
         "NSCameraUsageDescription": "Tomá una foto del recibo para registrar la transacción automáticamente.",
         "NSPhotoLibraryUsageDescription": "Elegí una foto del recibo para registrar la transacción automáticamente."
       },
-      "buildNumber": "12"
+      "buildNumber": "13"
     },
     "web": {
       "bundler": "metro",

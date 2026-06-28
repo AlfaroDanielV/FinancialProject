@@ -46,6 +46,13 @@ BalanceRole = Literal[
     "principal_outstanding",
     "market_value",
     "previous",
+    # Loan disambiguation (do NOT anchor these): the ORIGINAL/disbursed amount
+    # ("monto financiado / original") and a total that bakes in FUTURE interest
+    # ("saldo total a pagar / cuotas pendientes"). Tagging them as themselves
+    # keeps them out of `principal_outstanding` and lets a guardrail detect "the
+    # anchored number is actually the original/total".
+    "original_principal",
+    "total_with_interest",
 ]
 
 
@@ -87,6 +94,24 @@ class StmtCurrencyLeg(BaseModel):
     closing_candidates: list[StmtBalanceCandidate] = Field(default_factory=list)
 
 
+class StmtVerification(BaseModel):
+    """Focused per-product balance judgment from the verification pass
+    (`extract_statement` pass 2). The model re-reads the PDF scoped to ONE
+    product and answers a narrow question: which printed balance is the CURRENT
+    outstanding/closing as of the corte, and is that number actually the
+    original/disbursed amount or a total that bakes in future interest. It is a
+    cross-check on the role tags — deterministic guardrails decide, the LLM only
+    judges. Every field optional so a partial judgment never blocks."""
+
+    current_balance_amount: Optional[float] = None
+    current_balance_role: Optional[BalanceRole] = None
+    printed_label_raw: Optional[str] = Field(None, max_length=120)
+    is_original_amount: bool = False
+    includes_future_interest: bool = False
+    account_type_confirmed: Optional[AccountTypeSem] = None
+    confidence: float = 0.0
+
+
 class StmtAccount(BaseModel):
     account_type: AccountTypeSem
     issuer: Optional[str] = Field(None, max_length=80)
@@ -94,6 +119,16 @@ class StmtAccount(BaseModel):
     identifiers: list[StmtIdentifier] = Field(default_factory=list)
     instruments: list[StmtInstrument] = Field(default_factory=list)
     currency_legs: list[StmtCurrencyLeg] = Field(default_factory=list)
+    # Attached by the per-product verification pass (None on the inventory pass).
+    verification: Optional[StmtVerification] = None
+
+
+class StmtProductExtraction(StmtAccount):
+    """Result model for the focused per-product pass — one StmtAccount plus the
+    verification judgment and a confidence, so the shared
+    retry-on-low-confidence machinery in `_extract_document` applies."""
+
+    confidence: float = Field(0.0, ge=0, le=1)
 
 
 class StatementExtractionV2(BaseModel):
@@ -138,13 +173,25 @@ class LegPlan(BaseModel):
     conservation_ok: Optional[bool] = None
     conservation_delta: Optional[Decimal] = None
     needs_review: bool = False
-    # Hard-review reasons (BLOCK auto-include): no_target_role | ambiguous_role
-    # | unknown_account_type | no_balance. Soft caution (AUTO-INCLUDES;
-    # needs_review stays False): unverified_balance — conservation failed but the
-    # single printed authoritative balance is trusted (operator decision
-    # 2026-06-27). None = clean/verified.
+    # Hard-review reasons (BLOCK auto-include / default the row OFF; still
+    # confirmable): no_target_role | ambiguous_role | unknown_account_type |
+    # no_balance, plus the LOAN guardrail reasons loan_exceeds_original |
+    # loan_amortization_high | loan_balance_jumped | loan_role_suspect |
+    # loan_verification_disagreement (the anchored debt balance looks like the
+    # original/total, deviates wildly from the amortization schedule, jumped up,
+    # or the verification pass disagrees with the role tag). Soft caution
+    # (AUTO-INCLUDES; needs_review stays False): unverified_balance — conservation
+    # failed but the single printed authoritative balance is trusted (deposits/
+    # cards, operator decision 2026-06-27). None = clean/verified.
     review_reason: Optional[str] = None
     attributed_instruments: list[str] = Field(default_factory=list)
+    # Loan-guardrail evidence (set only for a loan leg matched to a registered
+    # Debt) — carried to the UI so the confirm screen shows the antes→después
+    # delta + the printed line + why a balance was flagged. None otherwise.
+    prior_balance: Optional[Decimal] = None
+    original_amount: Optional[Decimal] = None
+    expected_outstanding: Optional[Decimal] = None
+    printed_label: Optional[str] = None
     resolution: ResolvedTarget
 
 
@@ -186,6 +233,14 @@ class StatementProduct(BaseModel):
     candidate_ids: list[uuid.UUID] = Field(default_factory=list)
     # 1.0 = a confident identity match; gates native self-stamping.
     match_confidence: float = 0.0
+    # Confirm-with-evidence (additive). For a loan leg matched to a registered
+    # Debt: the current stored balance (antes), the loan's original amount, the
+    # amortization-expected outstanding at corte, and the verbatim printed line
+    # the anchored number came from. Let the form show old→new + why it flagged.
+    old_balance: Optional[float] = None
+    original_amount: Optional[float] = None
+    expected_outstanding: Optional[float] = None
+    printed_label: Optional[str] = None
 
 
 class StatementExtraction(BaseModel):
@@ -224,6 +279,13 @@ class StatementReconcileItem(BaseModel):
     # Provenance echoed back in the result (defaults keep old callers valid).
     conservation_ok: Optional[bool] = None
     needs_review: bool = False
+    # Explicit user opt-in for a flagged leg. The writer re-derives the loan
+    # numeric guardrail server-side and REFUSES to apply a flagged loan balance
+    # unless this is true — a suspicious "massive" balance is never written
+    # silently, but the user can always confirm it (confirm-with-evidence,
+    # operator decision). The native form sets it when the user toggles a
+    # default-OFF flagged row ON.
+    acknowledged: bool = False
 
 
 class StatementReconcileRequest(BaseModel):
@@ -239,6 +301,7 @@ class StatementReconcileResultItem(BaseModel):
     name: str
     delta: Optional[Decimal] = None  # account anchors only
     anchor_id: Optional[uuid.UUID] = None  # account anchors only
+    old_balance: Optional[Decimal] = None  # antes (for the success summary)
     new_balance: Decimal  # account: anchored balance; loan: current_balance
     conservation_ok: Optional[bool] = None
     needs_review: bool = False

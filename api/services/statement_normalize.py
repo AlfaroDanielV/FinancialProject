@@ -31,6 +31,7 @@ from decimal import Decimal
 from typing import Any, Optional
 
 from .dispatch.lazy_detection import _compact, match_account_hint
+from .statement_guardrails import verdict_for_debt
 from .statement_policy import AccountPolicy, policy_for, select_target
 from ..schemas.statements import (
     LegPlan,
@@ -42,6 +43,7 @@ from ..schemas.statements import (
     StatementReconcileItem,
     StmtAccount,
     StmtCurrencyLeg,
+    StmtVerification,
 )
 
 _CENT = Decimal("0.01")
@@ -165,6 +167,58 @@ def _group_instruments(group: _Group) -> list[str]:
     return out
 
 
+def _dec(value: Any) -> Optional[Decimal]:
+    return None if value is None else Decimal(str(value))
+
+
+def _group_verification(group: _Group) -> Optional[StmtVerification]:
+    """The first non-None per-product verification judgment in the group (the
+    per-product pass attaches it; the inventory-only path leaves it None)."""
+    for acct in group.accounts:
+        if acct.verification is not None:
+            return acct.verification
+    return None
+
+
+def _verification_flag(
+    verification: StmtVerification, reconcile_value: Decimal
+) -> Optional[str]:
+    """Cross-check the role-tagged loan anchor against the focused verification
+    judgment. Returns a loan review reason or None. (Numbers only decide here;
+    the LLM merely judged.)"""
+    vca = verification.current_balance_amount
+    if vca is not None:
+        vca_d = Decimal(str(vca)).copy_abs().quantize(_CENT)
+        diff = (reconcile_value - vca_d).copy_abs()
+        tol = max(_TOL, (vca_d * Decimal("0.02")).quantize(_CENT))
+        if diff > tol:
+            # The role tags and the focused read disagree on the current balance.
+            return "loan_verification_disagreement"
+    if verification.is_original_amount or verification.includes_future_interest:
+        # The model itself says the available current balance looks like the
+        # original/disbursed amount or bakes in future interest.
+        return "loan_role_suspect"
+    return None
+
+
+def _effective_account_type(group: _Group) -> str:
+    """The LLM-tagged account_type, unless the per-product verification
+    confidently re-types the product as a loan/line_of_credit. Only overrides
+    TOWARD a loan (the dangerous mistag direction — an asset policy would anchor
+    the wrong ledger, e.g. a loan mis-typed `investment`), never away from one
+    (which could hide a real loan). No-op until the per-product pass runs."""
+    tagged = group.account_type
+    if tagged in ("loan", "line_of_credit"):
+        return tagged
+    verification = _group_verification(group)
+    if verification is not None and verification.account_type_confirmed in (
+        "loan",
+        "line_of_credit",
+    ):
+        return verification.account_type_confirmed  # type: ignore[return-value]
+    return tagged
+
+
 # ── VALIDATE (conservation) ───────────────────────────────────────────────────
 
 
@@ -275,8 +329,10 @@ def build_reconcile_plan(
     debts: list[Any],
 ) -> ReconcilePlan:
     legs_out: list[LegPlan] = []
+    debts_by_id = {getattr(d, "id", None): d for d in debts}
     for group in _group_accounts(extraction.accounts, extraction.bank):
-        policy = policy_for(group.account_type)
+        eff_type = _effective_account_type(group)
+        policy = policy_for(eff_type)
         identity = _group_identity(group)
         instruments = _group_instruments(group)
 
@@ -285,7 +341,7 @@ def build_reconcile_plan(
         if not group.legs_by_currency:
             legs_out.append(
                 LegPlan(
-                    account_type=group.account_type,  # type: ignore[arg-type]
+                    account_type=eff_type,  # type: ignore[arg-type]
                     currency="CRC",
                     label=group.label,
                     last4=identity.get("last4"),
@@ -306,7 +362,7 @@ def build_reconcile_plan(
             if policy is None:
                 legs_out.append(
                     LegPlan(
-                        account_type=group.account_type,  # type: ignore[arg-type]
+                        account_type=eff_type,  # type: ignore[arg-type]
                         currency=currency,
                         label=group.label,
                         sign="asset",
@@ -354,9 +410,45 @@ def build_reconcile_plan(
                     review_reason = "unverified_balance"
 
             resolution = _resolve(group, leg, policy, accounts, debts, identity)
+
+            # ── Loan guardrails (the "massive debt" net) ────────────────────
+            # Runs AFTER resolution so we have the matched Debt to compare the
+            # anchored balance against. LOANS ONLY; deposits/cards keep the soft
+            # "trust printed balance" path. A flag (needs_review) defaults the
+            # row OFF and the UI explains why — the user can still confirm.
+            prior_balance = orig_amount = expected_outstanding = None
+            printed_label: Optional[str] = None
+            if (
+                policy.reconcile_kind == "loan"
+                and reconcile_value is not None
+                and resolution.target_id is not None
+            ):
+                debt = debts_by_id.get(resolution.target_id)
+                verification = _group_verification(group)
+                if debt is not None:
+                    verdict = verdict_for_debt(
+                        new_balance=reconcile_value,
+                        debt=debt,
+                        corte_date=extraction.period_end,
+                    )
+                    prior_balance = _dec(getattr(debt, "current_balance", None))
+                    orig_amount = _dec(getattr(debt, "original_amount", None))
+                    expected_outstanding = verdict.expected_outstanding
+                    if verdict.flagged:
+                        needs_review = True
+                        review_reason = verdict.reason
+                if verification is not None:
+                    if not needs_review:
+                        vflag = _verification_flag(verification, reconcile_value)
+                        if vflag is not None:
+                            needs_review = True
+                            review_reason = vflag
+                    if verification.printed_label_raw:
+                        printed_label = verification.printed_label_raw
+
             legs_out.append(
                 LegPlan(
-                    account_type=group.account_type,  # type: ignore[arg-type]
+                    account_type=eff_type,  # type: ignore[arg-type]
                     currency=currency,
                     label=group.label,
                     last4=identity.get("last4"),
@@ -376,6 +468,10 @@ def build_reconcile_plan(
                     needs_review=needs_review,
                     review_reason=review_reason,
                     attributed_instruments=instruments,
+                    prior_balance=prior_balance,
+                    original_amount=orig_amount,
+                    expected_outstanding=expected_outstanding,
+                    printed_label=printed_label,
                     resolution=resolution,
                 )
             )
@@ -454,6 +550,22 @@ def plan_to_extraction(plan: ReconcilePlan, *, confidence: float) -> StatementEx
                 attributed_instruments=leg.attributed_instruments,
                 candidate_ids=leg.resolution.candidate_ids,
                 match_confidence=leg.resolution.confidence,
+                old_balance=(
+                    float(leg.prior_balance)
+                    if leg.prior_balance is not None
+                    else None
+                ),
+                original_amount=(
+                    float(leg.original_amount)
+                    if leg.original_amount is not None
+                    else None
+                ),
+                expected_outstanding=(
+                    float(leg.expected_outstanding)
+                    if leg.expected_outstanding is not None
+                    else None
+                ),
+                printed_label=leg.printed_label,
             )
         )
     return StatementExtraction(

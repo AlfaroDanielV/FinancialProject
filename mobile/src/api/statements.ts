@@ -32,6 +32,13 @@ export interface StatementProduct {
   candidate_ids?: string[];
   // 1.0 = a confident identity match; only then do we self-stamp identity.
   match_confidence?: number;
+  // Confirm-with-evidence (loan legs matched to a registered debt): the current
+  // stored balance (antes), the loan's original amount, the amortization-expected
+  // outstanding at corte, and the verbatim printed line the number came from.
+  old_balance?: number | null;
+  original_amount?: number | null;
+  expected_outstanding?: number | null;
+  printed_label?: string | null;
 }
 
 export interface StatementExtraction {
@@ -51,6 +58,10 @@ export interface StatementReconcileItem {
   last4?: string | null;
   conservation_ok?: boolean | null;
   needs_review?: boolean;
+  // Explicit user opt-in for a flagged (needs_review) leg — the writer refuses a
+  // server-flagged loan balance unless this is true. Set when the user toggles a
+  // default-OFF flagged row ON.
+  acknowledged?: boolean;
 }
 
 export interface StatementReconcileResultItem {
@@ -59,6 +70,7 @@ export interface StatementReconcileResultItem {
   name: string;
   delta: string | null;
   anchor_id: string | null;
+  old_balance?: string | null;
   new_balance: string;
   conservation_ok?: boolean | null;
   needs_review?: boolean;

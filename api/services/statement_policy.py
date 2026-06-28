@@ -47,11 +47,16 @@ POLICY: dict[AccountTypeSem, AccountPolicy] = {
     "checking": AccountPolicy("closing", ("available",), "asset", "anchor", "deposit"),
     "savings": AccountPolicy("closing", ("available",), "asset", "anchor", "deposit"),
     "credit_card": AccountPolicy("payoff", ("financed",), "liability", "anchor", "credit"),
+    # Loans anchor the CURRENT outstanding principal only. `financed` was
+    # REMOVED from the fallback (2026-06-28): on a loan it's the original/total
+    # amount, and silently anchoring it produced the "massive debt" bug. With no
+    # `principal_outstanding`/`closing` tag the leg goes to no_target_role
+    # review instead of anchoring the wrong, larger number.
     "loan": AccountPolicy(
-        "principal_outstanding", ("closing", "financed"), "liability", "debt", "loan"
+        "principal_outstanding", ("closing",), "liability", "debt", "loan"
     ),
     "line_of_credit": AccountPolicy(
-        "principal_outstanding", ("closing", "financed"), "liability", "debt", "loan"
+        "principal_outstanding", ("closing",), "liability", "debt", "loan"
     ),
     # Experimental — no real fixture yet; ships so the table is complete.
     "investment": AccountPolicy("market_value", ("closing",), "asset", "anchor", "deposit"),

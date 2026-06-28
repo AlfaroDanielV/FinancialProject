@@ -1224,10 +1224,14 @@ async def handle_statement_document(
         # The one collapse point — identical to the REST/native write items.
         items.append(leg_to_item(leg).model_dump(mode="json"))
         name = leg.resolution.target_name or leg_label
-        line = (
-            f"• {name}: "
-            f"{format_amount(Decimal(str(leg.reconcile_value)), leg.currency)}"
-        )
+        new_txt = format_amount(Decimal(str(leg.reconcile_value)), leg.currency)
+        # For a loan show the antes→después so the user confirms a balance change
+        # knowingly (deposit/credit legs anchor without a prior here). Flagged
+        # loans never reach this branch — they go to `review` (confirm in the app).
+        if leg.prior_balance is not None:
+            line = f"• {name}: {format_amount(leg.prior_balance, leg.currency)} → {new_txt}"
+        else:
+            line = f"• {name}: {new_txt}"
         # An auto-included leg whose conservation cross-check failed is trusted
         # (the printed balance) but flagged so the user confirms it knowingly.
         if leg.conservation_ok is False:

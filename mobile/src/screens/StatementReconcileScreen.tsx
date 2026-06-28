@@ -59,16 +59,51 @@ function todayIso(): string {
   return `${d.getFullYear()}-${m}-${day}`;
 }
 
+function curSym(p: StatementProduct): string {
+  return (p.currency ?? "CRC").toUpperCase() === "USD" ? "$" : "₡";
+}
+
+/** Space-grouped money (matches the app's AmountInput "1 000 000" convention). */
+function money(sym: string, n: number | null | undefined): string {
+  if (n == null) return "";
+  const s = Math.round(Math.abs(n))
+    .toString()
+    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  return `${sym}${s}`;
+}
+
 function reviewLabel(p: StatementProduct): string {
-  // Soft caution: the printed balance is trusted + the row is ON by default
-  // (needs_review=false); we just couldn't cross-check it against the movements.
-  if (p.review_reason === "unverified_balance")
-    return "No pude verificar este saldo contra los movimientos — confirmá que sea correcto";
-  if (p.review_reason === "conservation_mismatch")
-    return "Revisar — el saldo no cuadra con los movimientos";
-  if (p.review_reason === "no_target_role")
-    return "Revisar — no encontré el saldo a aplicar";
-  return "Revisar antes de aplicar";
+  const s = curSym(p);
+  switch (p.review_reason) {
+    // ── loan guardrails (the "massive debt" net): show the evidence ──────────
+    case "loan_exceeds_original":
+      return `Este saldo es mayor que el monto original del préstamo${
+        p.original_amount != null ? ` (${money(s, p.original_amount)})` : ""
+      } — confirmá que sea correcto`;
+    case "loan_amortization_high":
+      return `Este saldo es mucho mayor al esperado${
+        p.expected_outstanding != null ? ` (~${money(s, p.expected_outstanding)})` : ""
+      } según el plan de pagos — confirmá que sea correcto`;
+    case "loan_balance_jumped":
+      return `Este saldo subió respecto al que tenías${
+        p.old_balance != null ? ` (${money(s, p.old_balance)})` : ""
+      } — confirmá que sea correcto`;
+    case "loan_role_suspect":
+      return "Puede que sea el monto original o el total a pagar, no el saldo actual — confirmá";
+    case "loan_verification_disagreement":
+      return "No me cuadra cuál es el saldo actual — confirmá el monto";
+    // ── generic ──────────────────────────────────────────────────────────────
+    case "unverified_balance":
+      return "No pude verificar este saldo contra los movimientos — confirmá que sea correcto";
+    case "conservation_mismatch":
+      return "Revisar — el saldo no cuadra con los movimientos";
+    case "ambiguous_role":
+      return "Revisar — hay más de un saldo posible";
+    case "no_target_role":
+      return "Revisar — no encontré el saldo a aplicar";
+    default:
+      return "Revisar antes de aplicar";
+  }
 }
 
 interface RowState {
@@ -182,6 +217,9 @@ export function StatementReconcileScreen() {
             last4: stampable ? p.account_last4 : null,
             conservation_ok: p.conservation_ok ?? null,
             needs_review: p.needs_review ?? false,
+            // The user enabled this row; if it's a server-flagged (needs_review)
+            // loan, enabling it IS the explicit opt-in the writer's gate requires.
+            acknowledged: p.needs_review ?? false,
           });
         }
       });
@@ -340,6 +378,19 @@ export function StatementReconcileScreen() {
                   ) : p.conservation_ok == null ? (
                     <Text style={styles.unverified}>
                       Sin verificar — confirmá el monto.
+                    </Text>
+                  ) : null}
+
+                  {/* Loan evidence: the saved balance (antes) + the printed line
+                      the number came from — so "confirmar" is informed. */}
+                  {p.kind === "loan" && (p.old_balance != null || p.printed_label) ? (
+                    <Text style={styles.evidence} numberOfLines={2}>
+                      {p.old_balance != null
+                        ? `Saldo guardado: ${money(curSym(p), p.old_balance)}`
+                        : ""}
+                      {p.printed_label
+                        ? `${p.old_balance != null ? " · " : ""}del estado: «${p.printed_label}»`
+                        : ""}
                     </Text>
                   ) : null}
 
@@ -560,6 +611,7 @@ const styles = StyleSheet.create({
   },
   reviewBadgeText: { fontSize: FontSize.xs, color: Colors.warning, flex: 1 },
   unverified: { fontSize: FontSize.xs, color: Colors.textMuted },
+  evidence: { fontSize: FontSize.xs, color: Colors.textMuted, lineHeight: 16 },
   instruments: { fontSize: FontSize.xs, color: Colors.textMuted },
   amountLabel: {
     fontSize: FontSize.xs,

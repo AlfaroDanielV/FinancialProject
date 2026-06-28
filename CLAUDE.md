@@ -2396,6 +2396,67 @@ extraction-truncation artifact, never a normalize/policy/conservation bug.
   survives); 5 stale notifier tests realigned (operator blessed the simpler copy).
   Ships in the same image roll as the timeout fix.
 
+### Loan Guardrails — Per-Product Extraction + Verification (2026-06-28)
+
+Operator: reconciliation "fails a lot" and **writes a debt balance far larger than
+the actual remaining total the statement states**. A four-reader audit found loans
+had no defense-in-depth: the prompt defined `financed` as *"saldo financiado o
+saldo total"*, the loan policy fell back to `financed`, conservation never runs on
+flow-less loan legs, the writer did `debt.current_balance = it.closing_balance`
+with **no numeric bound**, the server never gated on `needs_review`, and the
+confirm screen hid the delta + the printed line. **Code-complete on `dev`;
+operator on-device sign-off pending.** No migration. `committed_outflows`/cashflow
+byte-lock untouched. Canonical: vault `Decision - Statement Reconciliation Loan
+Guardrails (Per-Product + Verification)`. Operator forks: **maximum robustness**
+(per-product) + **confirm-with-evidence** (never silent-write a suspicious loan;
+default OFF + show evidence, but always confirmable) + **Haiku** for statements.
+
+Layered, **loans only** (deposits/cards keep the soft "trust printed balance" path
+— [[Decision - Statement Conservation - Trust Printed Balance]] is superseded for
+loans only):
+- **Sharper extraction** (`api/services/llm_extractor/document.py`): two new
+  `BalanceRole`s — `original_principal` (monto financiado/original) +
+  `total_with_interest` (saldo total a pagar w/ future interest) — so those get
+  tagged as themselves and are NEVER anchored; `financed` no longer means "saldo
+  total"; `principal_outstanding` = strictly the principal **al corte**; a 3-number
+  CR-loan example.
+- **Per-product extraction + verification** (`extract_statement`): an **inventory**
+  pass over the whole PDF, then a **focused per-product** pass (re-reads the PDF
+  scoped to ONE product → its primitives + a `StmtVerification` judgment of the
+  CURRENT balance: `is_original_amount`/`includes_future_interest`/
+  `account_type_confirmed`/printed label). Sequential (shared AsyncSession isn't
+  concurrency-safe; Haiku keeps it quick); a failed product falls back to its
+  draft. New `intent="parse_statement_product"` audit rows.
+- **Deterministic guardrails**: dropped `financed` from the loan fallback (now
+  `principal_outstanding → closing` → else `no_target_role` review). New pure
+  `api/services/statement_guardrails.py::evaluate_loan_balance` FLAGS (never
+  hard-blocks) a balance `> original_amount` (×1.02), far above the
+  amortization-expected outstanding at corte (reuses `amortization.generate_
+  schedule`, wide ×1.40 band), or jumped vs the last balance (×1.25);
+  `build_reconcile_plan` adds a verification-disagreement / role-suspect flag and
+  forces the loan policy when the focused pass re-types a mis-typed product
+  (`investment`→`loan`). The **writer re-derives the numeric guardrail
+  server-side** (`reconcile_products`) and refuses a flagged loan unless the item
+  carries `acknowledged=true` — closes the silent-write hole, never trusts the
+  client.
+- **Confirm-with-evidence**: `StatementProduct`/`LegPlan` carry `old_balance`/
+  `original_amount`/`expected_outstanding`/`printed_label`; `StatementReconcileItem`
+  gains `acknowledged`. Native `StatementReconcileScreen` shows a specific reason +
+  the saved balance + the printed line, defaults flagged loans OFF, sends
+  `acknowledged=true` when the user toggles one ON. Chat shows old→new on clean
+  loans + routes flagged ones to "revisalos en la app".
+- **Model**: `llm_statement_model` → **`claude-haiku-4-5`** (repro: ~2-3× faster +
+  more accurate than Opus here). `_STATEMENT_TIMEOUT_S` is **275s** (the
+  CLAUDE.md/AGENT_CONTEXT "120s" references were stale and corrected).
+- **Verification**: `tests/test_statement_loan_guardrails.py` (11) + writer
+  ack-gate in `test_statement_reconcile.py` + the plan/reconcile/max_tokens suites
+  (41) green; cashflow byte-lock + dispatcher/extractor/balance regression (104)
+  green; mobile `tsc` clean. No migration (`0040` head).
+- **Deferred**: parallel per-product passes (need per-task sessions); a persisted
+  reconcile-decision trace table (today: `llm_extractions` JSONB + structured
+  logs); streaming for the high `max_tokens`; an optional egregious-delta hard
+  block.
+
 ## Apple Pay → Zero-Touch Capture (iOS, 2026-06-25)
 
 Operator ask: an iOS Shortcuts **Wallet/Transaction trigger** automation logs a
@@ -2714,7 +2775,7 @@ TELEGRAM_MODE=disabled          # disabled | polling | webhook
 TELEGRAM_BOT_TOKEN=...
 LLM_EXTRACTION_MODEL=claude-haiku-4-5
 LLM_QUERY_MODEL=claude-sonnet-4-5
-LLM_STATEMENT_MODEL=claude-opus-4-8   # statement-PDF reconciliation ONLY (both passes); rare + high-value; statements run at max_tokens=8192
+LLM_STATEMENT_MODEL=claude-haiku-4-5   # statement-PDF reconciliation ONLY (inventory + per-product passes); statements run at max_tokens=8192, timeout 275s (Haiku: faster + more accurate than Opus per the 2026-06-28 repro)
 LLM_DAILY_TOKEN_BUDGET_PER_USER=100000
 
 # Gmail (Phase 6b) — see Phase-6b-Gmail-Ingestion.md

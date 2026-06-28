@@ -148,7 +148,7 @@ class FixtureLLMClient:
         self._default = default
         self._by_message = by_message or {}
         # Records the max_tokens + timeout of each call so tests can assert the
-        # statement path asks for headroom (8192 tokens / 120s) while the
+        # statement path asks for headroom (8192 tokens / 275s) while the
         # transaction/doc paths stay at the tight defaults (512 / 30s).
         self.max_tokens_calls: list[int] = []
         self.timeout_calls: list[float] = []

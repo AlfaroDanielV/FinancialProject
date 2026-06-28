@@ -48,6 +48,7 @@ from ..schemas.statements import (
 )
 from .accounts import compute_account_balances
 from .anchors import apply_anchor
+from .statement_guardrails import LoanBalanceVerdict, verdict_for_debt
 
 _CENT = Decimal("0.01")
 
@@ -80,6 +81,37 @@ def _stamp_identity(item: StatementReconcileItem, target: Any) -> None:
         val = getattr(item, attr, None)
         if val and not getattr(target, attr, None):
             setattr(target, attr, re.sub(r"\s+", "", val) or None)
+
+
+def _loan_flag_message(verdict: LoanBalanceVerdict, debt: Debt, new_bal: Decimal) -> str:
+    """The Spanish reason a flagged loan balance was withheld (the user confirms
+    it in the app, which re-sends with `acknowledged=true`)."""
+    sym = "$" if (debt.currency or "CRC").upper() == "USD" else "₡"
+    if verdict.reason == "loan_exceeds_original":
+        orig = Decimal(debt.original_amount or 0)
+        return (
+            f"El saldo del estado ({sym}{new_bal}) supera el monto original del "
+            f"préstamo «{debt.name}» ({sym}{orig}). Revisalo y confirmalo en la "
+            "app antes de aplicarlo."
+        )
+    if verdict.reason == "loan_amortization_high":
+        exp = verdict.expected_outstanding
+        exp_txt = f" (esperado ~{sym}{exp})" if exp is not None else ""
+        return (
+            f"El saldo del estado ({sym}{new_bal}) es mucho mayor al esperado "
+            f"según el plan de pagos de «{debt.name}»{exp_txt}. Revisalo y "
+            "confirmalo en la app."
+        )
+    if verdict.reason == "loan_balance_jumped":
+        prior = Decimal(debt.current_balance or 0)
+        return (
+            f"El saldo del estado ({sym}{new_bal}) subió respecto al saldo actual "
+            f"de «{debt.name}» ({sym}{prior}). Revisalo y confirmalo en la app."
+        )
+    return (
+        f"El saldo del préstamo «{debt.name}» parece inusual. Revisalo y "
+        "confirmalo en la app."
+    )
 
 
 async def reconcile_products(
@@ -149,6 +181,7 @@ async def reconcile_products(
                 name=acct.name,
                 delta=(value - old_current).quantize(_CENT),
                 anchor_id=res.anchor_id,
+                old_balance=old_current,
                 new_balance=value,
                 conservation_ok=it.conservation_ok,
                 needs_review=it.needs_review,
@@ -176,9 +209,18 @@ async def reconcile_products(
                     "reconciliar."
                 )
             _guard_currency(it, debt, debt.name)
-            _stamp_identity(it, debt)
             old_bal = Decimal(debt.current_balance or 0)
             new_bal = it.closing_balance
+            # Server-side guardrail gate (re-derived from the Debt — never trusts
+            # the client's flags). A flagged loan balance is the "massive debt"
+            # bug: refuse to write it silently, but apply it when the user
+            # explicitly acknowledged it (confirm-with-evidence).
+            verdict = verdict_for_debt(
+                new_balance=new_bal, debt=debt, corte_date=corte_date
+            )
+            if verdict.flagged and not it.acknowledged:
+                raise ReconcileError(_loan_flag_message(verdict, debt, new_bal))
+            _stamp_identity(it, debt)
             debt.current_balance = new_bal
             note = (
                 f"Saldo reconciliado con estado de cuenta al "
@@ -192,6 +234,7 @@ async def reconcile_products(
                     name=debt.name,
                     delta=(new_bal - old_bal).quantize(_CENT),
                     anchor_id=None,
+                    old_balance=old_bal,
                     new_balance=new_bal,
                     conservation_ok=it.conservation_ok,
                     needs_review=it.needs_review,

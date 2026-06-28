@@ -146,6 +146,11 @@ fi
 # ── A4. Redeploy api/bot with a NEW revision (suffix is MANDATORY) ───────────
 log "A4 · redeploy $CA_NAME on a new revision"
 REV_SUFFIX="p8$(date +%H%M%S)"
+# LLM_STATEMENT_MODEL pins bank-statement reconciliation to Haiku (faster + more
+# accurate than Opus on real CR statements, 2026-06-28 loan-guardrails work). Set
+# explicitly so prod is deterministic even if a prior manual "instant env flip"
+# left an opposing LLM_STATEMENT_MODEL override on the app. The per-transaction
+# extractor / query models stay unpinned on their code defaults, as before.
 az containerapp update -g "$RG" -n "$CA_NAME" \
   --image "$API_IMAGE" \
   --revision-suffix "$REV_SUFFIX" \
@@ -155,6 +160,7 @@ az containerapp update -g "$RG" -n "$CA_NAME" \
     DATABASE_URL=secretref:database-url \
     REDIS_URL=secretref:redis-url \
     ANTHROPIC_API_KEY=secretref:anthropic-api-key \
+    LLM_STATEMENT_MODEL=claude-haiku-4-5 \
     TELEGRAM_MODE=webhook \
     TELEGRAM_BOT_TOKEN=secretref:telegram-bot-token \
     TELEGRAM_WEBHOOK_SECRET=secretref:telegram-webhook-secret \

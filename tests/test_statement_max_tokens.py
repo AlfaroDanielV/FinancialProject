@@ -52,7 +52,8 @@ _VALID_STATEMENT = RecordedLLMResponse(
 
 
 async def test_statement_extraction_requests_8192_headroom():
-    # Non-empty, high-confidence response → only the first pass runs.
+    # Non-empty inventory → the per-product pass also runs; EVERY statement call
+    # (inventory + per-product) asks for the headroom + the long timeout.
     client = FixtureLLMClient(default=_VALID_STATEMENT)
     await extract_statement(
         user=_StubUser(),
@@ -62,9 +63,10 @@ async def test_statement_extraction_requests_8192_headroom():
         sonnet_model="m",
         db=_StubDB(),
     )
-    assert client.max_tokens_calls == [8192]
-    # Opus over a multi-page PDF blows past the 30s default → 120s for statements.
-    assert client.timeout_calls == [120.0]
+    assert client.max_tokens_calls  # at least the inventory call ran
+    assert set(client.max_tokens_calls) == {8192}
+    # A multi-page PDF + 8192-token output blows past the 30s default → 275s.
+    assert set(client.timeout_calls) == {275.0}
 
 
 async def test_debt_extraction_keeps_default_512_cap():

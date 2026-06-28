@@ -186,10 +186,17 @@ async def test_extract_statement_parses_and_logs(db_with_user):
             select(LLMExtraction).where(LLMExtraction.user_id == user_id)
         )
     ).scalars().all()
-    assert len(rows) == 1
-    assert rows[0].intent == "parse_statement"
-    assert rows[0].extraction["document"] is True
-    assert "pdf_b64" in rows[0].extraction
+    # The inventory pass logs one `parse_statement` audit row ...
+    inventory = [r for r in rows if r.intent == "parse_statement"]
+    assert len(inventory) == 1
+    assert inventory[0].extraction["document"] is True
+    assert "pdf_b64" in inventory[0].extraction
+    # ... and each per-product verification pass logs its own row (here the
+    # fixture returns the inventory shape, so they record and the merge falls
+    # back to the draft — the result is unchanged).
+    assert all(
+        r.intent in ("parse_statement", "parse_statement_product") for r in rows
+    )
 
 
 @pytest.mark.asyncio
@@ -221,8 +228,9 @@ async def test_extract_statement_missing_confidence_does_not_crash(db_with_user)
     # No crash; a missing confidence is coerced to 0.0 ...
     assert result.confidence == 0.0
     assert len(result.accounts) == 2
-    # ... and 0.0 < threshold forces the Haiku→Sonnet retry.
-    assert calls == ["claude-haiku-4-5", "claude-sonnet-4-5"]
+    # ... and 0.0 < threshold forces the Haiku→Sonnet retry on the inventory
+    # pass (the per-product passes then run and append more calls).
+    assert calls[:2] == ["claude-haiku-4-5", "claude-sonnet-4-5"]
 
 
 @pytest.mark.asyncio
@@ -253,7 +261,8 @@ async def test_extract_statement_empty_accounts_forces_sonnet_retry(db_with_user
         sonnet_model="claude-sonnet-4-5",
         db=session,
     )
-    assert calls == ["claude-haiku-4-5", "claude-sonnet-4-5"]
+    # The inventory pass retries Haiku→Sonnet; per-product passes append after.
+    assert calls[:2] == ["claude-haiku-4-5", "claude-sonnet-4-5"]
     assert len(result.accounts) == 2  # the Sonnet retry's non-empty result wins
 
 
@@ -340,6 +349,42 @@ async def test_reconcile_loan_sets_balance(db_with_user):
     assert Decimal(debt.current_balance) == Decimal("12119385.98")
     assert "reconciliad" in (debt.notes or "").lower()
     assert results[0].new_balance == Decimal("12119385.98")
+
+
+@pytest.mark.asyncio
+async def test_reconcile_loan_flagged_balance_requires_ack(db_with_user):
+    """The 'massive debt' net: a loan balance above the original amount is
+    withheld server-side (even via a direct reconcile call) unless explicitly
+    acknowledged — then it applies (confirm-with-evidence)."""
+    session, user_id = db_with_user
+    user = await session.get(User, user_id)
+    debt = await _debt(session, user_id, balance="12245236.77")  # original 14.97M
+    debt_id = debt.id  # capture before any rollback expires the object
+
+    flagged = StatementReconcileItem(
+        kind="loan",
+        target_id=debt_id,
+        closing_balance=Decimal("20000000.00"),  # > original × 1.02
+        currency="CRC",
+    )
+    with pytest.raises(ReconcileError):
+        await reconcile_products(
+            session, user=user, corte_date=date(2026, 5, 31), items=[flagged]
+        )
+    await session.rollback()
+    # rollback expired the ORM objects — re-fetch (async sessions can't lazy-load).
+    user = await session.get(User, user_id)
+    debt = await session.get(Debt, debt_id)
+    assert Decimal(debt.current_balance) == Decimal("12245236.77")  # unchanged
+
+    acked = flagged.model_copy(update={"acknowledged": True})
+    results = await reconcile_products(
+        session, user=user, corte_date=date(2026, 5, 31), items=[acked]
+    )
+    await session.commit()
+    await session.refresh(debt)
+    assert Decimal(debt.current_balance) == Decimal("20000000.00")
+    assert results[0].old_balance == Decimal("12245236.77")
 
 
 # ── 5. multi-account batch ────────────────────────────────────────────────────

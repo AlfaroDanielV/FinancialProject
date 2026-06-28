@@ -141,6 +141,7 @@ Run migrations after redeploy. Heads added since Phase 5:
 | `ANTHROPIC_API_KEY` | yes | 5b | Haiku + Sonnet |
 | `LLM_EXTRACTION_MODEL` | no | 5b | default `claude-haiku-4-5` |
 | `LLM_QUERY_MODEL` | no | 6a | default `claude-sonnet-4-5` |
+| `LLM_STATEMENT_MODEL` | no | stmt | default `claude-haiku-4-5`; statement-PDF reconciliation ONLY (inventory + per-product passes, `max_tokens=8192`, 275s timeout). **`deploy_azure.sh` pins it** so prod is deterministic vs a stale manual `opus` override |
 | `LLM_DAILY_TOKEN_BUDGET_PER_USER` | no | 6a | default `100000` |
 | `INSIGHTS_EXTRACTOR_ENABLED` | no | 6c | default `false` |
 | `INSIGHTS_DISPATCHER_ENABLED` | no | 6c | default `false`; flip true after Daniel's shadow review |

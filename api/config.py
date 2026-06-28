@@ -17,11 +17,14 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     llm_extraction_model: str = "claude-haiku-4-5"
     llm_query_model: str = "claude-sonnet-4-5"
-    # Dedicated model for bank-statement PDF reconciliation only. Statement
-    # extraction is rare + high-value and emits a hard, deeply-nested tool-use
-    # JSON, so it runs on Opus (both passes) without changing the per-transaction
-    # extractor (llm_extraction_model) or the query dispatcher (llm_query_model).
-    llm_statement_model: str = "claude-opus-4-8"
+    # Dedicated model for bank-statement PDF reconciliation only (inventory pass
+    # + every per-product verification pass). Haiku: the real-statement repro
+    # found it ~2-3× faster AND more accurate than Opus here (Opus mis-typed BAC
+    # savings as `investment` and timed out), and the per-product pipeline makes
+    # several calls per statement, so speed matters. Separate from the
+    # per-transaction extractor (llm_extraction_model) and the query dispatcher
+    # (llm_query_model); override via LLM_STATEMENT_MODEL.
+    llm_statement_model: str = "claude-haiku-4-5"
     llm_query_iteration_cap: int = 4
     llm_daily_token_budget_per_user: int = 100_000
     insights_extractor_enabled: bool = False
