@@ -303,6 +303,10 @@ async def test_run_daily_swallows_per_user_exceptions(
         gmail_daily.notifier_mod, "maybe_send_shadow_summary", noop
     )
 
-    # Should not raise — the worker swallows our test user's failure.
-    await gmail_daily.run_daily_for_all_users()
+    # The per-user crash is caught per-user (not propagated raw). With this user
+    # as the ONLY eligible one, every eligible user failed, so the b8b23a1
+    # all-failed guard then fails the job (a finished run that scanned nobody
+    # successfully is systemic — a red flag, not silent success).
+    with pytest.raises(RuntimeError, match="failed for all"):
+        await gmail_daily.run_daily_for_all_users()
     assert boom_for_test_user["n"] == 1

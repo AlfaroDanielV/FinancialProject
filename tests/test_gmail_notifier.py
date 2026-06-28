@@ -140,7 +140,7 @@ async def test_no_whitelist_sends_no_whitelist_message(
         db=db,
     )
     assert len(captured_sends) == 1
-    assert "whitelist" in captured_sends[0][1]
+    assert "/agregar_banco" in captured_sends[0][1]  # copy: "lista de correos … /agregar_banco"
 
 
 async def test_zero_messages_backfill_sends_no_results(
@@ -209,8 +209,9 @@ async def test_shadow_window_accumulates_ids_in_redis(
     assert sorted(appended) == sorted(txn_ids)
     assert len(captured_sends) == 1
     text = captured_sends[0][1]
-    assert "modo sombra" in text
-    assert "10 correos" in text
+    # Copy simplified 2026-06-28 → "Hola {name}. Revisé N facturas…".
+    assert "Revisé 10 facturas" in text
+    assert "son nuevas" in text
 
 
 # ── skipped/failed detail suffix + wrong-sender hint ─────────────────────────
@@ -240,9 +241,10 @@ async def test_shadow_all_skipped_shows_detail_and_wrong_sender_hint(
     )
     assert len(captured_sends) == 1
     text = captured_sends[0][1]
-    assert "modo sombra" in text
-    assert "83 no parecían transacciones" in text
-    assert "remitente" in text  # the wrong-sender hint fired
+    # Copy simplified 2026-06-28 dropped the per-scan skipped COUNT; the
+    # wrong-sender hint is still appended for an all-skipped scan.
+    assert "Revisé 83 facturas" in text
+    assert "remitente" in text  # the wrong-sender hint still fires
 
 
 async def test_quiet_shows_skipped_and_failed_detail_but_no_hint_when_matched(
@@ -270,8 +272,9 @@ async def test_quiet_shows_skipped_and_failed_detail_but_no_hint_when_matched(
     )
     assert len(captured_sends) == 1
     text = captured_sends[0][1]
-    assert "15 no parecían transacciones" in text
-    assert "2 con errores" in text
+    # Per-scan skipped/failed COUNT dropped from the copy 2026-06-28; the
+    # wrong-sender hint stays OFF because matched > 0.
+    assert "Revisé 20 facturas" in text
     assert "remitente" not in text  # matched>0 → no wrong-sender hint
 
 

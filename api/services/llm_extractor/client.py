@@ -147,9 +147,11 @@ class FixtureLLMClient:
     ):
         self._default = default
         self._by_message = by_message or {}
-        # Records the max_tokens of each call so tests can assert the statement
-        # path asks for headroom (8192) while the transaction/doc paths stay 512.
+        # Records the max_tokens + timeout of each call so tests can assert the
+        # statement path asks for headroom (8192 tokens / 120s) while the
+        # transaction/doc paths stay at the tight defaults (512 / 30s).
         self.max_tokens_calls: list[int] = []
+        self.timeout_calls: list[float] = []
 
     async def extract(
         self,
@@ -163,6 +165,7 @@ class FixtureLLMClient:
         max_tokens: int = 512,
     ) -> RecordedLLMResponse:
         self.max_tokens_calls.append(max_tokens)
+        self.timeout_calls.append(timeout_s)
         # Vision calls pass a list (content blocks) — not hashable, skip lookup.
         try:
             if user_message in self._by_message:

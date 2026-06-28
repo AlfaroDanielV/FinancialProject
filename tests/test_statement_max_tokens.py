@@ -63,6 +63,8 @@ async def test_statement_extraction_requests_8192_headroom():
         db=_StubDB(),
     )
     assert client.max_tokens_calls == [8192]
+    # Opus over a multi-page PDF blows past the 30s default → 120s for statements.
+    assert client.timeout_calls == [120.0]
 
 
 async def test_debt_extraction_keeps_default_512_cap():

@@ -43,6 +43,12 @@ _PDF_MEDIA_TYPE = "application/pdf"
 # so the statement path asks for generous headroom. max_tokens is a CEILING billed
 # only on tokens actually generated, so the extra room is free.
 _STATEMENT_MAX_TOKENS = 8192
+# Opus generating up to 8192 tokens over a multi-page PDF runs well past the 30s
+# default (sized for a 512-token transaction) → APITimeoutError → a 502 ("No pude
+# leer"). Statement parsing is a rare, user-initiated upload, so it gets a
+# generous read timeout. (Anthropic's guidance is to STREAM for high max_tokens;
+# raising the timeout is the minimal fix — streaming is a tracked follow-up.)
+_STATEMENT_TIMEOUT_S = 120.0
 
 _DOCUMENT_SYSTEM_PROMPT = (
     "Sos un extractor de términos de préstamos para un sistema financiero "
@@ -613,6 +619,8 @@ async def extract_statement(
         is_empty=lambda r: not r.accounts,
         # Statements emit a large nested JSON; the default 512 cap truncates them.
         max_tokens=_STATEMENT_MAX_TOKENS,
+        # ...and a multi-page PDF + that output blows past the 30s document default.
+        timeout_s=_STATEMENT_TIMEOUT_S,
     )
 
 
@@ -631,6 +639,7 @@ async def _extract_document(
     intent: str,
     is_empty=None,
     max_tokens: int = 512,
+    timeout_s: float = _DOCUMENT_TIMEOUT_S,
 ):
     pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("ascii")
     content_blocks: list[dict] = [
@@ -658,6 +667,7 @@ async def _extract_document(
         result_model=result_model,
         intent=intent,
         max_tokens=max_tokens,
+        timeout_s=timeout_s,
     )
 
     if result.confidence < _CONFIDENCE_THRESHOLD or (
@@ -676,6 +686,7 @@ async def _extract_document(
             result_model=result_model,
             intent=intent,
             max_tokens=max_tokens,
+            timeout_s=timeout_s,
         )
 
     return result
@@ -695,6 +706,7 @@ async def _run_one(
     result_model=DebtTermsExtraction,
     intent: str = "parse_debt_document",
     max_tokens: int = 512,
+    timeout_s: float = _DOCUMENT_TIMEOUT_S,
 ):
     t0 = time.perf_counter()
     raw = await client.extract(
@@ -703,7 +715,7 @@ async def _run_one(
         system_prompt=system_prompt,
         tool=tool,
         model=model,
-        timeout_s=_DOCUMENT_TIMEOUT_S,
+        timeout_s=timeout_s,
         max_tokens=max_tokens,
     )
 

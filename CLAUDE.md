@@ -2370,6 +2370,31 @@ extraction-truncation artifact, never a normalize/policy/conservation bug.
   estado es muy largo" error if a larger bundle truncates beyond it; an optional
   egregious-delta hard block to keep more Bug-1 protection; revisit Opus-vs-Haiku if
   the account-type mis-classification recurs.
+- **Production rollout + 30s→120s timeout (2026-06-28).** Deployed to prod
+  (`finance-api`, revision `0000009`) — truncation gone, but it exposed the NEXT
+  bottleneck: the statement call **timed out at 30s** (`_DOCUMENT_TIMEOUT_S`, sized
+  for a 512-token transaction). Opus generating up to 8192 tokens over a multi-page
+  PDF runs >30s → `anthropic.APITimeoutError` → `LLMClientError: extractor_timeout`
+  → the 502 / "No pude leer". (The repro missed it — it ran at a 180s timeout.) Fix:
+  a statement-specific **`_STATEMENT_TIMEOUT_S = 120.0`** threaded through
+  `extract_statement → _extract_document → _run_one → client.extract` (parallel to
+  `max_tokens`); debt/card keep 30s. It's a CODE constant (not an env var) → needs
+  an image rebuild, can't be flipped live. `tests/test_statement_max_tokens.py`
+  asserts the statement path uses 120s. **The Opus key works** — the call reached
+  Anthropic and was generating (a missing-Opus key 404s instantly; this timed out).
+  **Haiku is the better statement model** anyway: ≈2-3× faster (better spinner UX +
+  far less timeout risk) AND more accurate on the operator's statements per the repro
+  (Opus mis-typed the BAC accounts as `investment`); `LLM_STATEMENT_MODEL=claude-haiku-4-5`
+  is an instant env flip. Streaming for the high `max_tokens` (Anthropic's own
+  guidance for avoiding request timeouts) is the proper long-term fix — tracked.
+- **Gmail notifier `KeyError: 'name'` (same firefight, separate bug, fixed).** The
+  `GMAIL_SCAN_FINISH_SHADOW_TPL`/`_QUIET_TPL` copy was personalized to "Hola {name}…"
+  without supplying `name` to `.format()` → every shadow-window scan completion
+  raised `KeyError` (the scan worked; only the completion message crashed).
+  `notifier.py::_resolve_first_name` now supplies it (safe fallback). The copy
+  rewrite also dropped the per-scan skipped-COUNT detail (the wrong-sender hint
+  survives); 5 stale notifier tests realigned (operator blessed the simpler copy).
+  Ships in the same image roll as the timeout fix.
 
 ## Apple Pay → Zero-Touch Capture (iOS, 2026-06-25)
 
