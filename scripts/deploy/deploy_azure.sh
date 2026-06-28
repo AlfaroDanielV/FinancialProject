@@ -21,7 +21,7 @@
 #   AZ_SUB=<subscription-id> ./scripts/deploy/deploy_azure.sh [--skip-build]
 #                                                             [--skip-migrate]
 #                                                             [--skip-worker]
-#                                                             [--tag <imagetag>]
+#                                                             [--tag ]
 #                                                             [--yes]
 #
 # Prereqs: az CLI >= 2.60 (logged in), docker w/ buildx, jq, run from repo root.
@@ -171,7 +171,7 @@ az containerapp update -g "$RG" -n "$CA_NAME" \
     GMAIL_OAUTH_STATE_SECRET=secretref:gmail-oauth-state-secret \
     GMAIL_REDIRECT_URI="https://${DOMAIN_API}/api/v1/gmail/oauth/callback" \
     INSIGHTS_EXTRACTOR_ENABLED=true \
-    INSIGHTS_DISPATCHER_ENABLED=false \
+    INSIGHTS_DISPATCHER_ENABLED=true \
     NUDGE_SCHEDULER_ENABLED=true \
     NUDGE_SCHEDULER_INTERVAL_S=21600 \
     NUDGE_SCHEDULER_INITIAL_DELAY_S=60 \

@@ -48,7 +48,7 @@ _STATEMENT_MAX_TOKENS = 8192
 # leer"). Statement parsing is a rare, user-initiated upload, so it gets a
 # generous read timeout. (Anthropic's guidance is to STREAM for high max_tokens;
 # raising the timeout is the minimal fix — streaming is a tracked follow-up.)
-_STATEMENT_TIMEOUT_S = 120.0
+_STATEMENT_TIMEOUT_S = 275.0
 
 _DOCUMENT_SYSTEM_PROMPT = (
     "Sos un extractor de términos de préstamos para un sistema financiero "
