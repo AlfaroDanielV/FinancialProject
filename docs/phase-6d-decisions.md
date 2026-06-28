@@ -35,7 +35,8 @@ Lo siguiente NO entra en 6d, queda para 6e o más adelante:
 - Dashboards, gráficos, reportes en SPA
 - Vista de transacciones individuales en SPA
 - Edición masiva
-- Filtros avanzados
+- Filtros a
+
 - Categorías custom (6d seedea defaults; edición en 6e)
 - Metas u objetivos financieros
 - Tracking de cuotas pagadas individualmente (la amortización en 6d es proyección, no histórico de pagos)

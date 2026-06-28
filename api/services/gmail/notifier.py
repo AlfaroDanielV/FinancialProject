@@ -108,6 +108,18 @@ async def _resolve_chat_id(
     return user.telegram_user_id
 
 
+async def _resolve_first_name(*, user_id: uuid.UUID, db: AsyncSession) -> str:
+    """First name for the "Hola {name}" scan-completion copy, with a safe
+    fallback. The `{name}` placeholder was added to the FINISH templates without
+    ever being supplied to `.format()`, so every shadow-window scan completion
+    raised `KeyError: 'name'`; this guarantees a value (never KeyErrors)."""
+    user = (
+        await db.execute(select(User).where(User.id == user_id))
+    ).scalar_one_or_none()
+    full = (user.full_name or "").strip() if user is not None else ""
+    return full.split()[0] if full else "👋"
+
+
 async def _is_in_shadow_window(
     *, user_id: uuid.UUID, db: AsyncSession
 ) -> bool:
@@ -279,6 +291,10 @@ async def notify_run_completed(
         # daily mode + 0 messages: silent (the user wasn't expecting anything)
         return
 
+    # The shadow roll-up + the quiet "nada nuevo" copy greet the user by name
+    # ("Hola {name}."); resolve it once for whichever branch fires below.
+    name = await _resolve_first_name(user_id=user_id, db=db)
+
     # Branch 4: in shadow window
     in_shadow = await _is_in_shadow_window(user_id=user_id, db=db)
     if in_shadow:
@@ -292,6 +308,7 @@ async def notify_run_completed(
         await _send(
             chat_id=chat_id,
             text=messages_es.GMAIL_SCAN_FINISH_SHADOW_TPL.format(
+                name=name,
                 scanned=result.messages_scanned,
                 matched=result.transactions_matched,
                 created=result.transactions_created,
@@ -306,6 +323,7 @@ async def notify_run_completed(
         await _send(
             chat_id=chat_id,
             text=messages_es.GMAIL_SCAN_FINISH_QUIET_TPL.format(
+                name=name,
                 scanned=result.messages_scanned,
                 matched=result.transactions_matched,
                 created=0,
