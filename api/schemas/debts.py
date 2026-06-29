@@ -2,7 +2,9 @@ import uuid
 from datetime import date, datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator
+
+from app.domain.credit.cuota_schedule import next_cuota_date
 
 VALID_DEBT_TYPES = {
     "mortgage",
@@ -140,6 +142,19 @@ class DebtResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def next_payment_date(self) -> date:
+        """Next unpaid cuota — advances one cadence per recorded payment
+        (Flexible Payment Dates). Projected, never materialized."""
+        anchor = self.start_date or self.created_at.date()
+        return next_cuota_date(
+            payment_due_day=self.payment_due_day,
+            payments_made=self.payments_made,
+            anchor=anchor,
+            today=date.today(),
+        )
 
 
 class DebtSummary(BaseModel):

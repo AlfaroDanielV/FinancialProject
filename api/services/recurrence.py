@@ -48,6 +48,8 @@ from ..models.recurring_bill import RecurringBill
 from ..models.transaction import Transaction
 from .clock import CR_TZ, today_cr  # single source; re-exported here for callers
 
+from app.domain.credit.cuota_schedule import next_cuota_date
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_HORIZON_MONTHS = 6
@@ -787,10 +789,18 @@ async def get_upcoming_feed(
         debt_stmt = debt_stmt.where(Debt.id.notin_(superseded))
     debt_result = await session.execute(debt_stmt)
     for d in debt_result.scalars().all():
-        dues = _monthly_due_dates(d.payment_due_day, from_date, to_date)
-        if not dues:
+        # Payment-aware: the next cuota advances one cadence per recorded payment
+        # (Flexible Payment Dates) — `max(schedule, natural)`, so a paid-ahead loan
+        # moves forward while an on-time/behind loan keeps its next upcoming due
+        # (no regression). Projected, never materialized.
+        due = next_cuota_date(
+            payment_due_day=d.payment_due_day,
+            payments_made=d.payments_made or 0,
+            anchor=d.start_date or d.created_at.date(),
+            today=today,
+        )
+        if not (from_date <= due <= to_date):
             continue
-        due = dues[0]  # the next cuota in the window (one entry per debt)
         entries.append(
             FeedEntry(
                 item_type="debt",

@@ -462,6 +462,45 @@ async def test_undo_record_debt_payment_restores_balance(db_with_user):
 # ── 14. clarification merge ────────────────────────────────────────────────────
 
 
+# ── 15. debt next-due advances one cadence per payment ───────────────────────
+
+
+def test_next_cuota_date_advances_with_payments():
+    from app.domain.credit.cuota_schedule import next_cuota_date
+
+    anchor = date(2026, 6, 10)  # registered June 10, due day 1 → first cuota July 1
+    today = date(2026, 6, 28)
+    assert next_cuota_date(payment_due_day=1, payments_made=0, anchor=anchor, today=today) == date(2026, 7, 1)
+    assert next_cuota_date(payment_due_day=1, payments_made=1, anchor=anchor, today=today) == date(2026, 8, 1)
+    assert next_cuota_date(payment_due_day=1, payments_made=2, anchor=anchor, today=today) == date(2026, 9, 1)
+    # Behind schedule (old anchor, no payments) → next upcoming, NOT a months-old
+    # overdue cuota (max(schedule, natural) guard — no feed regression).
+    assert next_cuota_date(payment_due_day=1, payments_made=0, anchor=date(2026, 1, 5), today=today) == date(2026, 7, 1)
+
+
+@pytest.mark.asyncio
+async def test_recorded_debt_payment_advances_next_payment_date(db_with_user):
+    from dateutil.relativedelta import relativedelta
+
+    from api.schemas.debts import DebtResponse
+
+    session, user_id = db_with_user
+    debt = await _add_debt(session, user_id, balance="2000000")
+    user = await _get_user(session, user_id)
+    before = DebtResponse.model_validate(debt).next_payment_date
+
+    res = await dispatch(
+        extraction=_debt_ext(amount=Decimal("50000")), user=user, today=TODAY, db=session
+    )
+    await commit_pending(
+        user=user, pending=await _pending_from(res), db=session, redis=get_redis()
+    )
+    await session.refresh(debt)
+
+    after = DebtResponse.model_validate(debt).next_payment_date
+    assert after == before + relativedelta(months=1)  # advanced one cadence
+
+
 def test_merge_reply_bill_and_debt_target():
     class _U:
         currency = "CRC"

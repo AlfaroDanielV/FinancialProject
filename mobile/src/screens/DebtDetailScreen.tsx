@@ -62,13 +62,6 @@ function fmtDate(iso: string | null): string {
   return d.toLocaleDateString("es-CR", { day: "numeric", month: "short", year: "numeric" });
 }
 
-function nextPaymentLabel(dueDay: number): string {
-  const today = new Date();
-  const candidate = new Date(today.getFullYear(), today.getMonth(), dueDay);
-  if (candidate < today) candidate.setMonth(candidate.getMonth() + 1);
-  return candidate.toLocaleDateString("es-CR", { day: "numeric", month: "long", year: "numeric" });
-}
-
 function todayIso(): string {
   const d = new Date();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -687,7 +680,7 @@ export function DebtDetailScreen({ navigation, route }: Props) {
           {debt.term_months && (
             <InfoRow label="Plazo" value={`${debt.term_months} meses`} />
           )}
-          <InfoRow label="Próximo pago" value={nextPaymentLabel(debt.payment_due_day)} />
+          <InfoRow label="Próximo pago" value={fmtDate(debt.next_payment_date)} />
           {debt.maturity_date && (
             <InfoRow label="Vencimiento" value={fmtDate(debt.maturity_date)} />
           )}

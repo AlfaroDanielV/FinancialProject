@@ -41,6 +41,8 @@ export interface DebtResponse {
   archived: boolean;
   created_at: string;
   updated_at: string;
+  // Next unpaid cuota (YYYY-MM-DD); advances one cadence per recorded payment.
+  next_payment_date: string;
 }
 
 export interface DebtOverview {

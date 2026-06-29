@@ -2641,6 +2641,18 @@ there (DATE columns, no past/future validation) → **no migration**. **Branch
   transaction** (operator decision — avoids double-counting a later Gmail/Apple
   Pay capture of the same loan payment). The amortization schedule is read-time
   and is never mutated (`current_balance` is a balance update, not a schedule one).
+- **Debt next-due projection** (follow-up — operator tested an early payment and
+  the "Próximo pago" stayed on the current period): a debt's next cuota now
+  **advances one cadence per recorded payment** (was stuck on `payment_due_day` +
+  today, payment-unaware). Pure `app/domain/credit/cuota_schedule.py::next_cuota_date`
+  anchors on the loan's first cuota (`start_date`, else the registration date) +
+  `payments_made`, returning `max(schedule_due, natural_due)` so a paid-AHEAD loan
+  moves forward while an on-time/behind loan keeps its next upcoming due (no feed
+  regression — never surfaces a months-old overdue cuota). Surfaced as a
+  `DebtResponse.next_payment_date` computed_field (consumed by `DebtDetailScreen`,
+  replacing the client-side `nextPaymentLabel`) + reused in
+  `recurrence.get_upcoming_feed` (Inicio "Próximos pagos" / Gastos fijos). Debts
+  have no materialized schedule — this stays a live projection.
 - **Both `/undo`-able** (operator decision): `recurrence.undo_bill_payment`
   unlinks the occurrence (restore pending/overdue, clear amount_paid/paid_at)
   **then** deletes the telegram txn (bypassing the bill-link guard);
