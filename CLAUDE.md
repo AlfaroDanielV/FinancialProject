@@ -1427,7 +1427,7 @@ count).
 Operator dogfood: reconciled a card's statement at the 19-jun corte, paid it de
 contado, but the Gmail payment was hand-marked as **income on the card** → the
 "Pago de tarjeta del 30 jun" stayed in *Próximos pagos* and the income was
-inflated. **Branch `feature/credit-card-statement-cycle`; on-device sign-off
+inflated. **Merged to `dev` (`68a7fc9`, feature `c9f36c5`); on-device sign-off
 pending.** No migration. `committed_outflows`/cashflow byte-lock untouched.
 Canonical: vault `Decision - Credit Card Statement Cycle & Payment Recognition`.
 Three changes, all compute-live:
