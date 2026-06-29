@@ -1422,6 +1422,60 @@ cashflow byte-lock intact) + mobile `tsc --noEmit` clean. `alembic → 0040`.
 target — 7b B6 deferral); letting contado drive the budget (rejected — double
 count).
 
+## Credit Card Statement Cycle & Payment Recognition (2026-06-28)
+
+Operator dogfood: reconciled a card's statement at the 19-jun corte, paid it de
+contado, but the Gmail payment was hand-marked as **income on the card** → the
+"Pago de tarjeta del 30 jun" stayed in *Próximos pagos* and the income was
+inflated. **Branch `feature/credit-card-statement-cycle`; on-device sign-off
+pending.** No migration. `committed_outflows`/cashflow byte-lock untouched.
+Canonical: vault `Decision - Credit Card Statement Cycle & Payment Recognition`.
+Three changes, all compute-live:
+
+- **Statement-cycle-aware feed (core).** A card with `statement_day` set surfaces
+  the balance owed AT the last corte, due on the following `payment_due_day`, and
+  **disappears once settled** — purchases after the corte accumulate toward the
+  NEXT statement, not "due now". Pure `app/domain/credit/statement_cycle.py`
+  (`last_corte` / `statement_due_date` / `is_statement_settled`, mirrors
+  `cuota_schedule.py`); `accounts.py::balance_as_of(as_of)` (anchor model with an
+  upper bound — **when the user reconciled, the `statement` anchor sits on the
+  corte so `balance_as_of(corte) == anchor.value` = the exact statement balance**,
+  no new table); `credit_cards.py::card_statement_status` (corte /
+  statement_balance / paid_since_corte = Σ positive card movements after corte /
+  remaining / settled). `get_upcoming_feed` card branch: `statement_day` set →
+  show `remaining` (**the corte TOTAL, never the minimum** — operator choice),
+  suppress when settled; `statement_day` None → **fallback to the existing live
+  projection** (no regression). **Settlement follows `payment_mode`** (full →
+  corte balance; minimum → minimum). **Budget unchanged**: reservation +
+  affordability + `committed_outflows` stay on the minimum (byte-lock intact) —
+  only the feed/reminder + the agent change.
+- **Positive on a credit account = card payment, never income.** Shared
+  `api/services/income_rules.py::not_card_payment_income(user_id)` (deterministic,
+  by `account_type`) ANDed into the 4 dashboard `summary.py` income cases + the
+  chat `_transaction_filters` income branch. Orphans (`account_id IS NULL`) still
+  count; the expense side (card charges, `amount < 0`) is unchanged.
+- **In-app "Registrar como pago" (income → transfer).** `POST
+  /transactions/{id}/register-as-payment` + `register_income_as_card_payment`
+  (reuses `create_transfer_with_transactions` + `hard_delete_transaction`):
+  transfer from a chosen source (fund) account → the card, delete the original
+  row. 409 on row guards; the transfer service 400s on a bad/insufficient source.
+  Native: a "Registrar como pago" action on `TransactionDetailScreen` →
+  `RegisterPaymentModal` (source via `AccountPickerModal` `excludeAccountTypes=
+  ["credit"]`, amount prefilled). The operator's one-tap fix for the mis-marked
+  row.
+
+**Hard rule added:** a positive movement on a credit account is a card payment /
+refund, never income — enforced by `account_type` in every income aggregation;
+the LLM never decides it.
+
+**Deferred:** Gmail capture sign/category correction (SINPE/counterparty
+workstream — the report guard already prevents income inflation); partial
+income→payment conversion; the income guard on `insights/computed.py` (gated off
+in prod). **Verification:** `tests/test_statement_cycle.py` (9) +
+`test_register_as_payment.py` (6) + `test_credit_positive_not_income.py` (2) +
+`scripts/test_phase_7b.sh` (141, byte-lock) + dashboard/chat-tool/balance-anchor
+regression green; mobile `tsc` clean. No migration.
+
 ## Account creation + form keyboard UX (2026-06-25)
 
 Two operator UX asks, mobile-only, no migration. **On `dev`; on-device sign-off

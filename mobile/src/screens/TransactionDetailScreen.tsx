@@ -28,6 +28,7 @@ import {
 import { fetchAccounts } from "../api/accounts";
 import { ENVELOPE_CLASS_COLORS, fetchEnvelopes } from "../api/envelopes";
 import { TransactionEditModal } from "../components/TransactionEditModal";
+import { RegisterPaymentModal } from "../components/RegisterPaymentModal";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
 import type { TransactionsStackParamList } from "../navigation/TransactionsNavigator";
 
@@ -94,6 +95,7 @@ export function TransactionDetailScreen({ route }: Props) {
   // Local copy so an inline edit reflects immediately (params are static).
   const [tx, setTx] = useState(route.params.transaction);
   const [editVisible, setEditVisible] = useState(false);
+  const [registerVisible, setRegisterVisible] = useState(false);
   const nav = useNavigation<Nav>();
   const qc = useQueryClient();
 
@@ -102,7 +104,8 @@ export function TransactionDetailScreen({ route }: Props) {
     queryFn: () => fetchAccounts(false),
     staleTime: 60_000,
   });
-  const accountName = accounts?.find((a) => a.id === tx.account_id)?.name ?? null;
+  const account = accounts?.find((a) => a.id === tx.account_id) ?? null;
+  const accountName = account?.name ?? null;
 
   // Phase 7f: surface the envelope assignment prominently (named badge).
   const { data: envelopes } = useQuery({
@@ -154,6 +157,16 @@ export function TransactionDetailScreen({ route }: Props) {
     deleteMutation.isPending;
   const isExpense = tx.amount < 0;
   const isShadow = tx.status === "shadow";
+  // A positive movement on a credit account is a card payment marked wrong as
+  // income — offer to convert it into a real payment (transfer from a source
+  // account). Exclude machine-managed flows (transfer legs — incl. the ones this
+  // feature itself creates — and goal flows): they'd always 409. Shadow/archived
+  // are already excluded by the surrounding action-bar branch.
+  const isCreditIncome =
+    tx.amount > 0 &&
+    account?.account_type === "credit" &&
+    tx.transfer_id == null &&
+    tx.goal_id == null;
 
   const onArchive = () => {
     Alert.alert(
@@ -334,38 +347,58 @@ export function TransactionDetailScreen({ route }: Props) {
               </Text>
             </Pressable>
           ) : (
-            <View style={styles.bottomRow}>
-              <Pressable
-                onPress={() => setEditVisible(true)}
-                disabled={isPending}
-                style={({ pressed }) => [
-                  styles.actionBtn,
-                  styles.actionBtnFlex,
-                  styles.actionBtnEdit,
-                  isPending && { opacity: 0.5 },
-                  pressed && { opacity: 0.85 },
-                ]}
-              >
-                <Feather name="edit-2" size={16} color={Colors.bgCard} />
-                <Text style={[styles.actionBtnLabel, { color: Colors.bgCard }]}>
-                  Editar
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={onArchive}
-                disabled={isPending}
-                style={({ pressed }) => [
-                  styles.actionBtn,
-                  styles.actionBtnFlex,
-                  styles.actionBtnArchive,
-                  isPending && { opacity: 0.5 },
-                  pressed && { opacity: 0.75 },
-                ]}
-              >
-                <Feather name="archive" size={16} color={Colors.textMuted} />
-                <Text style={styles.actionBtnLabel}>Archivar</Text>
-              </Pressable>
-            </View>
+            <>
+              {isCreditIncome && (
+                <Pressable
+                  onPress={() => setRegisterVisible(true)}
+                  disabled={isPending}
+                  style={({ pressed }) => [
+                    styles.actionBtn,
+                    styles.actionBtnRestore,
+                    { marginBottom: Spacing.sm },
+                    isPending && { opacity: 0.5 },
+                    pressed && { opacity: 0.75 },
+                  ]}
+                >
+                  <Feather name="credit-card" size={16} color={Colors.accent} />
+                  <Text style={[styles.actionBtnLabel, { color: Colors.accent }]}>
+                    Registrar como pago
+                  </Text>
+                </Pressable>
+              )}
+              <View style={styles.bottomRow}>
+                <Pressable
+                  onPress={() => setEditVisible(true)}
+                  disabled={isPending}
+                  style={({ pressed }) => [
+                    styles.actionBtn,
+                    styles.actionBtnFlex,
+                    styles.actionBtnEdit,
+                    isPending && { opacity: 0.5 },
+                    pressed && { opacity: 0.85 },
+                  ]}
+                >
+                  <Feather name="edit-2" size={16} color={Colors.bgCard} />
+                  <Text style={[styles.actionBtnLabel, { color: Colors.bgCard }]}>
+                    Editar
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={onArchive}
+                  disabled={isPending}
+                  style={({ pressed }) => [
+                    styles.actionBtn,
+                    styles.actionBtnFlex,
+                    styles.actionBtnArchive,
+                    isPending && { opacity: 0.5 },
+                    pressed && { opacity: 0.75 },
+                  ]}
+                >
+                  <Feather name="archive" size={16} color={Colors.textMuted} />
+                  <Text style={styles.actionBtnLabel}>Archivar</Text>
+                </Pressable>
+              </View>
+            </>
           )}
           {/* Permanent delete — distinct from Archivar (reversible). */}
           <Pressable
@@ -395,6 +428,17 @@ export function TransactionDetailScreen({ route }: Props) {
           setTx(updated);
           invalidate();
           setEditVisible(false);
+        }}
+      />
+
+      <RegisterPaymentModal
+        visible={registerVisible}
+        tx={tx}
+        onClose={() => setRegisterVisible(false)}
+        onDone={() => {
+          setRegisterVisible(false);
+          invalidate();
+          nav.goBack();
         }}
       />
     </SafeAreaView>

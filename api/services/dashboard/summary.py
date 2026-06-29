@@ -26,6 +26,7 @@ from ...schemas.dashboard import (
 from ..accounts import compute_account_balances
 from ..clock import user_today
 from ..anchors import AJUSTE_CATEGORY
+from ..income_rules import not_card_payment_income
 
 
 @dataclass(frozen=True)
@@ -160,7 +161,11 @@ async def _category_breakdown(
             func.coalesce(
                 func.sum(
                     case(
-                        ((Transaction.amount > 0), Transaction.amount),
+                        (
+                            (Transaction.amount > 0)
+                            & not_card_payment_income(user_id),
+                            Transaction.amount,
+                        ),
                         else_=0,
                     )
                 ),
@@ -195,7 +200,11 @@ async def _category_breakdown(
                 func.coalesce(
                     func.sum(
                         case(
-                            ((Transaction.amount > 0), Transaction.amount),
+                            (
+                                (Transaction.amount > 0)
+                                & not_card_payment_income(user_id),
+                                Transaction.amount,
+                            ),
                             else_=0,
                         )
                     ),
@@ -264,7 +273,11 @@ async def get_dashboard_summary(
                 func.sum(
                     case(
                         (
-                            (_is_flow & (Transaction.amount > 0)),
+                            (
+                                _is_flow
+                                & (Transaction.amount > 0)
+                                & not_card_payment_income(user.id)
+                            ),
                             Transaction.amount,
                         ),
                         else_=0,
@@ -374,7 +387,11 @@ async def get_cash_flow(
             func.coalesce(
                 func.sum(
                     case(
-                        ((Transaction.amount > 0), Transaction.amount),
+                        (
+                            (Transaction.amount > 0)
+                            & not_card_payment_income(user.id),
+                            Transaction.amount,
+                        ),
                         else_=0,
                     )
                 ),
@@ -444,7 +461,11 @@ async def get_daily_cash_flow(
             func.coalesce(
                 func.sum(
                     case(
-                        ((Transaction.amount > 0), Transaction.amount),
+                        (
+                            (Transaction.amount > 0)
+                            & not_card_payment_income(user.id),
+                            Transaction.amount,
+                        ),
                         else_=0,
                     )
                 ),

@@ -21,6 +21,7 @@ from ..models.user import User
 from ..models.user_category import UserCategory
 from ..schemas.transaction import (
     ApplePayCapture,
+    RegisterAsPaymentRequest,
     ShortcutTransactionCreate,
     TransactionBulkArchive,
     TransactionBulkCategorize,
@@ -31,6 +32,7 @@ from ..schemas.transaction import (
     TransactionResponse,
     TransactionUpdate,
 )
+from ..schemas.transfers import TransferResponse
 from ..services.clock import user_today
 from ..services.dedup import clear_duplicate_nudges_for_txn, flag_and_notify
 from ..services.dispatch.lazy_detection import match_account_hint
@@ -38,9 +40,12 @@ from ..services.envelopes import can_assign_transaction_to_envelope
 from ..services.fx import convert
 from ..services.money import parse_money_magnitude
 from ..services.transactions import (
+    REGISTER_PAYMENT_REASON_ES,
     TXN_DELETE_REASON_ES,
+    RegisterPaymentError,
     TransactionDeleteError,
     hard_delete_transaction,
+    register_income_as_card_payment,
 )
 
 router = APIRouter(prefix="/api/v1/transactions", tags=["transactions"])
@@ -900,3 +905,63 @@ async def delete_transaction_permanently(
     )
     await db.commit()
     return TransactionDeleteResponse(deleted=True)
+
+
+@router.post(
+    "/{transaction_id}/register-as-payment",
+    response_model=TransferResponse,
+    status_code=201,
+)
+async def register_movement_as_card_payment(
+    transaction_id: uuid.UUID,
+    payload: RegisterAsPaymentRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """Turn a positive movement on a credit account into a card payment.
+
+    The native app uses this to fix a Gmail/manual payment that was mis-marked
+    as income on the card: it creates a transfer from the chosen source account
+    → the card (debiting the source, crediting the card via the transfer leg)
+    and deletes the original row. Reuses the shared transfer service (funds
+    guard, card-envelope stamping). 409 on the row guards; the transfer service
+    raises 400/404 on a bad/insufficient source account.
+    """
+    txn = (
+        await db.execute(
+            select(Transaction).where(
+                Transaction.id == transaction_id,
+                Transaction.user_id == user.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if txn is None:
+        raise HTTPException(status_code=404, detail="Transacción no encontrada.")
+
+    try:
+        result = await register_income_as_card_payment(
+            db,
+            user=user,
+            txn=txn,
+            source_account_id=payload.source_account_id,
+            amount=payload.amount,
+            occurred_at=payload.occurred_at,
+            fx_rate=payload.fx_rate,
+        )
+    except RegisterPaymentError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=REGISTER_PAYMENT_REASON_ES.get(
+                exc.reason_code, "No se puede registrar como pago."
+            ),
+        ) from exc
+
+    await db.commit()
+    await db.refresh(result.transfer)
+    response = TransferResponse.model_validate(result.transfer)
+    return response.model_copy(
+        update={
+            "debit_transaction_id": result.debit_transaction_id,
+            "credit_transaction_id": result.credit_transaction_id,
+        }
+    )

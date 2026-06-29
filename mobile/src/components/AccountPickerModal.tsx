@@ -37,6 +37,9 @@ interface Props {
    * review, where the confirm path rejects cross-currency instead of
    * converting). Default: no filter. */
   currencyFilter?: string;
+  /** Account types to hide (e.g. ["credit"] when picking a funding source for a
+   * card payment). Default: none. */
+  excludeAccountTypes?: string[];
   onClose: () => void;
   onSelect: (account: AccountResponse | null) => void;
 }
@@ -52,6 +55,7 @@ export function AccountPickerModal({
   currentAccountId,
   allowClear = true,
   currencyFilter,
+  excludeAccountTypes,
   onClose,
   onSelect,
 }: Props) {
@@ -62,7 +66,10 @@ export function AccountPickerModal({
   });
 
   const accounts = (data ?? []).filter(
-    (a) => !a.archived && (!currencyFilter || a.currency === currencyFilter),
+    (a) =>
+      !a.archived &&
+      (!currencyFilter || a.currency === currencyFilter) &&
+      !(excludeAccountTypes ?? []).includes(a.account_type),
   );
 
   return (

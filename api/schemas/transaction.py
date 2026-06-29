@@ -1,5 +1,6 @@
 import uuid
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -62,6 +63,7 @@ class TransactionResponse(BaseModel):
     user_id: uuid.UUID
     account_id: Optional[uuid.UUID]
     transfer_id: Optional[uuid.UUID] = None
+    goal_id: Optional[uuid.UUID] = None
     category_id: Optional[uuid.UUID] = None
     envelope_id: Optional[uuid.UUID] = None
     amount: float
@@ -118,6 +120,22 @@ class TransactionUpdate(BaseModel):
     # envelope. Validated against the caller's envelopes in the router.
     envelope_id: Optional[uuid.UUID] = None
     transaction_date: Optional[date] = None
+
+
+class RegisterAsPaymentRequest(BaseModel):
+    """Turn a positive movement on a credit account into a card payment: a
+    transfer from a fund account → the card, then the original row is removed.
+
+    `amount` defaults to the row's own amount and is expressed in the card (row)
+    currency. `fx_rate` is required only when the source account is a different
+    currency (units of source currency per 1 unit of card currency, per the
+    TransferCreate convention).
+    """
+
+    source_account_id: uuid.UUID
+    amount: Optional[Decimal] = Field(None, gt=0)
+    occurred_at: Optional[datetime] = None
+    fx_rate: Optional[Decimal] = Field(None, gt=0)
 
 
 class TransactionBulkArchive(BaseModel):

@@ -204,6 +204,78 @@ async def compute_account_balances(
     return balances
 
 
+async def balance_as_of(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    account_id: uuid.UUID,
+    as_of: date,
+) -> Decimal:
+    """The account balance as of the end of `as_of` (inclusive, day-level).
+
+    Same anchor model as `compute_account_balances` but with an upper bound:
+
+        balance(as_of) = base + Σ(txns with eff < transaction_date <= as_of)
+
+    where `base` is the value of the latest anchor whose `effective_date <=
+    as_of` (an anchor dated AFTER `as_of` is a later correction and is ignored
+    for a past as-of), falling back to `initial_balance` when none applies. The
+    `> eff` lower bound stays strict (rule #6); the `<= as_of` upper bound is
+    inclusive (a txn dated ON the corte is part of that statement).
+
+    Used to derive a credit card's statement (corte) balance live — when the
+    user reconciled the statement, the anchor sits exactly on the corte, so this
+    returns `anchor.value` (= the exact statement balance) with no drift.
+    """
+    base_row = (
+        await db.execute(
+            select(Account.initial_balance).where(
+                Account.user_id == user_id, Account.id == account_id
+            )
+        )
+    ).first()
+    if base_row is None:
+        return Decimal("0")
+    base = Decimal(base_row[0] or 0)
+
+    anchor = (
+        await db.execute(
+            select(AccountAnchor.value, AccountAnchor.effective_date)
+            .where(
+                AccountAnchor.account_id == account_id,
+                AccountAnchor.effective_date <= as_of,
+            )
+            .order_by(
+                AccountAnchor.effective_date.desc(),
+                AccountAnchor.created_at.desc(),
+            )
+            .limit(1)
+        )
+    ).first()
+    eff: date | None = None
+    if anchor is not None:
+        base = Decimal(anchor[0])
+        eff = anchor[1]
+
+    conditions = [
+        Transaction.user_id == user_id,
+        Transaction.account_id == account_id,
+        Transaction.status == "confirmed",
+        Transaction.archived.is_(False),
+        Transaction.transaction_date <= as_of,
+    ]
+    if eff is not None:
+        conditions.append(Transaction.transaction_date > eff)
+    total = (
+        await db.execute(
+            select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+                *conditions
+            )
+        )
+    ).scalar_one()
+    return base + Decimal(total or 0)
+
+
 # ── Phase 7b B2: TRUE hard delete with cascade ────────────────────────────────
 
 

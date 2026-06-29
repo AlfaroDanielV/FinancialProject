@@ -13,6 +13,11 @@ import { api } from "./client";
 export interface TransactionResponse {
   id: string;
   account_id: string | null;
+  // Set when this row is one leg of a transfer; goal_id when it's a goal
+  // aporte/refund. Both are machine-managed flows — never user-reclassifiable —
+  // so the UI hides actions like "Registrar como pago" for them.
+  transfer_id: string | null;
+  goal_id: string | null;
   category_id: string | null;
   envelope_id: string | null;
   amount: number;
@@ -157,4 +162,23 @@ export async function updateTransaction(
  */
 export async function deleteTransaction(id: string): Promise<void> {
   await api.delete(`/transactions/${id}`);
+}
+
+/** Turn a positive movement on a credit account into a card payment: a transfer
+ * from `source_account_id` → the card, then the original row is deleted. Backend
+ * 409s if the row isn't a positive on a credit account (etc.); the transfer
+ * service 400s on a bad/insufficient source account — surface
+ * `error.response.data.detail`. */
+export interface RegisterAsPaymentPayload {
+  source_account_id: string;
+  amount?: number;
+  occurred_at?: string | null;
+  fx_rate?: number | null;
+}
+
+export async function registerAsPayment(
+  id: string,
+  payload: RegisterAsPaymentPayload,
+): Promise<void> {
+  await api.post(`/transactions/${id}/register-as-payment`, payload);
 }

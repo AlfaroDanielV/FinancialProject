@@ -771,6 +771,7 @@ async def get_upcoming_feed(
     # has card terms is superseded by the card projection below (no double
     # count). Unlinked legacy card-debts keep projecting unchanged.
     from .credit_cards import (
+        card_statement_status,
         list_active_cards_with_terms,
         superseded_credit_card_debt_ids,
     )
@@ -818,33 +819,52 @@ async def get_upcoming_feed(
             )
         )
 
-    # Phase 7b B5: project each card's payment due in the window — derived
-    # LIVE from payment_due_day + the terms formula over the current balance.
-    # The amount is the minimum (must-pay floor) or, when the card is paid
-    # "de contado" (payment_mode='full'), the full live balance. A paid-down
-    # card (payment due 0) stops projecting with zero cleanup.
+    # Project each card's payment due in the window. Two modes:
+    #  - Statement-cycle aware (terms.statement_day set): the obligation is the
+    #    balance at the last corte, due on the following payment_due_day; the
+    #    amount shown is the corte TOTAL (remaining after payments this cycle),
+    #    never the minimum; it DISAPPEARS once settled (payment_mode threshold),
+    #    so purchases after the corte don't keep a paid statement on the feed.
+    #  - Fallback (no statement_day): the legacy LIVE projection over the current
+    #    balance (minimum, or the full balance "de contado").
+    # Either way it's derived live — a paid-down card stops projecting with zero
+    # cleanup. The budget/reservation/affordability stay on the minimum.
     for card in await list_active_cards_with_terms(session, user_id=user_id):
-        payment_due = card.recurring_payment_due
-        if payment_due <= 0:
-            continue
-        dues = _monthly_due_dates(
-            card.terms.payment_due_day, from_date, to_date
-        )
-        if not dues:
-            continue
-        due = dues[0]
         contado = card.terms.payment_mode == "full"
+        title = (
+            f"Pago de tarjeta {card.account.name} (de contado)"
+            if contado
+            else f"Pago de tarjeta {card.account.name}"
+        )
+        status = await card_statement_status(session, card=card, today=today)
+        if status is not None:
+            # Statement-cycle aware: nothing due once the corte is settled.
+            if status.settled or status.remaining <= 0:
+                continue
+            due = status.due_date
+            # Skip future-of-window dues; keep an unpaid past-due statement only
+            # when overdue items are requested (mirrors the bills branch).
+            if due > to_date or (due < from_date and not include_overdue):
+                continue
+            amount_due = status.remaining
+        else:
+            payment_due = card.recurring_payment_due
+            if payment_due <= 0:
+                continue
+            dues = _monthly_due_dates(
+                card.terms.payment_due_day, from_date, to_date
+            )
+            if not dues:
+                continue
+            due = dues[0]
+            amount_due = payment_due
         entries.append(
             FeedEntry(
                 item_type="card_payment",
                 id=card.account.id,
                 date=due,
-                title=(
-                    f"Pago de tarjeta {card.account.name} (de contado)"
-                    if contado
-                    else f"Pago de tarjeta {card.account.name}"
-                ),
-                amount=float(payment_due),
+                title=title,
+                amount=float(amount_due),
                 currency=card.account.currency,
                 status=None,
                 category=None,

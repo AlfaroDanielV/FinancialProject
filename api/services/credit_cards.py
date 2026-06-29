@@ -12,21 +12,25 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.credit import (
     compute_minimum,
+    is_statement_settled,
+    last_corte,
     payment_for_months,
     project_fixed_payment,
     project_minimum_only,
+    statement_due_date,
 )
 
 from ..models.account import Account
 from ..models.credit_card_terms import CreditCardTerms
 from ..models.debt import Debt
+from ..models.transaction import Transaction
 from ..schemas.card_terms import CardAnalysisResponse, CardPaymentStrategy
-from .accounts import compute_account_balances
+from .accounts import balance_as_of, compute_account_balances
 
 
 @dataclass(frozen=True)
@@ -95,6 +99,88 @@ async def list_active_cards_with_terms(
             )
         )
     return out
+
+
+@dataclass(frozen=True)
+class CardStatementStatus:
+    """Live statement-cycle status for a credit card (no stored state).
+
+    `statement_balance` is what was owed at the last corte (derived from the
+    balance as-of the corte — exact when the user reconciled the statement).
+    `paid_since_corte` is the sum of inflows to the card after the corte. The
+    feed surfaces `remaining` (the corte total minus what's been paid) and hides
+    the obligation once `settled`.
+    """
+
+    corte: date
+    due_date: date
+    statement_balance: Decimal
+    paid_since_corte: Decimal
+    remaining: Decimal
+    minimum: Decimal
+    settled: bool
+
+
+async def card_statement_status(
+    db: AsyncSession, *, card: CardWithTerms, today: date
+) -> Optional[CardStatementStatus]:
+    """The closed-statement obligation for a card with a `statement_day` set.
+
+    Returns None when the card has no corte configured (the caller falls back to
+    the live `recurring_payment_due` projection). Settlement follows
+    `payment_mode`; the surfaced `remaining` is always the corte total minus
+    payments, independent of the threshold (the feed shows the full corte, never
+    just the minimum). All compute-live — reuses the reconciliation anchor as
+    the corte balance, so it can't drift.
+    """
+    statement_day = card.terms.statement_day
+    if statement_day is None:
+        return None
+
+    corte = last_corte(statement_day, today)
+    asof_balance = await balance_as_of(
+        db, user_id=card.account.user_id, account_id=card.account.id, as_of=corte
+    )
+    statement_balance = max(Decimal("0"), -asof_balance)
+
+    paid = (
+        await db.execute(
+            select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+                Transaction.user_id == card.account.user_id,
+                Transaction.account_id == card.account.id,
+                Transaction.status == "confirmed",
+                Transaction.archived.is_(False),
+                Transaction.amount > 0,
+                Transaction.transaction_date > corte,
+            )
+        )
+    ).scalar_one()
+    paid_since_corte = Decimal(paid or 0)
+
+    minimum = compute_minimum(
+        statement_balance,
+        minimum_pct=Decimal(str(card.terms.minimum_payment_pct)),
+        minimum_floor=(
+            Decimal(str(card.terms.minimum_payment_floor))
+            if card.terms.minimum_payment_floor is not None
+            else None
+        ),
+    )
+    settled = is_statement_settled(
+        statement_balance=statement_balance,
+        paid_since_corte=paid_since_corte,
+        payment_mode=card.terms.payment_mode,
+        minimum=minimum,
+    )
+    return CardStatementStatus(
+        corte=corte,
+        due_date=statement_due_date(corte, card.terms.payment_due_day),
+        statement_balance=statement_balance,
+        paid_since_corte=paid_since_corte,
+        remaining=max(Decimal("0"), statement_balance - paid_since_corte),
+        minimum=minimum,
+        settled=settled,
+    )
 
 
 async def superseded_credit_card_debt_ids(

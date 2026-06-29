@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..models.account import Account
 from ..models.bill_occurrence import BillOccurrence
 from ..models.debt import DebtPayment
 from ..models.envelope import Envelope
@@ -283,6 +284,132 @@ async def reclassify_transaction(
         txn.envelope_id = None
     await db.flush()
     return txn
+
+
+# ── register a positive credit-account movement as a card payment ─────────────
+
+REGISTER_PAYMENT_SHADOW = "shadow"
+REGISTER_PAYMENT_TRANSFER_LEG = "transfer_leg"
+REGISTER_PAYMENT_GOAL_FLOW = "goal_flow"
+REGISTER_PAYMENT_ARCHIVED = "archived"
+REGISTER_PAYMENT_NOT_INCOME = "not_income"
+REGISTER_PAYMENT_NOT_CREDIT = "not_credit"
+REGISTER_PAYMENT_SAME_ACCOUNT = "same_account"
+
+REGISTER_PAYMENT_REASON_ES: dict[str, str] = {
+    REGISTER_PAYMENT_SHADOW: (
+        "Ese movimiento está pendiente de aprobar. Aprobalo o rechazalo "
+        "desde el bot."
+    ),
+    REGISTER_PAYMENT_TRANSFER_LEG: (
+        "Ese movimiento ya es parte de una transferencia."
+    ),
+    REGISTER_PAYMENT_GOAL_FLOW: (
+        "Ese movimiento pertenece a una meta de ahorro. Gestionalo desde la "
+        "meta."
+    ),
+    REGISTER_PAYMENT_ARCHIVED: "Restaurá el movimiento antes de registrarlo como pago.",
+    REGISTER_PAYMENT_NOT_INCOME: (
+        "Solo un ingreso (monto positivo) se puede registrar como pago de tarjeta."
+    ),
+    REGISTER_PAYMENT_NOT_CREDIT: (
+        "Esto solo aplica a un ingreso sobre una tarjeta de crédito."
+    ),
+    REGISTER_PAYMENT_SAME_ACCOUNT: (
+        "La cuenta de origen tiene que ser distinta de la tarjeta."
+    ),
+}
+
+
+@dataclass
+class RegisterPaymentError(Exception):
+    """Raised when a positive credit-account row can't be turned into a card
+    payment. `reason_code` → REGISTER_PAYMENT_REASON_ES at the router/bot."""
+
+    reason_code: str
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return f"register_payment_blocked:{self.reason_code}"
+
+
+async def register_income_as_card_payment(
+    db: AsyncSession,
+    *,
+    user: User,
+    txn: Transaction,
+    source_account_id: uuid.UUID,
+    amount: Optional[Decimal] = None,
+    occurred_at: Optional[datetime] = None,
+    fx_rate: Optional[Decimal] = None,
+):
+    """Convert a standalone positive movement on a CREDIT account into a card
+    payment: create a transfer from `source_account_id` → the card, then delete
+    the original row.
+
+    The mis-captured "ingreso en la tarjeta" (a Gmail/manual payment marked as
+    income) becomes a proper transfer: the source account is debited (the money
+    actually leaves it), the card is credited by the transfer's own leg, and
+    transfer legs are excluded from income — so the inflated income is gone and
+    the payment is recognized for the statement-cycle settlement.
+
+    Reuses `create_transfer_with_transactions` (funds guard, card-envelope
+    stamping) + `hard_delete_transaction`. FLUSHES via those; the caller commits.
+    Returns the `TransferCreationResult`.
+    """
+    # Local import to avoid any import-time cycle (recurrence.py pattern).
+    from ..schemas.transfers import TransferCreate
+    from .transfers import create_transfer_with_transactions
+
+    if txn.status != "confirmed":
+        raise RegisterPaymentError(REGISTER_PAYMENT_SHADOW)
+    if txn.transfer_id is not None:
+        raise RegisterPaymentError(REGISTER_PAYMENT_TRANSFER_LEG)
+    if txn.goal_id is not None:
+        raise RegisterPaymentError(REGISTER_PAYMENT_GOAL_FLOW)
+    if txn.archived:
+        raise RegisterPaymentError(REGISTER_PAYMENT_ARCHIVED)
+    if Decimal(str(txn.amount)) <= 0:
+        raise RegisterPaymentError(REGISTER_PAYMENT_NOT_INCOME)
+    if txn.account_id is None:
+        raise RegisterPaymentError(REGISTER_PAYMENT_NOT_CREDIT)
+    if source_account_id == txn.account_id:
+        raise RegisterPaymentError(REGISTER_PAYMENT_SAME_ACCOUNT)
+
+    card = (
+        await db.execute(
+            select(Account).where(
+                Account.id == txn.account_id, Account.user_id == user.id
+            )
+        )
+    ).scalar_one_or_none()
+    if card is None or card.account_type != "credit":
+        raise RegisterPaymentError(REGISTER_PAYMENT_NOT_CREDIT)
+
+    pay_amount = (
+        Decimal(str(amount)) if amount is not None else Decimal(str(txn.amount))
+    )
+
+    # The amount is expressed in the card (destination) currency = txn.currency.
+    # create_transfer_with_transactions validates the source account
+    # (existence/active/funds/currency) and stamps the card's envelope on the
+    # debit leg. Cross-currency needs fx_rate (it raises 400 otherwise).
+    result = await create_transfer_with_transactions(
+        db,
+        user_id=user.id,
+        payload=TransferCreate(
+            from_account_id=source_account_id,
+            to_account_id=txn.account_id,
+            amount=pay_amount,
+            currency=txn.currency,
+            fx_rate=fx_rate,
+            occurred_at=occurred_at,
+            notes="Pago de tarjeta",
+        ),
+    )
+    # The original standalone positive is now represented by the transfer's
+    # credit leg — remove it so the card isn't double-credited.
+    await hard_delete_transaction(db, user=user, txn=txn)
+    return result
 
 
 async def create_transaction(

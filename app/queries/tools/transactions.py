@@ -12,6 +12,7 @@ from sqlalchemy import Date, cast, func, literal, or_, select
 from api.models.account import Account
 from api.models.transaction import Transaction
 from api.models.user import User
+from api.services.income_rules import not_card_payment_income
 
 from app.queries.session import AsyncSessionLocal
 
@@ -391,6 +392,8 @@ def _transaction_filters(
         filters.append(Transaction.transfer_id.is_(None))
         filters.append(Transaction.goal_id.is_(None))
         filters.append(Transaction.amount > 0)
+        # A positive on a credit account is a card payment/refund, never income.
+        filters.append(not_card_payment_income(user_id))
     if min_amount is not None:
         filters.append(_abs_amount_expr() >= min_amount)
     if max_amount is not None:
