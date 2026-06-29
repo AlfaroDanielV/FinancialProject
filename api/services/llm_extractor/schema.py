@@ -27,6 +27,8 @@ class Intent(str, Enum):
     ATTACH_EXPENSE = "attach_expense"
     SET_BALANCE = "set_balance"
     REALLOCATE_ENVELOPE = "reallocate_envelope"
+    MARK_BILL_PAID = "mark_bill_paid"
+    RECORD_DEBT_PAYMENT = "record_debt_payment"
     QUERY = "query"
     CONFIRM_YES = "confirm_yes"
     CONFIRM_NO = "confirm_no"
@@ -122,6 +124,13 @@ class ExtractionResult(BaseModel):
     # is a query (the read-only suggest_reallocation_candidates answers).
     reallocate_from_hint: Optional[str] = Field(default=None, max_length=120)
     reallocate_to_hint: Optional[str] = Field(default=None, max_length=120)
+    # Flexible payment dates — record a payment to an EXISTING recurring bill
+    # (intent=mark_bill_paid) or debt (intent=record_debt_payment). The target is
+    # a free-form name hint; occurred_at_hint carries the payment date (the
+    # dispatcher defaults it to today). amount = monto pagado — optional for a
+    # bill (falls back to the bill's expected amount), required for a debt.
+    bill_target_hint: Optional[str] = Field(default=None, max_length=255)
+    debt_target_hint: Optional[str] = Field(default=None, max_length=255)
     confidence: float = Field(..., ge=0.0, le=1.0)
     raw_notes: Optional[str] = Field(default=None, max_length=500)
 
@@ -162,6 +171,7 @@ class ExtractionResult(BaseModel):
         "transfer_from_hint", "transfer_to_hint", "card_name", "card_issuer",
         "sender_name", "recipient_name",
         "reallocate_from_hint", "reallocate_to_hint",
+        "bill_target_hint", "debt_target_hint",
     )
     @classmethod
     def _normalize_strings(cls, v: Optional[str]) -> Optional[str]:

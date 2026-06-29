@@ -1,6 +1,5 @@
 import json
 import uuid
-from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
@@ -272,7 +271,10 @@ async def mark_bill_paid(
             db,
             user.id,
             amount_paid=amount_paid,
-            paid_at=datetime.combine(transaction_date, datetime.min.time()),
+            # Pass the day-level date; link_transaction_to_occurrence coerces it
+            # to a tz-aware CR datetime (was a naive datetime here — inconsistent
+            # with the chat path and the timezone-aware column).
+            paid_at=transaction_date,
             notes=payload.description,
         )
     except ValueError as exc:

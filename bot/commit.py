@@ -25,7 +25,7 @@ from api.models.recurring_income import RecurringIncome
 from api.models.transaction import Transaction
 from api.models.user import User
 from api.schemas.transfers import TransferCreate
-from api.services import recurrence
+from api.services import debt_payments, recurrence
 from api.services.anchors import apply_anchor
 from api.services.transactions import (
     RECLASSIFY_NOT_FOUND,
@@ -83,6 +83,16 @@ async def commit_pending(
 
     if pending.action_type == "reconcile_statement":
         return await _commit_reconcile_statement(
+            user=user, pending=pending, db=db, redis=redis
+        )
+
+    if pending.action_type == "mark_bill_paid":
+        return await _commit_mark_bill_paid(
+            user=user, pending=pending, db=db, redis=redis
+        )
+
+    if pending.action_type == "record_debt_payment":
+        return await _commit_record_debt_payment(
             user=user, pending=pending, db=db, redis=redis
         )
 
@@ -527,3 +537,127 @@ async def _commit_bill(
         redis=redis,
     )
     return bill.id
+
+
+async def _commit_mark_bill_paid(
+    *,
+    user: User,
+    pending: PendingAction,
+    db: AsyncSession,
+    redis: Redis,
+) -> uuid.UUID:
+    """Mark an existing recurring bill paid (Flexible Payment Dates): create the
+    expense transaction on the chosen date and link the occurrence closest to it
+    within ±15 days (a standalone expense when none — no phantom occurrence).
+    Mirrors the REST mark-paid transaction shape, but source='telegram' so /undo
+    can reverse it. Returns the transaction id."""
+    payload = pending.payload
+    bill_id = uuid.UUID(payload["bill_id"])
+    bill = (
+        await db.execute(
+            select(RecurringBill).where(
+                RecurringBill.id == bill_id,
+                RecurringBill.user_id == user.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if bill is None:
+        raise ValueError("bill not found for mark_bill_paid")
+
+    amount = Decimal(payload["amount"])
+    payment_date = date.fromisoformat(payload["payment_date"])
+    account_raw: Optional[str] = payload.get("account_id")
+    account_id = uuid.UUID(account_raw) if account_raw else None
+
+    txn = Transaction(
+        user_id=user.id,
+        account_id=account_id,
+        amount=Decimal(str(-abs(amount))),
+        currency=payload["currency"],
+        merchant=bill.provider or bill.name,
+        description=f"Pago: {bill.name}",
+        category=bill.category,
+        transaction_date=payment_date,
+        source="telegram",
+        # Fixed-expense attachment: tag the payment to the bill's envelope so the
+        # actual amount counts as spend there and the reservation releases the
+        # same cycle (never both).
+        envelope_id=bill.envelope_id,
+    )
+    db.add(txn)
+    await db.flush()
+
+    occ = await recurrence.find_closest_occurrence(
+        db,
+        user_id=user.id,
+        recurring_bill_id=bill.id,
+        payment_date=payment_date,
+    )
+    if occ is not None:
+        await recurrence.link_transaction_to_occurrence(
+            occ.id,
+            txn.id,
+            db,
+            user.id,
+            amount_paid=float(amount),
+            paid_at=payment_date,
+        )
+
+    await resolve_from_pending(
+        session=db, pending=pending, resolution="confirmed"
+    )
+    await db.commit()
+
+    await clear_pending(user_id=user.id, redis=redis)
+    await save_last_action(
+        user_id=user.id,
+        action_type="mark_bill_paid",
+        record_id=txn.id,
+        redis=redis,
+    )
+    return txn.id
+
+
+async def _commit_record_debt_payment(
+    *,
+    user: User,
+    pending: PendingAction,
+    db: AsyncSession,
+    redis: Redis,
+) -> uuid.UUID:
+    """Record a payment toward an existing debt (Flexible Payment Dates): write a
+    DebtPayment and lower current_balance via the shared service (no account-side
+    movement, operator decision). Mirrors POST /debts/{id}/payments. Returns the
+    payment id (the /undo record_id)."""
+    payload = pending.payload
+    debt_id = uuid.UUID(payload["debt_id"])
+    debt = (
+        await db.execute(
+            select(Debt).where(Debt.id == debt_id, Debt.user_id == user.id)
+        )
+    ).scalar_one_or_none()
+    if debt is None:
+        raise ValueError("debt not found for record_debt_payment")
+
+    payment = await debt_payments.record_debt_payment(
+        db,
+        user_id=user.id,
+        debt=debt,
+        amount_paid=float(Decimal(payload["amount_paid"])),
+        payment_date=date.fromisoformat(payload["payment_date"]),
+        notes=payload.get("notes"),
+    )
+
+    await resolve_from_pending(
+        session=db, pending=pending, resolution="confirmed"
+    )
+    await db.commit()
+
+    await clear_pending(user_id=user.id, redis=redis)
+    await save_last_action(
+        user_id=user.id,
+        action_type="record_debt_payment",
+        record_id=payment.id,
+        redis=redis,
+    )
+    return payment.id

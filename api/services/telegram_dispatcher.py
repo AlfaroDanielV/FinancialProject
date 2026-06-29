@@ -30,6 +30,10 @@ from .amortization import compute_french_payment
 from .envelopes import (
     active_children,
     fetch_envelopes,
+    list_active_bills,
+    list_active_debts,
+    match_bills_by_name,
+    match_debts_by_name,
     match_envelopes_by_name,
     match_obligations_by_name,
     reallocation_blocker,
@@ -357,6 +361,16 @@ async def dispatch(
     if intent is Intent.REALLOCATE_ENVELOPE:
         return await _dispatch_reallocate(
             extraction=extraction, user=user, db=db
+        )
+
+    if intent is Intent.MARK_BILL_PAID:
+        return await _dispatch_mark_bill_paid(
+            extraction=extraction, user=user, today=today, db=db
+        )
+
+    if intent is Intent.RECORD_DEBT_PAYMENT:
+        return await _dispatch_record_debt_payment(
+            extraction=extraction, user=user, today=today, db=db
         )
 
     # Defensive fallback — should be unreachable given the enum.
@@ -1694,6 +1708,217 @@ async def _dispatch_attach_expense(
     )
     return ProposeAction(
         action_type="attach_expense", payload=payload, summary_es=summary
+    )
+
+
+# ── Flexible Payment Dates: pay an existing bill / debt from chat ─────────────
+
+
+def _payment_date_es(payment_date: date, today: date) -> str:
+    if payment_date == today:
+        return "hoy"
+    if payment_date == today - timedelta(days=1):
+        return "ayer"
+    return payment_date.isoformat()
+
+
+async def _dispatch_mark_bill_paid(
+    *, extraction: ExtractionResult, user: User, today: date, db: AsyncSession
+) -> DispatcherResult:
+    """Mark an EXISTING recurring bill paid ("pagué la luz [fecha]"). Resolves
+    the bill by name, the payment date (default today), the amount (the bill's
+    expected amount when unstated), and the account (the bill's account, else
+    asks). The commit picks the occurrence closest to the payment date within
+    ±15 days, or records a standalone expense — never a phantom occurrence."""
+    if not extraction.bill_target_hint:
+        all_bills = await list_active_bills(db, user_id=user.id)
+        if not all_bills:
+            return AskClarification(
+                question_es=(
+                    "No tenés gastos fijos registrados todavía. Registrá uno y "
+                    "después marcalo como pagado."
+                ),
+                awaiting_field="bill_target",
+                partial=extraction.model_dump(mode="json"),
+            )
+        return AskClarification(
+            question_es="¿Cuál gasto fijo pagaste?",
+            awaiting_field="bill_target",
+            partial=extraction.model_dump(mode="json"),
+            options=[b.name for b in all_bills[:MAX_ACCOUNT_OPTIONS]],
+        )
+
+    bills = await match_bills_by_name(
+        db, user_id=user.id, hint=extraction.bill_target_hint
+    )
+    if not bills:
+        all_bills = await list_active_bills(db, user_id=user.id)
+        return AskClarification(
+            question_es=(
+                f"No encontré un gasto fijo que se llame «{extraction.bill_target_hint}». "
+                "¿Cuál pagaste?"
+            ),
+            awaiting_field="bill_target",
+            partial=extraction.model_dump(mode="json"),
+            options=[b.name for b in all_bills[:MAX_ACCOUNT_OPTIONS]],
+        )
+    if len(bills) > 1:
+        return AskClarification(
+            question_es="¿Cuál gasto fijo pagaste? Coinciden varios.",
+            awaiting_field="bill_target",
+            partial=extraction.model_dump(mode="json"),
+            options=[b.name for b in bills[:MAX_ACCOUNT_OPTIONS]],
+        )
+    bill = bills[0]
+
+    # Amount: stated, else the bill's expected amount. A variable bill with no
+    # stated amount can't be guessed — ask.
+    if extraction.amount is not None:
+        amount = extraction.amount
+    elif bill.amount_expected is not None:
+        amount = Decimal(str(bill.amount_expected))
+    else:
+        return AskClarification(
+            question_es=f"¿Cuánto pagaste de «{bill.name}»? Es de monto variable.",
+            awaiting_field="amount",
+            partial=extraction.model_dump(mode="json"),
+        )
+
+    currency = bill.currency
+    payment_date = _resolve_occurred_at(extraction.occurred_at_hint, today)
+
+    # Account: the bill's own account if set; otherwise resolve, and ask only
+    # when the user has several accounts. No account → an orphan ("sin cuenta")
+    # movement the user can assign later.
+    accounts = await list_active(user, db)
+    account = None
+    if bill.account_id is not None:
+        account = next((a for a in accounts if a.id == bill.account_id), None)
+    if account is None:
+        candidates = _accounts_in_currency(accounts, currency) or accounts
+        account = await resolve_account(user, None, db)
+        if account is None and len(candidates) == 1:
+            account = candidates[0]
+        if account is None and len(candidates) > 1:
+            return AskClarification(
+                question_es=(
+                    "¿De qué cuenta lo pagaste? Tocá una opción o escribime el "
+                    "nombre."
+                ),
+                awaiting_field="account",
+                partial=extraction.model_dump(mode="json"),
+                options=_account_options(candidates),
+            )
+
+    payload = {
+        "action_type": "mark_bill_paid",
+        "bill_id": str(bill.id),
+        "bill_name": bill.name,
+        "amount": str(amount),
+        "currency": currency,
+        "account_id": str(account.id) if account else None,
+        "account_name": account.name if account else None,
+        "payment_date": payment_date.isoformat(),
+    }
+    acct = f" (cuenta {account.name})" if account else ""
+    summary = (
+        f"Pago de «{bill.name}» por {_format_amount(amount, currency)}{acct} "
+        f"{_payment_date_es(payment_date, today)}. ¿Confirmo?"
+    )
+    return ProposeAction(
+        action_type="mark_bill_paid", payload=payload, summary_es=summary
+    )
+
+
+async def _dispatch_record_debt_payment(
+    *, extraction: ExtractionResult, user: User, today: date, db: AsyncSession
+) -> DispatcherResult:
+    """Record a payment toward an EXISTING debt ("pagué 50 mil del préstamo").
+    Lowers the debt's balance only — no account-side movement (operator
+    decision). Amount is required; the payment date defaults to today."""
+    if not extraction.debt_target_hint:
+        debts = await list_active_debts(db, user_id=user.id)
+        if not debts:
+            return AskClarification(
+                question_es=(
+                    "No tenés deudas ni préstamos registrados. Registralo "
+                    "primero y después anotás el pago."
+                ),
+                awaiting_field="debt_target",
+                partial=extraction.model_dump(mode="json"),
+            )
+        return AskClarification(
+            question_es="¿A cuál deuda le hiciste el pago?",
+            awaiting_field="debt_target",
+            partial=extraction.model_dump(mode="json"),
+            options=[d.name for d in debts[:MAX_ACCOUNT_OPTIONS]],
+        )
+
+    debts = await match_debts_by_name(
+        db, user_id=user.id, hint=extraction.debt_target_hint
+    )
+    if not debts:
+        all_debts = await list_active_debts(db, user_id=user.id)
+        return AskClarification(
+            question_es=(
+                f"No encontré una deuda que se llame «{extraction.debt_target_hint}». "
+                "¿A cuál le hiciste el pago?"
+            ),
+            awaiting_field="debt_target",
+            partial=extraction.model_dump(mode="json"),
+            options=[d.name for d in all_debts[:MAX_ACCOUNT_OPTIONS]],
+        )
+    if len(debts) > 1:
+        return AskClarification(
+            question_es="¿A cuál deuda? Coinciden varias.",
+            awaiting_field="debt_target",
+            partial=extraction.model_dump(mode="json"),
+            options=[d.name for d in debts[:MAX_ACCOUNT_OPTIONS]],
+        )
+    debt = debts[0]
+
+    if extraction.amount is None:
+        return AskClarification(
+            question_es=f"¿Cuánto pagaste de «{debt.name}»?",
+            awaiting_field="amount",
+            partial=extraction.model_dump(mode="json"),
+        )
+    amount = extraction.amount
+    payment_date = _resolve_occurred_at(extraction.occurred_at_hint, today)
+    currency = debt.currency
+
+    # Reject an overpayment: a chat payment larger than the balance would clamp
+    # remaining_balance to 0, which then makes /undo over-restore the balance (it
+    # can't recover the lost excess). Asking keeps undo exact and is honest — you
+    # can't abonar more than you owe. (REST/native clamp; they have no /undo, so
+    # no corruption there.)
+    balance = Decimal(str(debt.current_balance))
+    if amount > balance:
+        return AskClarification(
+            question_es=(
+                f"Ese monto ({_format_amount(amount, currency)}) es mayor al "
+                f"saldo de «{debt.name}» ({_format_amount(balance, currency)}). "
+                f"Para saldarla, decime {_format_amount(balance, currency)}."
+            ),
+            awaiting_field="amount",
+            partial=extraction.model_dump(mode="json"),
+        )
+
+    payload = {
+        "action_type": "record_debt_payment",
+        "debt_id": str(debt.id),
+        "debt_name": debt.name,
+        "amount_paid": str(amount),
+        "currency": currency,
+        "payment_date": payment_date.isoformat(),
+        "notes": None,
+    }
+    summary = (
+        f"Pago de {_format_amount(amount, currency)} a «{debt.name}» "
+        f"{_payment_date_es(payment_date, today)}. ¿Confirmo?"
+    )
+    return ProposeAction(
+        action_type="record_debt_payment", payload=payload, summary_es=summary
     )
 
 

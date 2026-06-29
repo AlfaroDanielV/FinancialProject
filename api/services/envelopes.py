@@ -244,6 +244,58 @@ async def match_obligations_by_name(
     return _name_match(cands, hint, lambda c: c.name)
 
 
+async def list_active_bills(
+    db: AsyncSession, *, user_id: uuid.UUID
+) -> list[RecurringBill]:
+    """All active recurring bills (chat mark_bill_paid options)."""
+    rows = (
+        await db.execute(
+            select(RecurringBill).where(
+                RecurringBill.user_id == user_id,
+                RecurringBill.is_active.is_(True),
+            )
+        )
+    ).scalars().all()
+    return list(rows)
+
+
+async def match_bills_by_name(
+    db: AsyncSession, *, user_id: uuid.UUID, hint: str
+) -> list[RecurringBill]:
+    """Active recurring bills whose name matches the hint — the chat
+    mark_bill_paid target resolver (Flexible Payment Dates). Reuses _name_match
+    so it behaves like attachment/goal name resolution."""
+    return _name_match(
+        await list_active_bills(db, user_id=user_id), hint, lambda b: b.name
+    )
+
+
+async def list_active_debts(
+    db: AsyncSession, *, user_id: uuid.UUID
+) -> list[Debt]:
+    """All active (non-archived) debts (chat record_debt_payment options)."""
+    rows = (
+        await db.execute(
+            select(Debt).where(
+                Debt.user_id == user_id,
+                Debt.is_active.is_(True),
+                Debt.archived.is_(False),
+            )
+        )
+    ).scalars().all()
+    return list(rows)
+
+
+async def match_debts_by_name(
+    db: AsyncSession, *, user_id: uuid.UUID, hint: str
+) -> list[Debt]:
+    """Active (non-archived) debts whose name matches the hint — the chat
+    record_debt_payment target resolver (Flexible Payment Dates)."""
+    return _name_match(
+        await list_active_debts(db, user_id=user_id), hint, lambda d: d.name
+    )
+
+
 async def list_unattached_obligations(
     db: AsyncSession, *, user_id: uuid.UUID
 ) -> list[tuple[str, Optional[Decimal], str]]:

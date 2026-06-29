@@ -11,7 +11,6 @@ from ..config import settings
 from ..database import get_db
 from ..dependencies import current_user
 from ..models.debt import Debt, DebtPayment
-from ..models.transaction import Transaction
 from ..models.user import User
 from ..schemas.debts import (
     AmortizationRow,
@@ -35,6 +34,7 @@ from ..schemas.debts import (
     ScheduleSummary,
     UpcomingPayment,
 )
+from ..services import debt_payments
 from ..services.envelopes import is_valid_envelope_target
 from ..services.llm_extractor import extract_debt_terms
 
@@ -422,50 +422,29 @@ async def record_payment(
     if not debt:
         raise HTTPException(status_code=404, detail="Deuda no encontrada.")
 
-    remaining = payload.remaining_balance
-    if remaining is None:
-        remaining = float(debt.current_balance) - payload.amount_paid
-        if remaining < 0:
-            remaining = 0
-
-    payment = DebtPayment(
-        debt_id=debt_id,
-        transaction_id=payload.transaction_id,
-        payment_date=payload.payment_date,
+    # Shared with the chat record_debt_payment commit (Flexible Payment Dates):
+    # writes the DebtPayment, lowers current_balance, bumps payments_made, and
+    # tags a linked transaction's envelope. No account-side transaction.
+    payment = await debt_payments.record_debt_payment(
+        db,
+        user_id=user.id,
+        debt=debt,
         amount_paid=payload.amount_paid,
+        payment_date=payload.payment_date,
+        notes=payload.notes,
+        transaction_id=payload.transaction_id,
+        remaining_balance=payload.remaining_balance,
         principal_portion=payload.principal_portion,
         interest_portion=payload.interest_portion,
         extra_payment=payload.extra_payment,
-        remaining_balance=remaining,
-        notes=payload.notes,
     )
-    db.add(payment)
-
-    # Fixed-expense attachment (B2): if the debt is attached to an envelope and
-    # this payment links a transaction, tag that transaction to the envelope so
-    # the actual payment counts as spend there and the reservation releases the
-    # same cycle (never both).
-    if payload.transaction_id is not None and debt.envelope_id is not None:
-        txn = (
-            await db.execute(
-                select(Transaction).where(
-                    Transaction.id == payload.transaction_id,
-                    Transaction.user_id == user.id,
-                )
-            )
-        ).scalar_one_or_none()
-        if txn is not None and txn.envelope_id is None:
-            txn.envelope_id = debt.envelope_id
-
-    debt.current_balance = remaining
-    debt.payments_made = (debt.payments_made or 0) + 1
     await db.commit()
     await db.refresh(payment)
 
     # Phase 8 B5 — celebrate the moment a payment kills the debt (balance → 0).
     # Best-effort / isolated session; idempotent (dedup on debt_paid:{id}, which
     # also collapses a later delete of the same debt into one celebration).
-    if float(remaining) <= 0:
+    if float(payment.remaining_balance) <= 0:
         await _maybe_celebrate_debt_paid(user.id)
 
     return payment

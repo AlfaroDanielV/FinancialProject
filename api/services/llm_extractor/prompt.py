@@ -39,6 +39,8 @@ Reglas duras:
    - "attach_expense": el usuario quiere ASIGNAR un gasto fijo / recibo / deuda YA EXISTENTE a un sobre ("poné el recibo del ICE en el sobre Servicios", "asigná la cuota del préstamo al sobre Deudas", "meté la factura de internet en el sobre Casa"). Llená expense_hint con el nombre del gasto o deuda y envelope_hint con el nombre del sobre. NO es create_bill (eso configura uno nuevo) ni log_expense (eso registra una compra única).
    - "set_balance": el usuario quiere CORREGIR / ACTUALIZAR el saldo REAL de una de sus cuentas para que cuadre con el banco ("corregí mi saldo", "mi saldo real en el BAC es 82 mil", "actualizá el saldo de ahorros a 500000", "el banco me muestra 1 millón en la corriente"). Llená amount con el saldo real (magnitud positiva) y account_hint con la cuenta. NO es log_income ni log_expense (eso registra un movimiento): set_balance FIJA el saldo y el sistema calcula la diferencia como un ajuste de reconciliación. Es solo para cuentas propias de débito/ahorro, NO tarjetas.
    - "reallocate_envelope": el usuario ORDENA mover / pasar / reasignar presupuesto de UN SOBRE a OTRO ("movéme 15 mil de Ahorro a Gustos", "pasá 10000 del sobre Súper al de Salud", "reasigná 20 mil de Ocio a Comida"). Llená reallocate_from_hint (sobre de DONDE sale), reallocate_to_hint (sobre a DONDE va) y amount con el monto. OJO: si el usuario PREGUNTA de dónde sacar plata o pide un consejo ("¿de dónde muevo plata para Gustos?", "me estoy pasando de Gustos, ¿de dónde saco?") eso NO es reallocate_envelope — es una consulta (intent="query", dispatcher="query"), porque pide una recomendación, no ordena un movimiento concreto.
+   - "mark_bill_paid": el usuario PAGÓ un GASTO FIJO / RECIBO RECURRENTE que YA tiene registrado ("pagué la luz", "ya pagué el recibo del ICE", "pagué el alquiler", "pagué la factura de internet"). Llená bill_target_hint con el nombre del recibo tal cual ("luz", "ICE", "internet"). Reusá occurred_at_hint para la fecha del pago (si no la dice, el servidor asume hoy). amount es OPCIONAL — si no dice cuánto, dejalo null (el sistema usa el monto esperado del recibo). OJO: un gasto suelto a un comercio ("pagué 12 mil de Netflix", "gasté 5000 en el súper") es log_expense, NO mark_bill_paid; mark_bill_paid es solo para un gasto fijo YA registrado.
+   - "record_debt_payment": el usuario hizo un PAGO / ABONO a una DEUDA o préstamo que YA tiene registrado ("pagué el préstamo", "aboné 200 mil al crédito del carro", "pagué la cuota de la hipoteca", "pagué 50 mil de la deuda"). Llená debt_target_hint con el nombre de la deuda tal cual ("préstamo del carro", "hipoteca", "la deuda") y amount con el monto pagado. Reusá occurred_at_hint para la fecha (si no la dice, hoy). OJO: pagar la TARJETA de crédito es log_transfer, NO record_debt_payment; registrar una deuda NUEVA es create_debt; record_debt_payment es un PAGO a una deuda que YA existe.
    - "query": cualquier pregunta o solicitud de informacion de solo lectura. Incluye análisis de accesibilidad y simulación de financiamiento sin registrar nada ("¿me alcanza para X?", "¿cuánto sería la cuota de un préstamo de X a N años al T%?", "¿me conviene financiar este carro?").
    - "confirm_yes": confirma un paso previo ("sí", "dale", "ok", "correcto", "confirmá").
    - "confirm_no": cancela un paso previo ("no", "cancelar", "mejor no").
@@ -57,6 +59,7 @@ Reglas duras:
    - Registrar una tarjeta de crédito ("create_card") también va a dispatcher="write".
    - Corregir / actualizar el saldo real de una cuenta ("set_balance") también va a dispatcher="write".
    - Mover / reasignar presupuesto entre sobres ("reallocate_envelope") también va a dispatcher="write".
+   - Pagar un gasto fijo ya registrado ("mark_bill_paid") o abonar a una deuda ya registrada ("record_debt_payment") también van a dispatcher="write".
    - Si el usuario da un comando, confirma, cancela, pide ayuda, deshace o el mensaje no tiene sentido,
      usa dispatcher="control".
 
@@ -162,6 +165,13 @@ salud / ocio / vivienda / deudas / otros). Recibos de servicios → "servicios",
    - reallocate_to_hint: el sobre a DONDE va el presupuesto, tal cual ("Gustos", "Salud"). Si no lo dice, null.
    - NO uses account_hint ni envelope_hint para esto; usá los campos reallocate_*.
 
+18. Pago de un gasto fijo o deuda YA registrados (mark_bill_paid / record_debt_payment):
+   - bill_target_hint (solo mark_bill_paid): el nombre del recibo/gasto fijo tal cual ("luz", "ICE", "internet", "alquiler"). NO un id.
+   - debt_target_hint (solo record_debt_payment): el nombre de la deuda/préstamo tal cual ("préstamo del carro", "hipoteca", "la deuda"). NO un id.
+   - amount: para record_debt_payment es el monto pagado (necesario; si no lo dice, dejalo null y el servidor lo pide). Para mark_bill_paid es OPCIONAL (null si no lo dice).
+   - occurred_at_hint: la fecha del pago tal cual la dijo ("ayer", "el 25", "el lunes"). NO la resuelvas. Si no la dice, null → el servidor asume hoy.
+   - NO uses merchant/category_hint/account_hint para estos; usá bill_target_hint / debt_target_hint y amount.
+
 Ejemplos:
 - Usuario: "gasté 5000 en el super"
   Tool input: {"intent":"log_expense","dispatcher":"write","amount":5000,"currency":null,"merchant":"super","category_hint":"supermercado","account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.95,"raw_notes":null}
@@ -223,6 +233,14 @@ Ejemplos:
   Tool input: {"intent":"reallocate_envelope","dispatcher":"write","amount":15000,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"reallocate_from_hint":"Ahorro","reallocate_to_hint":"Gustos","confidence":0.93,"raw_notes":null}
 - Usuario: "me estoy pasando de Gustos, ¿de dónde muevo plata?" (PREGUNTA un consejo, NO ordena un movimiento)
   Tool input: {"intent":"query","dispatcher":"query","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.9,"raw_notes":"de dónde reasignar para Gustos"}
+- Usuario: "pagué la luz" (gasto fijo ya registrado, sin monto ni fecha → el servidor asume hoy)
+  Tool input: {"intent":"mark_bill_paid","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"bill_target_hint":"luz","debt_target_hint":null,"confidence":0.9,"raw_notes":null}
+- Usuario: "ya pagué el recibo del ICE el 25"
+  Tool input: {"intent":"mark_bill_paid","dispatcher":"write","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":"el 25","query_window":null,"bill_target_hint":"ICE","debt_target_hint":null,"confidence":0.9,"raw_notes":null}
+- Usuario: "pagué 50 mil del préstamo del carro ayer"
+  Tool input: {"intent":"record_debt_payment","dispatcher":"write","amount":50000,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":"ayer","query_window":null,"bill_target_hint":null,"debt_target_hint":"préstamo del carro","confidence":0.92,"raw_notes":null}
+- Usuario: "aboné 200 mil a la hipoteca"
+  Tool input: {"intent":"record_debt_payment","dispatcher":"write","amount":200000,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"bill_target_hint":null,"debt_target_hint":"hipoteca","confidence":0.92,"raw_notes":null}
 """
 
 
@@ -251,6 +269,8 @@ TOOL_DEFINITION = {
                     "attach_expense",
                     "set_balance",
                     "reallocate_envelope",
+                    "mark_bill_paid",
+                    "record_debt_payment",
                     "query",
                     "confirm_yes",
                     "confirm_no",
@@ -510,6 +530,24 @@ TOOL_DEFINITION = {
                 "description": (
                     "reallocate_envelope only. Destination envelope the budget "
                     "moves TO ('Gustos', 'Salud')."
+                ),
+            },
+            "bill_target_hint": {
+                "type": ["string", "null"],
+                "maxLength": 255,
+                "description": (
+                    "mark_bill_paid only. Name of the EXISTING recurring bill the "
+                    "user paid, as they said it ('luz', 'ICE', 'internet', "
+                    "'alquiler'). Not a DB id."
+                ),
+            },
+            "debt_target_hint": {
+                "type": ["string", "null"],
+                "maxLength": 255,
+                "description": (
+                    "record_debt_payment only. Name of the EXISTING debt/loan the "
+                    "user paid toward, as they said it ('préstamo del carro', "
+                    "'hipoteca', 'la deuda'). Not a DB id."
                 ),
             },
             "confidence": {

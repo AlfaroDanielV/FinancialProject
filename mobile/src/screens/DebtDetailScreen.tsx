@@ -30,11 +30,13 @@ import {
   fetchDebt,
   fetchDebtSchedule,
   fetchPayoffScenarios,
+  recordDebtPayment,
   updateDebt,
   type AmortizationRow,
   type PayoffScenariosResponse,
 } from "../api/debts";
 import { DebtEditModal } from "../components/DebtEditModal";
+import { DateField } from "../components/fields/DateField";
 import { CardShadow, Colors, FontSize, Radius, Spacing } from "../theme";
 import type { MasStackParamList } from "../navigation/MasNavigator";
 
@@ -66,6 +68,152 @@ function nextPaymentLabel(dueDay: number): string {
   if (candidate < today) candidate.setMonth(candidate.getMonth() + 1);
   return candidate.toLocaleDateString("es-CR", { day: "numeric", month: "long", year: "numeric" });
 }
+
+function todayIso(): string {
+  const d = new Date();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+// ── record-payment form (Flexible Payment Dates) ──────────────────────────────
+
+function RecordPaymentForm({
+  debtId,
+  currency,
+  onSuccess,
+}: {
+  debtId: string;
+  currency: string;
+  onSuccess: () => void;
+}) {
+  const [amount, setAmount] = useState("");
+  const [paymentDate, setPaymentDate] = useState(todayIso());
+  const [notes, setNotes] = useState("");
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      recordDebtPayment(debtId, {
+        amount_paid: parseFloat(amount.replace(",", ".")) || 0,
+        payment_date: paymentDate,
+        notes: notes.trim() || undefined,
+      }),
+    onSuccess: (data) => {
+      setApiError(null);
+      setSuccessMsg(
+        `¡Pago registrado! Saldo: ${fmt(data.remaining_balance, currency)}`,
+      );
+      onSuccess();
+    },
+    onError: (err: unknown) => {
+      const detail = (err as { response?: { data?: { detail?: string } } })
+        ?.response?.data?.detail;
+      setApiError(typeof detail === "string" ? detail : "No se pudo registrar el pago.");
+    },
+  });
+
+  if (successMsg) {
+    return (
+      <View style={payStyles.successBox}>
+        <Feather name="check-circle" size={18} color={Colors.income} />
+        <Text style={payStyles.successText}>{successMsg}</Text>
+      </View>
+    );
+  }
+
+  const amountValue = parseFloat(amount.replace(",", "."));
+  const canSubmit = amountValue > 0 && !mutation.isPending;
+
+  return (
+    <View style={payStyles.container}>
+      <View style={payStyles.field}>
+        <Text style={payStyles.label}>Monto pagado ({currency})</Text>
+        <TextInput
+          style={payStyles.input}
+          value={amount}
+          onChangeText={setAmount}
+          keyboardType="numeric"
+          placeholder="0"
+          placeholderTextColor={Colors.textMuted}
+        />
+      </View>
+
+      <View style={payStyles.field}>
+        <Text style={payStyles.label}>Fecha de pago</Text>
+        <DateField value={paymentDate} onChange={setPaymentDate} style={payStyles.input} />
+      </View>
+
+      <View style={payStyles.field}>
+        <Text style={payStyles.label}>Nota (opcional)</Text>
+        <TextInput
+          style={payStyles.input}
+          value={notes}
+          onChangeText={setNotes}
+          placeholder="Ej: abono extraordinario"
+          placeholderTextColor={Colors.textMuted}
+        />
+      </View>
+
+      {apiError && <Text style={payStyles.errorText}>{apiError}</Text>}
+
+      <Pressable
+        style={({ pressed }) => [
+          payStyles.submitBtn,
+          (!canSubmit || pressed) && payStyles.submitBtnDisabled,
+        ]}
+        onPress={() => mutation.mutate()}
+        disabled={!canSubmit}
+      >
+        {mutation.isPending ? (
+          <ActivityIndicator color={Colors.textOnDark} size="small" />
+        ) : (
+          <Text style={payStyles.submitBtnText}>Registrar pago</Text>
+        )}
+      </Pressable>
+    </View>
+  );
+}
+
+const payStyles = StyleSheet.create({
+  container: { gap: Spacing.sm },
+  field: { gap: Spacing.xs },
+  label: { fontSize: FontSize.sm, color: Colors.textSecondary, fontWeight: "500" },
+  input: {
+    backgroundColor: Colors.bgInput,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.sm - 2,
+    fontSize: FontSize.md,
+    color: Colors.textPrimary,
+  },
+  errorText: { fontSize: FontSize.sm, color: Colors.overdue },
+  successBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+    padding: Spacing.sm,
+    backgroundColor: Colors.accentBg,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.accentSoft,
+  },
+  successText: { flex: 1, fontSize: FontSize.sm, color: Colors.income, fontWeight: "500" },
+  submitBtn: {
+    backgroundColor: Colors.accent,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.sm,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: Spacing.xs,
+    minHeight: 44,
+  },
+  submitBtnDisabled: { opacity: 0.65 },
+  submitBtnText: { fontSize: FontSize.md, fontWeight: "700", color: Colors.textOnDark },
+});
 
 // ── expandable section ────────────────────────────────────────────────────────
 
@@ -594,6 +742,17 @@ export function DebtDetailScreen({ navigation, route }: Props) {
         <Section title="Cancelación anticipada">
           <PayoffCalculator debtId={debtId} currency={debt.currency} />
         </Section>
+
+        {/* ── record a payment (Flexible Payment Dates) ── */}
+        {!debt.archived && (
+          <Section title="Registrar pago">
+            <RecordPaymentForm
+              debtId={debtId}
+              currency={debt.currency}
+              onSuccess={refreshDebts}
+            />
+          </Section>
+        )}
 
         {/* ── manage actions (edit + lifecycle) ── */}
         <View style={styles.actionsCard}>

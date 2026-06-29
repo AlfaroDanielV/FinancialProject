@@ -17,6 +17,8 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.models.user import User
+from api.services.debt_payments import undo_debt_payment
+from api.services.recurrence import undo_bill_payment
 from api.services.transactions import (
     UNDO_REASON_LINKED_TO_BILL,
     UNDO_REASON_NOT_FOUND,
@@ -51,6 +53,26 @@ async def run_undo(
         # BOTH legs, otherwise one account keeps a phantom movement.
         ok = await delete_transfer_with_transactions(
             db, user_id=user.id, transfer_id=record_id
+        )
+        await clear_last_action(user_id=user.id, redis=redis)
+        if not ok:
+            return False, messages_es.UNDO_NOT_FOUND
+        return True, messages_es.UNDO_SUCCESS
+
+    if action_type == "mark_bill_paid":
+        # Flexible Payment Dates: unlink the bill occurrence + delete the txn.
+        ok = await undo_bill_payment(
+            db, user_id=user.id, transaction_id=record_id
+        )
+        await clear_last_action(user_id=user.id, redis=redis)
+        if not ok:
+            return False, messages_es.UNDO_NOT_FOUND
+        return True, messages_es.UNDO_SUCCESS
+
+    if action_type == "record_debt_payment":
+        # Flexible Payment Dates: restore the debt balance + delete the payment.
+        ok = await undo_debt_payment(
+            db, user_id=user.id, debt_payment_id=record_id
         )
         await clear_last_action(user_id=user.id, redis=redis)
         if not ok:

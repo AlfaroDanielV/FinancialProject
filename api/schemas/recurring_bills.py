@@ -121,7 +121,10 @@ class BillOccurrenceResponse(BaseModel):
 class MarkPaidRequest(BaseModel):
     transaction_id: Optional[uuid.UUID] = None
     amount_paid: Optional[float] = Field(None, gt=0)
-    paid_at: Optional[datetime] = None
+    # Day-level payment date (the app is day-level). Unified to `date` to match
+    # BillMarkPaidRequest; link_transaction_to_occurrence coerces it to a tz-aware
+    # datetime before writing the TIMESTAMP column. No migration.
+    paid_at: Optional[date] = None
     notes: Optional[str] = None
 
 

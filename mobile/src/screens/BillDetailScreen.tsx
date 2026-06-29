@@ -36,6 +36,7 @@ import {
 } from "../api/bills";
 import { fetchAccounts, type AccountResponse } from "../api/accounts";
 import { BillFormModal } from "../components/BillFormModal";
+import { DateField } from "../components/fields/DateField";
 import { CardShadow, Colors, FontSize, Radius, Spacing } from "../theme";
 import type { MasStackParamList } from "../navigation/MasNavigator";
 
@@ -59,6 +60,13 @@ function fmtDate(iso: string): string {
     month: "long",
     year: "numeric",
   });
+}
+
+function todayIso(): string {
+  const d = new Date();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -94,7 +102,9 @@ function MarkPaidForm({
 
   const defaultAmount = occurrence.amount_expected ?? bill.amount_expected ?? 0;
   const [amount, setAmount] = useState(String(defaultAmount));
-  const [paidAt, setPaidAt] = useState(occurrence.due_date);
+  // Flexible Payment Dates: default to TODAY (you can pick any date), not the
+  // occurrence's due_date.
+  const [paidAt, setPaidAt] = useState(todayIso());
   const [accountId, setAccountId] = useState<string>(bill.account_id ?? "");
   const [description, setDescription] = useState("");
   const [idempotencyKey] = useState(() => newIdempotencyKey());
@@ -153,15 +163,8 @@ function MarkPaidForm({
       </View>
 
       <View style={formStyles.field}>
-        <Text style={formStyles.label}>Fecha de pago (AAAA-MM-DD)</Text>
-        <TextInput
-          style={formStyles.input}
-          value={paidAt}
-          onChangeText={setPaidAt}
-          placeholder="2026-06-01"
-          placeholderTextColor={Colors.textMuted}
-          autoCapitalize="none"
-        />
+        <Text style={formStyles.label}>Fecha de pago</Text>
+        <DateField value={paidAt} onChange={setPaidAt} style={formStyles.input} />
       </View>
 
       {accounts.length > 0 && (

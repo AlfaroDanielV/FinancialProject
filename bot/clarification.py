@@ -160,6 +160,13 @@ def merge_reply(
         merged["bill_frequency"] = freq
     elif field == "bill_name":
         merged["bill_name"] = reply
+    elif field == "bill_target":
+        # Flexible Payment Dates — mark_bill_paid target. Raw pass-through; the
+        # dispatcher re-resolves the bill by name and re-asks if it still misses.
+        merged["bill_target_hint"] = reply
+    elif field == "debt_target":
+        # Flexible Payment Dates — record_debt_payment target. Raw pass-through.
+        merged["debt_target_hint"] = reply
     elif field == "transfer_direction":
         # Transfer-receipt direction the dispatcher couldn't derive — the user
         # picked ingreso / gasto / entre mis cuentas. Set the intent and clear

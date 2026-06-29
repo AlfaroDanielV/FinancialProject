@@ -896,6 +896,13 @@ async def link_transaction_to_occurrence(
 
     resolved_amount = amount_paid
     resolved_paid_at = paid_at
+    # Callers may pass a day-level `date` (the request schema is day-level); the
+    # column is TIMESTAMP, so coerce to a tz-aware datetime. `datetime` subclasses
+    # `date`, hence the explicit isinstance check.
+    if resolved_paid_at is not None and not isinstance(resolved_paid_at, datetime):
+        resolved_paid_at = datetime.combine(
+            resolved_paid_at, datetime.min.time(), tzinfo=CR_TZ
+        )
 
     if transaction_id is not None:
         txn_result = await session.execute(
@@ -947,6 +954,95 @@ async def link_transaction_to_occurrence(
     return MarkPaidResult(
         occurrence=occ, amount_delta_pct=delta_pct, warning=warning
     )
+
+
+_ACTIONABLE_OCCURRENCE_STATUSES = (
+    BillOccurrenceStatus.PENDING.value,
+    BillOccurrenceStatus.OVERDUE.value,
+    BillOccurrenceStatus.PARTIALLY_PAID.value,
+)
+
+
+async def find_closest_occurrence(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    recurring_bill_id: uuid.UUID,
+    payment_date: date,
+    window_days: int = 15,
+) -> Optional[BillOccurrence]:
+    """The actionable occurrence whose due_date is closest to ``payment_date``
+    within ±``window_days``. Ties prefer the UPCOMING occurrence (due_date on or
+    after the payment). Returns None when no actionable occurrence falls in the
+    window — the caller then records a standalone payment, never a phantom
+    occurrence (Flexible Payment Dates, A1 ruling 4)."""
+    lo = payment_date - timedelta(days=window_days)
+    hi = payment_date + timedelta(days=window_days)
+    rows = (
+        await session.execute(
+            select(BillOccurrence).where(
+                BillOccurrence.recurring_bill_id == recurring_bill_id,
+                BillOccurrence.user_id == user_id,
+                BillOccurrence.status.in_(_ACTIONABLE_OCCURRENCE_STATUSES),
+                BillOccurrence.due_date >= lo,
+                BillOccurrence.due_date <= hi,
+            )
+        )
+    ).scalars().all()
+    if not rows:
+        return None
+
+    def _rank(occ: BillOccurrence) -> tuple[int, int]:
+        gap_days = (occ.due_date - payment_date).days
+        # closest by magnitude; tie → upcoming (gap >= 0) wins over past.
+        return (abs(gap_days), 0 if gap_days >= 0 else 1)
+
+    return min(rows, key=_rank)
+
+
+async def undo_bill_payment(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    transaction_id: uuid.UUID,
+) -> bool:
+    """Reverse a chat ``mark_bill_paid`` (Flexible Payment Dates): unlink the
+    bill occurrence (restoring its pending/overdue status + clearing
+    amount_paid/paid_at) and hard-delete the telegram transaction. Unlinking
+    FIRST is what lets the delete bypass the bill-link /undo guard. Returns
+    False when the row is gone or isn't a telegram row — nothing to undo."""
+    txn = (
+        await session.execute(
+            select(Transaction).where(
+                Transaction.id == transaction_id,
+                Transaction.user_id == user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if txn is None or txn.source != "telegram":
+        return False
+
+    occ = (
+        await session.execute(
+            select(BillOccurrence).where(
+                BillOccurrence.transaction_id == transaction_id,
+                BillOccurrence.user_id == user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if occ is not None:
+        occ.transaction_id = None
+        occ.amount_paid = None
+        occ.paid_at = None
+        occ.status = (
+            BillOccurrenceStatus.OVERDUE.value
+            if occ.due_date < today_cr()
+            else BillOccurrenceStatus.PENDING.value
+        )
+
+    await session.delete(txn)
+    await session.commit()
+    return True
 
 
 # ─── convenience used by routers ──────────────────────────────────────────────

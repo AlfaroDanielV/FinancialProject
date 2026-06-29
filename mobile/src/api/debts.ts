@@ -188,6 +188,39 @@ export async function archiveDebt(id: string): Promise<DebtResponse> {
   return data;
 }
 
+// ── Flexible Payment Dates: record a payment toward a debt ───────────────────
+
+/** Mirrors the backend `DebtPaymentCreate`. The native form sends only the
+ * amount, the ledger date, and an optional note — it lowers the debt balance,
+ * no account-side movement. */
+export interface DebtPaymentCreate {
+  payment_date: string; // YYYY-MM-DD
+  amount_paid: number;
+  notes?: string;
+}
+
+export interface DebtPaymentResponse {
+  id: string;
+  debt_id: string;
+  transaction_id: string | null;
+  payment_date: string;
+  amount_paid: number;
+  principal_portion: number | null;
+  interest_portion: number | null;
+  extra_payment: number | null;
+  remaining_balance: number;
+  notes: string | null;
+  created_at: string;
+}
+
+export async function recordDebtPayment(
+  id: string,
+  payload: DebtPaymentCreate,
+): Promise<DebtPaymentResponse> {
+  const { data } = await api.post<DebtPaymentResponse>(`/debts/${id}/payments`, payload);
+  return data;
+}
+
 // ── Phase 6f debt slice (D3): create + PDF term extraction ───────────────────
 
 export const DEBT_TYPES = [
