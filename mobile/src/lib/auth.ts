@@ -22,6 +22,15 @@ export async function hydrateSession(): Promise<void> {
   cachedExpiresAt = expires ? Number.parseInt(expires, 10) : null;
   hydrated = true;
   notify();
+  // Self-heal the Apple Pay App Intent keychain: writeAppIntentToken otherwise
+  // only runs on a fresh setSession(), so a session that's merely restored at
+  // boot (or was established before the App Intent shipped) never seeds the slot
+  // the Swift Intent reads — the "Abrí Ledger e ingresá con /login" error. Mirror
+  // a still-valid token here too. Best-effort and self-contained (never throws).
+  const valid = getSessionToken();
+  if (valid) {
+    void writeAppIntentToken(valid);
+  }
 }
 
 export function getSessionToken(): string | null {

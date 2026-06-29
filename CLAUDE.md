@@ -2605,6 +2605,82 @@ clean.
 
 ---
 
+## Flexible Payment Dates — Bills & Debts (2026-06-28)
+
+Operator ask: record a **bill or debt payment on any date** (early or late —
+e.g. a car loan paid on the 25th of the prior month), from **both** chat and the
+native app. A four-reader audit found the capability missing end to end — chat
+had **no payment intent** at all ("pagué el carro" became a plain `log_expense`
+dated today, never touching `bill_occurrences`/`debt_payments`, so the ledger
+drifted); native had **no debt-payment UI**; the backend `POST /debts/{id}/payments`
+existed but `mobile/src/api/debts.ts` never exposed it. The data layer was already
+there (DATE columns, no past/future validation) → **no migration**. **Branch
+`feature/flexible-payment-dates`; operator on-device sign-off pending.**
+`committed_outflows`/cashflow byte-lock untouched. Canonical: vault
+`Decision - Flexible Payment Dates (Bills & Debts)`.
+
+- **Chat = two deterministic intents** (`MARK_BILL_PAID`, `RECORD_DEBT_PAYMENT`;
+  `api/services/llm_extractor/{schema,prompt}.py`). The LLM fills
+  `bill_target_hint`/`debt_target_hint` + **reuses `occurred_at_hint`** for the
+  date (default today; `hoy/ayer/anteayer` decoded server-side); deterministic
+  dispatch (`telegram_dispatcher._dispatch_mark_bill_paid` /
+  `_dispatch_record_debt_payment`) resolves the target by name (clarify if 0/≥2
+  via `envelopes.match_bills_by_name`/`match_debts_by_name`, reusing `_name_match`),
+  proposes, then commits. The LLM never picks the occurrence, the amount, or the
+  balance ([[Decision - LLM Extracts Rules Decide]]).
+- **Bill payment** (`bot/commit.py::_commit_mark_bill_paid`): creates a negative
+  transaction (`source="telegram"`, `envelope_id=bill.envelope_id`) and links the
+  occurrence **closest to the payment date within ±15 days** (tie → upcoming) via
+  the new `recurrence.find_closest_occurrence`; none in window → a standalone
+  expense, **NO phantom occurrence**. Account = `bill.account_id`, else asks (or
+  orphan "sin cuenta").
+- **Debt payment** (`_commit_record_debt_payment` + REST): writes a `DebtPayment`
+  + lowers `Debt.current_balance` + `payments_made` via the shared
+  `api/services/debt_payments.py::record_debt_payment` (**extracted from
+  `routers/debts.py::record_payment` — both call it**). **No account-side
+  transaction** (operator decision — avoids double-counting a later Gmail/Apple
+  Pay capture of the same loan payment). The amortization schedule is read-time
+  and is never mutated (`current_balance` is a balance update, not a schedule one).
+- **Both `/undo`-able** (operator decision): `recurrence.undo_bill_payment`
+  unlinks the occurrence (restore pending/overdue, clear amount_paid/paid_at)
+  **then** deletes the telegram txn (bypassing the bill-link guard);
+  `debt_payments.undo_debt_payment` adds the amount back to `current_balance`,
+  decrements `payments_made`, deletes the `DebtPayment`. The chat dispatcher
+  **rejects an overpayment** (amount > balance) so the `+= amount_paid` undo stays
+  exact (a clamp-to-0 would otherwise lose the prior balance). Wired in
+  `bot/undo.py`; `bot/clarification.py::merge_reply` routes the new
+  `bill_target`/`debt_target` clarification fields.
+- **No migration.** `MarkPaidRequest.paid_at` narrowed `datetime`→`date` (matches
+  `BillMarkPaidRequest`); the DB column stays `TIMESTAMP`.
+  `recurrence.link_transaction_to_occurrence` now coerces a bare `date`→tz-aware
+  CR `datetime` before the write — which also **fixed a pre-existing naive-datetime**
+  `paid_at` on the REST `/recurring-bills/{id}/mark-paid` (it now passes the `date`).
+- **REST bill mark-paid occurrence selection is DELIBERATELY unchanged** ("next
+  pending by due_date"): it's occurrence-anchored by design and already honors a
+  flexible `paid_at`. The ±15-day closest-match applies **only to the chat path**
+  (where "which occurrence" is genuinely ambiguous) — a conscious deviation from
+  the A2 plan to avoid a `BillMarkPaidResponse` contract change.
+- **Native**: `BillDetailScreen` swaps the raw `AAAA-MM-DD` `TextInput` for the
+  shared `DateField` (default **today**); `DebtDetailScreen` gains a "Registrar
+  pago" form (amount / `DateField` / nota) + `mobile/src/api/debts.ts::recordDebtPayment`.
+- **Hard rule added:** paying a registered bill/debt from chat goes through the
+  dedicated `mark_bill_paid` / `record_debt_payment` intents (deterministic resolve
+  + commit), never the generic `log_expense`. The LLM never decides the occurrence,
+  amount, or balance.
+- **Verification:** `tests/test_flexible_payment_dates.py` (19: ±15-day matcher
+  window/tie/out-of-window/terminal, name resolvers, dispatch propose +
+  clarifications, commit closest-link + standalone, debt balance-down no-txn, both
+  undos, overpay guard) + a 120-test regression slice (dispatcher / extractor /
+  envelopes / **cashflow byte-lock** / 6f chat / debts / bills) + mobile `tsc
+  --noEmit` green. No migration. A pre-merge adversarial review (5 scopes,
+  find→refute) caught + fixed **2** confirmed bugs — the overpay-undo corruption
+  (above) and the naive `paid_at` (above); the rest were false positives.
+  **Deferred:** richer chat date entry ("el 25" → a calendar date; chat handles
+  today/ayer, the native `DateField` covers the rest); a native "desmarcar pago" /
+  "borrar pago de deuda" screen (chat `/undo` corrects the last action).
+
+---
+
 ## Closed phases — hard rules to preserve
 
 These are extracted from the closed-phase notes in `11_Phases/`. **Do not relax without an explicit decision in `05_Decisions/`.**
