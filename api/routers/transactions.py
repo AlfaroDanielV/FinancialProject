@@ -38,6 +38,7 @@ from ..services.dedup import clear_duplicate_nudges_for_txn, flag_and_notify
 from ..services.dispatch.lazy_detection import match_account_hint
 from ..services.envelopes import can_assign_transaction_to_envelope
 from ..services.fx import convert
+from ..services.loan_cargo import LOAN_CARGO_SOURCE, undo_loan_cargo
 from ..services.money import parse_money_magnitude
 from ..services.transactions import (
     REGISTER_PAYMENT_REASON_ES,
@@ -890,15 +891,21 @@ async def delete_transaction_permanently(
     if not txn:
         raise HTTPException(status_code=404, detail="Transacción no encontrada.")
 
-    try:
-        await hard_delete_transaction(db, user=user, txn=txn)
-    except TransactionDeleteError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail=TXN_DELETE_REASON_ES.get(
-                exc.reason_code, "No se puede eliminar este movimiento."
-            ),
-        ) from exc
+    if txn.source == LOAN_CARGO_SOURCE:
+        # Cargo automático: deleting the card charge also undoes the backing debt
+        # payment (restores the loan balance). hard_delete would 409 on the debt
+        # link; this is the user's manual-dedup escape hatch.
+        await undo_loan_cargo(db, user_id=user.id, txn=txn)
+    else:
+        try:
+            await hard_delete_transaction(db, user=user, txn=txn)
+        except TransactionDeleteError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=TXN_DELETE_REASON_ES.get(
+                    exc.reason_code, "No se puede eliminar este movimiento."
+                ),
+            ) from exc
 
     await clear_duplicate_nudges_for_txn(
         db, user_id=user.id, txn_id=transaction_id

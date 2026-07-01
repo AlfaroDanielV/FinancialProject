@@ -40,6 +40,9 @@ interface Props {
   /** Account types to hide (e.g. ["credit"] when picking a funding source for a
    * card payment). Default: none. */
   excludeAccountTypes?: string[];
+  /** When set, ONLY these account types are listed (e.g. ["credit"] when linking
+   * a loan's cargo automático to a card). Default: no filter. */
+  onlyAccountTypes?: string[];
   onClose: () => void;
   onSelect: (account: AccountResponse | null) => void;
 }
@@ -56,6 +59,7 @@ export function AccountPickerModal({
   allowClear = true,
   currencyFilter,
   excludeAccountTypes,
+  onlyAccountTypes,
   onClose,
   onSelect,
 }: Props) {
@@ -69,7 +73,8 @@ export function AccountPickerModal({
     (a) =>
       !a.archived &&
       (!currencyFilter || a.currency === currencyFilter) &&
-      !(excludeAccountTypes ?? []).includes(a.account_type),
+      !(excludeAccountTypes ?? []).includes(a.account_type) &&
+      (!onlyAccountTypes || onlyAccountTypes.includes(a.account_type)),
   );
 
   return (

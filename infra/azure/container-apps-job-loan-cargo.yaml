@@ -1,0 +1,77 @@
+# Azure Container Apps Job — daily loan cargo automático poster.
+#
+# Apply (ONE-TIME create) with:
+#   az containerapp job create --resource-group <rg> --name ledger-cr-loan-cargo-daily \
+#       --environment <ca-env> --yaml infra/azure/container-apps-job-loan-cargo.yaml
+# After it exists, `scripts/deploy/deploy_azure.sh` re-points its image every deploy
+# (A7), same as the Gmail job — you only run the create once.
+#
+# Cron: 0 11 * * 1 UTC = 5am Costa Rica (UTC-6, no DST) every MONDAY. A loan's
+# cargo is a MONTHLY event, so weekly is plenty; the poster anchors on the most
+# recent due date (not the calendar month), so which weekday it runs doesn't
+# matter and an end-of-month due day is still caught the following Monday even
+# after the month rolls over. No ordering dependency with the Gmail/insights jobs.
+#
+# What it does: for every user with an active loan linked to a credit card
+# (`debts.charge_to_account_id`), posts the most-recent-due cuota as a card charge
+# + records the debt payment (workers.loan_cargo_daily → post_due_loan_cargos).
+# Idempotent, cadence-robust (weekly-safe), never backfills a stale prior cycle.
+#
+# Replica timeout 1800s = 30 min (personal-use scale finishes in <1s; headroom
+# for fan-out). parallelism 1 — the worker iterates all users sequentially.
+#
+# Image: replace <registry>/<image>:<tag> with the actual ACR address. Built from
+# the SAME Dockerfile.worker as the Gmail job; its CMD default is the Gmail
+# worker, so we override the command here (mirrors the insights job).
+#
+# SECRETS/ENV — deliberately minimal: this worker touches ONLY the DB. It sends
+# no Telegram, calls no Anthropic, reads no Gmail/Key-Vault app-secret. BUT it
+# still imports `api.config`, whose `_enforce_prod_secret_store` validator REFUSES
+# TO BOOT in production unless SECRET_STORE_BACKEND=azure_kv AND AZURE_KEY_VAULT_URL
+# are set (added 2026-06-05, commit fe8db18). So both are set below even though the
+# azure_kv store is never actually constructed (no get_secret call). Omitting them
+# = an instant boot crash (ValueError at module import). The managed identity needs
+# KV Get/List only for the platform-level database-url secretRef.
+
+properties:
+  environmentId: /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.App/managedEnvironments/<env>
+  configuration:
+    triggerType: Schedule
+    replicaTimeout: 1800
+    replicaRetryLimit: 1
+    scheduleTriggerConfig:
+      cronExpression: "0 11 * * 1"
+      parallelism: 1
+      replicaCompletionCount: 1
+    secrets:
+      - name: database-url
+        keyVaultUrl: https://<kv-name>.vault.azure.net/secrets/database-url
+        identity: system
+  template:
+    containers:
+      - name: loan-cargo-daily
+        image: <registry>/<image>:<tag>
+        command: ["python"]
+        args: ["-m", "workers.loan_cargo_daily"]
+        resources:
+          cpu: 0.5
+          memory: 1Gi
+        env:
+          - name: DATABASE_URL
+            secretRef: database-url
+          - name: ENVIRONMENT
+            value: production
+          # Required by _enforce_prod_secret_store at boot (see header note) —
+          # the azure_kv store is never actually built by this worker.
+          - name: SECRET_STORE_BACKEND
+            value: azure_kv
+          - name: AZURE_KEY_VAULT_URL
+            value: https://<kv-name>.vault.azure.net/
+          # No Telegram: the worker sends no messages (no cargo notifications v1).
+          - name: TELEGRAM_MODE
+            value: disabled
+  # Managed identity must have:
+  #   - Get/List on Key Vault secrets (for the database-url secretRef)
+  #   - AcrPull on the registry
+  identity:
+    type: SystemAssigned

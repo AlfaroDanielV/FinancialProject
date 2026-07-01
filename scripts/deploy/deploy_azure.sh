@@ -14,7 +14,7 @@
 #          column against an un-migrated DB poisons per-user transactions ***
 #   3. Redeploy the api/bot Container App with a NEW revision (--revision-suffix
 #      is MANDATORY; env-only updates do NOT restart the container)           [A4]
-#   4. Update the Gmail daily worker job image                                [A7]
+#   4. Update the daily worker job images (Gmail + loan-cargo)                 [A7]
 #   5. Smoke /health, /health/ready, and the Telegram webhook                 [A5/A9]
 #
 # Usage:
@@ -82,6 +82,7 @@ cat <<EOF
   Container App: $CA_NAME
   Migrate job  : $JOB_MIGRATE
   Gmail worker : $JOB_GMAIL
+  Cargo worker : ${JOB_LOAN_CARGO:-<unset — see A7>}
   API FQDN     : https://$DOMAIN_API
   Image tag    : $TAG
   api image    : $API_IMAGE
@@ -128,14 +129,14 @@ if [[ $SKIP_MIGRATE -eq 0 ]]; then
   [[ "${STATUS:-}" == "Succeeded" ]] || die "Migrate job did not finish in time; verify manually before continuing."
 
   # Verify the alembic head chain via Log Analytics (NOT 'containerapp exec' — needs a TTY, L2)
-  log "A2 · verifying alembic head in Log Analytics (expect '… -> 0041')"
+  log "A2 · verifying alembic head in Log Analytics (expect '… -> 0043')"
   LA_WS=$(az containerapp env show -g "$RG" -n "$ENV_CAE" \
     --query "properties.appLogsConfiguration.logAnalyticsConfiguration.customerId" -o tsv 2>/dev/null || true)
   if [[ -n "$LA_WS" ]]; then
     az monitor log-analytics query -w "$LA_WS" \
       --analytics-query "ContainerAppConsoleLogs_CL | where ContainerGroupName_s contains 'migrate' | order by TimeGenerated desc | take 15 | project TimeGenerated, Log_s" \
       -o table 2>/dev/null || log "  (Log Analytics query failed; check the portal — ingestion can lag ~1–2 min)"
-    echo "  ↑ confirm the 'Running upgrade … -> 0041' chain above before trusting the redeploy."
+    echo "  ↑ confirm the 'Running upgrade … -> 0043' chain above before trusting the redeploy."
   else
     log "  (could not resolve Log Analytics workspace; verify head manually)"
   fi
@@ -184,14 +185,32 @@ az containerapp update -g "$RG" -n "$CA_NAME" \
   >/dev/null
 ok "Container App updated → revision suffix '$REV_SUFFIX'."
 
-# ── A7. Gmail daily worker job → new image ───────────────────────────────────
+# ── A7. Daily worker jobs → new image ────────────────────────────────────────
+# All worker jobs run the SAME centro-worker image (Dockerfile.worker); each job
+# overrides the container command to select its module (Gmail = the image default,
+# loan-cargo = command override in infra/azure/container-apps-job-loan-cargo.yaml).
+# This block only RE-POINTS the image on an existing job; the one-time create is
+# out of band via the per-job yaml (see the runbook A7).
 if [[ $SKIP_WORKER -eq 0 ]]; then
   log "A7 · update Gmail daily worker job image"
   if az containerapp job show -g "$RG" -n "$JOB_GMAIL" >/dev/null 2>&1; then
     az containerapp job update -g "$RG" -n "$JOB_GMAIL" --image "$WORKER_IMAGE" >/dev/null
-    ok "Gmail worker job points at $TAG (start it manually to smoke: az containerapp job start -g $RG -n $JOB_GMAIL)."
+    ok "Gmail worker job points at $TAG (smoke: az containerapp job start -g $RG -n $JOB_GMAIL)."
   else
     log "  Gmail worker job '$JOB_GMAIL' not found — confirm exact name in the portal."
+  fi
+
+  # Loan cargo automático daily poster (2026-06-30). JOB_LOAN_CARGO comes from
+  # [[Deployment-State]] like JOB_GMAIL. If it's unset/missing, create it ONCE with
+  #   az containerapp job create -g "$RG" -n finance-loan-cargo-daily \
+  #     --environment "$ENV_CAE" --yaml infra/azure/container-apps-job-loan-cargo.yaml
+  # (then re-run this to point it at the fresh image). See runbook A7.
+  log "A7 · update loan-cargo daily worker job image"
+  if [[ -n "${JOB_LOAN_CARGO:-}" ]] && az containerapp job show -g "$RG" -n "$JOB_LOAN_CARGO" >/dev/null 2>&1; then
+    az containerapp job update -g "$RG" -n "$JOB_LOAN_CARGO" --image "$WORKER_IMAGE" >/dev/null
+    ok "Loan-cargo worker job points at $TAG (smoke: az containerapp job start -g $RG -n $JOB_LOAN_CARGO)."
+  else
+    log "  Loan-cargo worker job not found (JOB_LOAN_CARGO='${JOB_LOAN_CARGO:-}') — create it once from infra/azure/container-apps-job-loan-cargo.yaml (runbook A7)."
   fi
 fi
 
@@ -222,8 +241,8 @@ $(ok "Azure deploy complete.")
   Image tag            : $TAG
 
   Next (manual, per runbook):
-    • Confirm alembic head = 0041 in the A2 Log Analytics output above.
+    • Confirm alembic head = 0043 in the A2 Log Analytics output above.
     • If demo reviewer login is needed, set APPLE_REVIEW_DEMO_CODE / _EMAIL (B7).
     • Smoke /login → device-code exchange end to end.
-    • Update [[Deployment-State]] with tag $TAG + head 0041 (D4).
+    • Update [[Deployment-State]] with tag $TAG + head 0043 (D4).
 EOF

@@ -28,6 +28,17 @@ class Debt(Base):
     envelope_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("envelopes.id", ondelete="SET NULL"), nullable=True
     )
+    # Loan cargo automático (migration 0043): when set, this loan's cuota is
+    # charged to that credit card each month (the daily worker posts a card
+    # charge + records a payment) instead of being paid from a bank account.
+    # The loan then steps aside from its own feed/affordability/reservation
+    # surfaces (the card carries the obligation). DISTINCT from the informational
+    # `account_id`. ON DELETE SET NULL → deleting the card detaches, never the loan.
+    charge_to_account_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("accounts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     # mortgage | credit_card | auto_loan | personal_loan | student_loan | other
     debt_type: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -78,7 +89,13 @@ class Debt(Base):
     )
 
     user: Mapped["User"] = relationship(back_populates="debts")  # noqa: F821
-    account: Mapped[Optional["Account"]] = relationship()  # noqa: F821
+    # Two FKs to accounts (account_id + charge_to_account_id) → disambiguate.
+    account: Mapped[Optional["Account"]] = relationship(  # noqa: F821
+        foreign_keys=[account_id]
+    )
+    charge_to_account: Mapped[Optional["Account"]] = relationship(  # noqa: F821
+        foreign_keys=[charge_to_account_id]
+    )
     payments: Mapped[list["DebtPayment"]] = relationship(
         back_populates="debt", order_by="DebtPayment.payment_date.desc()"
     )

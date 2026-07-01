@@ -26,6 +26,7 @@ import type { RouteProp } from "@react-navigation/native";
 
 import {
   archiveDebt,
+  attachDebtToCard,
   DEBT_TYPE_LABELS,
   fetchDebt,
   fetchDebtSchedule,
@@ -35,6 +36,8 @@ import {
   type AmortizationRow,
   type PayoffScenariosResponse,
 } from "../api/debts";
+import { fetchAccounts } from "../api/accounts";
+import { AccountPickerModal } from "../components/AccountPickerModal";
 import { DebtEditModal } from "../components/DebtEditModal";
 import { DateField } from "../components/fields/DateField";
 import { CardShadow, Colors, FontSize, Radius, Spacing } from "../theme";
@@ -603,6 +606,16 @@ export function DebtDetailScreen({ navigation, route }: Props) {
 
   const debt = debtQuery.data;
   const [editVisible, setEditVisible] = useState(false);
+  const [cardPickerVisible, setCardPickerVisible] = useState(false);
+
+  // Resolve the linked card's name for display (shares the picker's cache key).
+  const accountsQuery = useQuery({
+    queryKey: ["accounts", "active"],
+    queryFn: () => fetchAccounts(false),
+  });
+  const linkedCard = accountsQuery.data?.find(
+    (a) => a.id === debt?.charge_to_account_id,
+  );
 
   // Prefix invalidation refreshes the list, the overview metrics, and this
   // detail (["debts"], ["debts","overview"], ["debts", debtId]) in one call.
@@ -630,6 +643,24 @@ export function DebtDetailScreen({ navigation, route }: Props) {
     mutationFn: () => updateDebt(debtId, { archived: false, is_active: true }),
     onSuccess: refreshDebts,
     onError: () => Alert.alert("Error", "No se pudo restaurar la deuda."),
+  });
+
+  const attachCardMutation = useMutation({
+    mutationFn: (accountId: string | null) => attachDebtToCard(debtId, accountId),
+    onSuccess: () => {
+      setCardPickerVisible(false);
+      refreshDebts();
+    },
+    onError: (err: unknown) => {
+      const detail = (err as { response?: { data?: { detail?: string } } })
+        ?.response?.data?.detail;
+      Alert.alert(
+        "No se pudo vincular",
+        typeof detail === "string"
+          ? detail
+          : "No se pudo vincular la tarjeta.",
+      );
+    },
   });
 
   const busy =
@@ -691,6 +722,53 @@ export function DebtDetailScreen({ navigation, route }: Props) {
             <Text style={styles.pausedBadge}>PAUSADA</Text>
           )}
         </View>
+
+        {/* ── cargo automático (loan cuota charged to a card) ── */}
+        {!debt.archived && (
+          <Section title="Cargo automático a tarjeta" defaultOpen={!!linkedCard}>
+            {linkedCard ? (
+              <>
+                <Text style={cargoStyles.help}>
+                  La cuota se carga cada mes a{" "}
+                  <Text style={cargoStyles.cardName}>«{linkedCard.name}»</Text> y
+                  suma al total de esa tarjeta. Ya no aparece como pago aparte.
+                </Text>
+                <Pressable
+                  style={({ pressed }) => [
+                    cargoStyles.unlinkBtn,
+                    pressed && { opacity: 0.7 },
+                  ]}
+                  onPress={() => attachCardMutation.mutate(null)}
+                  disabled={attachCardMutation.isPending}
+                >
+                  {attachCardMutation.isPending ? (
+                    <ActivityIndicator color={Colors.expense} size="small" />
+                  ) : (
+                    <Text style={cargoStyles.unlinkText}>Desvincular tarjeta</Text>
+                  )}
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Text style={cargoStyles.help}>
+                  Si el banco cobra esta cuota directamente a una tarjeta de
+                  crédito (cargo automático), vinculala y la cuota se sumará al
+                  total de la tarjeta cada mes.
+                </Text>
+                <Pressable
+                  style={({ pressed }) => [
+                    cargoStyles.linkBtn,
+                    pressed && cargoStyles.linkBtnPressed,
+                  ]}
+                  onPress={() => setCardPickerVisible(true)}
+                >
+                  <Feather name="credit-card" size={16} color={Colors.accent} />
+                  <Text style={cargoStyles.linkText}>Vincular tarjeta</Text>
+                </Pressable>
+              </>
+            )}
+          </Section>
+        )}
 
         {/* ── amortization schedule ── */}
         <Section
@@ -831,6 +909,18 @@ export function DebtDetailScreen({ navigation, route }: Props) {
         onSaved={() => {
           refreshDebts();
           setEditVisible(false);
+        }}
+      />
+
+      <AccountPickerModal
+        visible={cardPickerVisible}
+        currentAccountId={debt.charge_to_account_id}
+        allowClear={false}
+        onlyAccountTypes={["credit"]}
+        currencyFilter={debt.currency}
+        onClose={() => setCardPickerVisible(false)}
+        onSelect={(acc) => {
+          if (acc) attachCardMutation.mutate(acc.id);
         }}
       />
     </SafeAreaView>
@@ -1012,4 +1102,34 @@ const styles = StyleSheet.create({
     color: Colors.overdue,
     fontWeight: "600",
   },
+});
+
+const cargoStyles = StyleSheet.create({
+  help: {
+    fontSize: FontSize.sm,
+    color: Colors.textSecondary,
+    lineHeight: 20,
+    marginBottom: Spacing.sm,
+  },
+  cardName: { color: Colors.textPrimary, fontWeight: "600" },
+  linkBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.xs,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.sm + 2,
+  },
+  linkBtnPressed: { opacity: 0.6 },
+  linkText: { fontSize: FontSize.md, color: Colors.accent, fontWeight: "600" },
+  unlinkBtn: {
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.sm + 2,
+  },
+  unlinkText: { fontSize: FontSize.sm, color: Colors.expense, fontWeight: "600" },
 });

@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 from ..config import settings
 from ..database import get_db
 from ..dependencies import current_user
+from ..models.account import Account
 from ..models.debt import Debt, DebtPayment
 from ..models.user import User
 from ..schemas.debts import (
@@ -67,6 +68,39 @@ def _canonical_debt_type(debt_type: str) -> str:
     return debt_type
 
 
+async def _validate_charge_target(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    account_id: uuid.UUID,
+    loan_currency: str,
+) -> None:
+    """Loan cargo automático: the target must be the caller's own, non-archived
+    credit account in the SAME currency (same-currency v1). 400 otherwise."""
+    account = (
+        await db.execute(
+            select(Account).where(
+                Account.id == account_id,
+                Account.user_id == user_id,
+                Account.account_type == "credit",
+                Account.archived.is_(False),
+            )
+        )
+    ).scalar_one_or_none()
+    if account is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Esa cuenta no es una tarjeta de crédito tuya.",
+        )
+    if (account.currency or "CRC") != (loan_currency or "CRC"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "La tarjeta debe estar en la misma moneda que el préstamo."
+            ),
+        )
+
+
 async def _maybe_celebrate_debt_paid(user_id: uuid.UUID) -> None:
     """Phase 8 B5 — best-effort earned-celebration trigger for a paid-off debt.
     Isolated session, swallow-on-fail; never breaks the debt write."""
@@ -84,9 +118,17 @@ async def create_debt(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(current_user),
 ):
+    if payload.charge_to_account_id is not None:
+        await _validate_charge_target(
+            db,
+            user_id=user.id,
+            account_id=payload.charge_to_account_id,
+            loan_currency=payload.currency,
+        )
     debt = Debt(
         user_id=user.id,
         account_id=payload.account_id,
+        charge_to_account_id=payload.charge_to_account_id,
         name=payload.name,
         debt_type=_canonical_debt_type(payload.debt_type),
         lender=payload.lender,
@@ -350,6 +392,15 @@ async def update_debt(
         db, user_id=user.id, envelope_id=env_id
     ):
         raise HTTPException(status_code=400, detail="Sobre inválido.")
+
+    # Loan cargo automático: validate the target when attaching (null detaches).
+    if update_data.get("charge_to_account_id") is not None:
+        await _validate_charge_target(
+            db,
+            user_id=user.id,
+            account_id=update_data["charge_to_account_id"],
+            loan_currency=debt.currency,
+        )
 
     # The cuota is the one editable financial field; validate it the same way
     # the create form does. A payment ≥ the balance isn't a loan, and a payment

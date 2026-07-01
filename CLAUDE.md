@@ -1476,6 +1476,80 @@ in prod). **Verification:** `tests/test_statement_cycle.py` (9) +
 `scripts/test_phase_7b.sh` (141, byte-lock) + dashboard/chat-tool/balance-anchor
 regression green; mobile `tsc` clean. No migration.
 
+## Loan Cargo Automático To Card (2026-06-30)
+
+Operator ask: attach a personal loan to a credit card so that when the cuota is
+due it's **automatically charged to the card** (raising the card's total) and the
+loan balance drops — the CR *cargo automático* pattern. **Branch
+`feature/loan-cargo-to-card`; operator on-device sign-off pending.** Migration
+`0043`. `committed_outflows`/cashflow byte-lock untouched. Canonical: vault
+`Decision - Loan Cargo Automático To Card`. **Operator's key correction:** banks
+usually do NOT email the cargo, so the app posts the charge itself (no
+Gmail-merge); rare duplicates are resolved manually.
+
+- **Schema (migration `0043`):** nullable `debts.charge_to_account_id →
+  accounts.id ON DELETE SET NULL` (+ partial index; distinct from the
+  informational `debts.account_id`); widens `ck_transactions_source` to add
+  `loan_cargo`. Down-migration round-trips clean.
+- **Link:** toggle at debt creation ("¿Está en tu tarjeta de crédito?") + a
+  DebtDetail "Cargo automático a tarjeta" link/unlink section (native only, v1).
+  `charge_to_account_id` added to `DebtCreate`/`DebtUpdate`/`DebtResponse`/
+  `DebtSummary`; `debts.py::_validate_charge_target` enforces own + active +
+  credit + **same currency** (400 otherwise).
+- **Post (`api/services/loan_cargo.py::post_due_loan_cargos`):** `today` defaults
+  to the user's **local** date (`user_today`, not the worker's UTC). For each
+  active card-linked loan it anchors on the **most recent cuota due on/before
+  today** (`_most_recent_due` — this month's if its due day passed, else last
+  month's) within a bounded catch-up window (`_MAX_CATCHUP_DAYS=20`), and if that
+  cuota isn't charged yet builds a NEGATIVE `Transaction` directly
+  (`source='loan_cargo'`, confirmed, `amount=-min(minimum_payment, balance)`,
+  category "Préstamo" — **counts as a gasto**, operator choice) +
+  `record_debt_payment` linking it (loan balance ↓, `payments_made`++). Both flush;
+  the caller commits → **atomic** (NOT `create_transaction`, which commits
+  mid-way). The real charge raises the live owed balance via
+  `compute_account_balances` and feeds the statement cycle — **no projection
+  overlay**. **Cadence-robust (weekly-safe):** anchoring on the due date (not the
+  calendar month) catches an end-of-month due day on the following week's run even
+  after the month rolled over; the window blocks backfilling a stale prior cycle.
+  **Idempotency is cargo-specific** (`>= due`, joined to `Transaction.source=
+  loan_cargo` — a manual/extra payment does NOT suppress the cargo).
+- **Trigger:** **weekly** Azure cron worker `workers/loan_cargo_daily.py` (mirrors
+  `gmail_daily`'s systemic-re-raise + all-failed-non-zero pattern; the cuota is a
+  monthly event, so weekly suffices — the most-recent-due anchor makes the weekday
+  irrelevant) + `POST /api/v1/jobs/post-loan-cargos`. **Ops:** one-time create the
+  ACA Job `ledger-cr-loan-cargo-daily` from
+  `infra/azure/container-apps-job-loan-cargo.yaml` (cron `0 11 * * 1` UTC = Mon 5am
+  CR; same `centro-worker` image with a `command` override);
+  `scripts/deploy/deploy_azure.sh` re-points its image every deploy (guarded on
+  `JOB_LOAN_CARGO`). Runbook §A7. **Boot gotcha:** the worker imports `api.config`,
+  so in prod it needs `SECRET_STORE_BACKEND=azure_kv` + `AZURE_KEY_VAULT_URL` set
+  (the `_enforce_prod_secret_store` validator) even though it reads no KV
+  app-secret — both are in the job yaml; `Dockerfile.worker` keeps `--extra azure`.
+- **Steps aside (no double count):** a card-linked loan is excluded via
+  `charge_to_account_id IS NULL` from the four surfaces the
+  `superseded_credit_card_debt_ids` precedent guards — feed debt branch
+  (`recurrence.py`), affordability debt-minimums (`affordability.py`), the
+  unattached gate + envelope reservation debt loop (`envelopes.py`). The card
+  minimum/statement carries the obligation once. `committed_outflows` unchanged.
+- **Delete = undo** (`undo_loan_cargo`): deleting a `loan_cargo` charge restores
+  the loan balance + `payments_made` and deletes the `DebtPayment`; wired into
+  `DELETE /transactions/{id}` (which otherwise 409s on a debt-linked row).
+- **Hard rule added:** a loan set to cargo automático is charged to its linked
+  card by the deterministic daily worker (never the LLM); the card-linked loan
+  steps aside from its own feed/affordability/gate/reservation so the card
+  carries it once.
+- **Verification:** `tests/test_loan_cargo.py` (17, incl. weekly cross-month
+  catch-up + stale-cycle-not-backfilled) + debt/envelope/affordability/feed/
+  cashflow byte-lock regression green; mobile `tsc --noEmit` clean;
+  `alembic → 0043`. A pre-merge adversarial code-review workflow fixed 3 findings
+  (cargo-specific idempotency, per-user-tz `today`, shared `restore_debt_balance`);
+  the schedule was then changed daily→**weekly** with a most-recent-due anchor so
+  end-of-month due days aren't missed at the month rollover.
+  **Deferred:** cross-currency loan↔card; chat linking; auto-envelope assignment;
+  cargo notifications. A pre-existing month-boundary flake in
+  `test_phase_7b_card_obligation.py` (transfer leg dated UTC vs user-local month
+  window) is unrelated (reproduces with this branch stashed).
+
 ## Account creation + form keyboard UX (2026-06-25)
 
 Two operator UX asks, mobile-only, no migration. **On `dev`; on-device sign-off

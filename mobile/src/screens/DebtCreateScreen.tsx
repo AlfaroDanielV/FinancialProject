@@ -30,7 +30,7 @@ import { Feather } from "@expo/vector-icons";
 import { useNavigation, useRoute, type RouteProp } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import * as DocumentPicker from "expo-document-picker";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   createDebt,
@@ -39,6 +39,8 @@ import {
   DEBT_TYPE_LABELS,
   type DebtType,
 } from "../api/debts";
+import { fetchAccounts } from "../api/accounts";
+import { AccountPickerModal } from "../components/AccountPickerModal";
 import { computeMonthlyPaymentPreview } from "../lib/amortization";
 import { AmountInput } from "../components/fields/AmountInput";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
@@ -93,6 +95,15 @@ export function DebtCreateScreen() {
   const [includesInsurance, setIncludesInsurance] = useState(false);
   const [insuranceMonthly, setInsuranceMonthly] = useState("");
   const [lowConfidenceNote, setLowConfidenceNote] = useState(false);
+  // Loan cargo automático: link the cuota to a credit card at creation.
+  const [chargeToCardId, setChargeToCardId] = useState<string | null>(null);
+  const [cardPickerVisible, setCardPickerVisible] = useState(false);
+
+  const accountsQuery = useQuery({
+    queryKey: ["accounts", "active"],
+    queryFn: () => fetchAccounts(false),
+  });
+  const linkedCard = accountsQuery.data?.find((a) => a.id === chargeToCardId);
 
   // ── live cuota preview ──────────────────────────────────────────────────
   const balanceNum = parseNum(currentBalance || originalAmount);
@@ -160,6 +171,7 @@ export function DebtCreateScreen() {
           : undefined,
         payments_made: 0,
         prepayment_penalty_pct: 0,
+        charge_to_account_id: chargeToCardId ?? undefined,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["debts"] });
@@ -327,7 +339,13 @@ export function DebtCreateScreen() {
             {(["CRC", "USD"] as const).map((c) => (
               <Pressable
                 key={c}
-                onPress={() => setCurrency(c)}
+                onPress={() => {
+                  setCurrency(c);
+                  // A card link must match the loan currency (same-currency v1).
+                  if (linkedCard && linkedCard.currency !== c) {
+                    setChargeToCardId(null);
+                  }
+                }}
                 style={({ pressed }) => [
                   styles.currencyBtn,
                   currency === c && styles.currencyBtnActive,
@@ -457,6 +475,35 @@ export function DebtCreateScreen() {
           </Field>
         )}
 
+        {/* ── Cargo automático (loan cuota charged to a card) ───────────────── */}
+        <View style={styles.switchRow}>
+          <Text style={styles.label}>¿Está en tu tarjeta de crédito?</Text>
+          <Switch
+            value={chargeToCardId !== null}
+            onValueChange={(on) => {
+              if (on) setCardPickerVisible(true);
+              else setChargeToCardId(null);
+            }}
+            trackColor={{ false: Colors.border, true: Colors.accentSoft }}
+            thumbColor={chargeToCardId !== null ? Colors.accent : Colors.bgCard}
+          />
+        </View>
+        {chargeToCardId !== null && (
+          <>
+            <Pressable
+              style={({ pressed }) => [styles.input, pressed && { opacity: 0.7 }]}
+              onPress={() => setCardPickerVisible(true)}
+            >
+              <Text style={{ color: linkedCard ? Colors.textPrimary : Colors.textMuted }}>
+                {linkedCard ? linkedCard.name : "Elegí una tarjeta"}
+              </Text>
+            </Pressable>
+            <Text style={styles.cargoHint}>
+              La cuota se cargará a esta tarjeta cada mes y sumará a su total.
+            </Text>
+          </>
+        )}
+
         {/* ── Ley 7472 note ────────────────────────────────────────────────── */}
         <View style={styles.leyCard}>
           <Text style={styles.leyText}>
@@ -482,6 +529,19 @@ export function DebtCreateScreen() {
           )}
         </Pressable>
       </ScrollView>
+
+      <AccountPickerModal
+        visible={cardPickerVisible}
+        currentAccountId={chargeToCardId}
+        allowClear={false}
+        onlyAccountTypes={["credit"]}
+        currencyFilter={currency}
+        onClose={() => setCardPickerVisible(false)}
+        onSelect={(acc) => {
+          if (acc) setChargeToCardId(acc.id);
+          setCardPickerVisible(false);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -517,6 +577,12 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   hint: { fontSize: FontSize.xs, color: Colors.textMuted, lineHeight: 17, marginTop: 2 },
+  cargoHint: {
+    fontSize: FontSize.xs,
+    color: Colors.textMuted,
+    lineHeight: 17,
+    marginTop: Spacing.xs,
+  },
   input: {
     backgroundColor: Colors.bgInput,
     borderWidth: 1,

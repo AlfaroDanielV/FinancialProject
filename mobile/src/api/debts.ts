@@ -18,6 +18,8 @@ export interface DebtResponse {
   user_id: string;
   account_id: string | null;
   envelope_id: string | null;
+  // Loan cargo automático: the credit account this loan's cuota is charged to.
+  charge_to_account_id: string | null;
   name: string;
   debt_type: string;
   lender: string | null;
@@ -127,6 +129,8 @@ export interface DebtUpdate {
   archived?: boolean;
   // Fixed-expense attachment: a UUID attaches to that sobre; null detaches.
   envelope_id?: string | null;
+  // Loan cargo automático: a UUID links the cuota to that credit card; null detaches.
+  charge_to_account_id?: string | null;
 }
 
 /** Attach (or, with null, detach) a debt's cuota to an envelope. */
@@ -135,6 +139,14 @@ export function attachDebtToEnvelope(
   envelopeId: string | null
 ): Promise<DebtResponse> {
   return updateDebt(id, { envelope_id: envelopeId });
+}
+
+/** Link (or, with null, unlink) a loan so its cuota is charged to a credit card. */
+export function attachDebtToCard(
+  id: string,
+  accountId: string | null
+): Promise<DebtResponse> {
+  return updateDebt(id, { charge_to_account_id: accountId });
 }
 
 export const DEBT_TYPE_LABELS: Record<string, string> = {
@@ -258,6 +270,8 @@ export interface DebtCreatePayload {
   prepayment_penalty_pct?: number;
   payments_made?: number;
   notes?: string;
+  // Loan cargo automático: link the cuota to a credit account at creation.
+  charge_to_account_id?: string;
 }
 
 /** Mirrors the backend `DebtTermsExtraction` (POST /debts/parse-document). */

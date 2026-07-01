@@ -37,6 +37,10 @@ class DebtCreate(BaseModel):
     minimum_payment: float = Field(..., gt=0)
     payment_due_day: int = Field(..., ge=1, le=31)
     account_id: Optional[uuid.UUID] = None
+    # Loan cargo automático: the credit account this loan's cuota is charged to
+    # each month. Must be the caller's own active credit account in the same
+    # currency (validated in the router).
+    charge_to_account_id: Optional[uuid.UUID] = None
     lender: Optional[str] = None
     term_months: Optional[int] = Field(None, gt=0)
     start_date: Optional[date] = None
@@ -109,6 +113,9 @@ class DebtUpdate(BaseModel):
     archived: Optional[bool] = None
     # Fixed-expense attachment: a UUID attaches to that envelope; null detaches.
     envelope_id: Optional[uuid.UUID] = None
+    # Loan cargo automático: a UUID links this loan's cuota to that credit card
+    # (validated: own + active + credit + same currency); null detaches.
+    charge_to_account_id: Optional[uuid.UUID] = None
 
 
 class DebtResponse(BaseModel):
@@ -116,6 +123,7 @@ class DebtResponse(BaseModel):
     user_id: uuid.UUID
     account_id: Optional[uuid.UUID]
     envelope_id: Optional[uuid.UUID] = None
+    charge_to_account_id: Optional[uuid.UUID] = None
     name: str
     debt_type: str
     lender: Optional[str]
@@ -168,6 +176,7 @@ class DebtSummary(BaseModel):
     is_active: bool
     archived: bool = False
     envelope_id: Optional[uuid.UUID] = None
+    charge_to_account_id: Optional[uuid.UUID] = None
 
     model_config = {"from_attributes": True}
 

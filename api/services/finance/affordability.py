@@ -283,6 +283,9 @@ async def gather_affordability_inputs(
     debt_stmt = select(Debt.minimum_payment, Debt.currency).where(
         Debt.user_id == user.id,
         Debt.is_active.is_(True),
+        # Loan cargo automático: a card-linked loan's cuota is carried by the
+        # card minimum below (counted once) — exclude the loan minimum here.
+        Debt.charge_to_account_id.is_(None),
     )
     if superseded:
         debt_stmt = debt_stmt.where(Debt.id.notin_(superseded))

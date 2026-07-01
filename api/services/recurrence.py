@@ -785,6 +785,10 @@ async def get_upcoming_feed(
         Debt.user_id == user_id,
         Debt.is_active.is_(True),
         Debt.archived.is_(False),
+        # Loan cargo automático: a card-linked loan's cuota is charged to the
+        # card, so it surfaces via the card_payment projection below — not as its
+        # own "Cuota de préstamo" entry (no double count).
+        Debt.charge_to_account_id.is_(None),
     )
     if superseded:
         debt_stmt = debt_stmt.where(Debt.id.notin_(superseded))

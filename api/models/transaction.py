@@ -57,8 +57,8 @@ class Transaction(Base):
     category: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     subcategory: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     transaction_date: Mapped[date] = mapped_column(Date, nullable=False)
-    # manual | shortcut | telegram | gmail | reconciled | apple_pay
-    # (CHECK in 0011, widened for apple_pay in 0039)
+    # manual | shortcut | telegram | gmail | reconciled | apple_pay | loan_cargo
+    # (CHECK in 0011, widened for apple_pay in 0039, loan_cargo in 0043)
     source: Mapped[str] = mapped_column(String(50), nullable=False, default="manual")
     # generic external ref for dedup. Phase 6b uses gmail_message_id below
     # for Gmail-origin rows; source_ref stays free for future origins.

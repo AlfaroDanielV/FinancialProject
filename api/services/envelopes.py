@@ -325,6 +325,9 @@ async def list_unattached_obligations(
         Debt.is_active.is_(True),
         Debt.archived.is_(False),
         Debt.envelope_id.is_(None),
+        # Loan cargo automático: a card-linked loan's servicing flows through the
+        # card (its own gate item), so it's not an unattached obligation here.
+        Debt.charge_to_account_id.is_(None),
     )
     if superseded:
         debt_stmt = debt_stmt.where(Debt.id.notin_(superseded))
@@ -708,6 +711,9 @@ async def compute_envelope_summary(
                 Debt.is_active.is_(True),
                 Debt.archived.is_(False),
                 Debt.envelope_id.isnot(None),
+                # Loan cargo automático: a card-linked loan reserves through the
+                # card (released by the cargo charge), never in its own envelope.
+                Debt.charge_to_account_id.is_(None),
             )
         )
     ).all()

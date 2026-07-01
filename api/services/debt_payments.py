@@ -22,6 +22,16 @@ from ..models.debt import Debt, DebtPayment
 from ..models.transaction import Transaction
 
 
+def restore_debt_balance(debt: Debt, amount_paid) -> None:
+    """Reverse one payment's effect on ``debt``: add the amount back to
+    ``current_balance`` and decrement ``payments_made`` (floored at 0). Shared by
+    ``undo_debt_payment`` and ``loan_cargo.undo_loan_cargo`` so the invariant
+    can't drift. See ``undo_debt_payment`` for why ``+ amount_paid`` is exact for
+    the immediate-undo case."""
+    debt.current_balance = float(debt.current_balance) + float(amount_paid)
+    debt.payments_made = max((debt.payments_made or 1) - 1, 0)
+
+
 async def record_debt_payment(
     db: AsyncSession,
     *,
@@ -112,8 +122,7 @@ async def undo_debt_payment(
     if debt is None:
         return False
 
-    debt.current_balance = float(debt.current_balance) + float(payment.amount_paid)
-    debt.payments_made = max((debt.payments_made or 1) - 1, 0)
+    restore_debt_balance(debt, payment.amount_paid)
     await db.delete(payment)
     await db.commit()
     return True

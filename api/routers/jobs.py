@@ -16,6 +16,7 @@ from ..models.user import User
 from ..schemas.notifications import JobRunResult
 from ..schemas.nudges import NudgeDeliveryResult, NudgeEvaluateResult
 from ..services import recurrence
+from ..services.loan_cargo import post_due_loan_cargos
 from ..services.nudges.delivery import deliver_all as deliver_all_nudges
 from ..services.nudges.orchestrator import evaluate_all as evaluate_all_nudges
 from ..services.nudges.phrasing import AnthropicPhrasingClient
@@ -55,6 +56,22 @@ async def job_generate_occurrences(
     return JobRunResult(
         job="generate_occurrences_all", processed=created, created=created
     )
+
+
+@router.post("/post-loan-cargos", response_model=JobRunResult)
+async def job_post_loan_cargos(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user_via_token),
+):
+    """Loan cargo automático: post this month's cuota onto the linked card for
+    every card-linked loan whose due day has passed and isn't yet charged this
+    month (loan balance ↓, card total ↑). Idempotent; also runs in the daily
+    worker `workers/loan_cargo_daily.py`. `today` defaults to the user's local
+    date inside the service (tz-correct)."""
+    posted = await post_due_loan_cargos(db, user_id=user.id)
+    await db.commit()
+    n = len(posted)
+    return JobRunResult(job="post_loan_cargos", processed=n, created=n)
 
 
 @router.post("/mark-overdue", response_model=JobRunResult)
