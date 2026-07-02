@@ -2821,6 +2821,72 @@ there (DATE columns, no past/future validation) → **no migration**. **Branch
 
 ---
 
+## Fix Pack — Dispatcher Income, Card First-Due Date, Payments Nav, Reset Flows (2026-07-02)
+
+Four dogfood-driven fixes, **committed `d03b683`, merged to `dev` (fast-forward,
+pushed to origin); operator on-device sign-off pending.** Migration `0044`
+(one column). `committed_outflows`/cashflow byte-lock untouched. Canonical
+vault notes linked per block.
+
+- **B1 — Dispatcher uses stored salary (bug).** "¿Con mi salario puedo hacerle
+  frente a mis deudas?" asked "¿Cuánto ganás al mes?" despite a registered
+  salary. `get_savings_capacity` already answered it (reads income via
+  `_monthly_income`), but there was **no first-class income tool + no prompt
+  routing**, and `compute_net_salary` (gross calculator) lured the model into
+  asking. Fix: new read-only `app/queries/tools/income.py::list_registered_income`
+  (reuses `_monthly_income`, same-currency, quincenal ×2, aguinaldo/salario-escolar
+  excluded; `counted_in_monthly` per row; registered **before** the
+  `compare_periods` cache anchor); deterministic `debt_to_income_ratio` added to
+  `get_savings_capacity`; `_CONVENTIONS` routing bullet ("salario vs deudas" →
+  `get_savings_capacity`; **NUNCA preguntés «¿cuánto ganás?» si el ingreso está
+  registrado**; `compute_net_salary` = hypothetical gross only). Prompt cap bumped
+  9100 → 9500 (sanctioned, logged in `test_phase_6c_b9_system_prompt.py`).
+  **Same-currency only** (operator): a USD income for a CRC user is listed, not
+  summed — no FX, no byte-lock risk. **Hard rule added:** the agent fetches
+  registered income; it never asks the user for a value on file.
+  [[Decision - Fetch Registered Income (Never Ask For Known Data)]].
+- **B2 — Credit-card first due date (migration `0044`).** A card created mid-cycle
+  (1-jul, due day 28, corte day < today) surfaced a phantom **28-jun overdue**:
+  cards are **projected, never materialized**, and `last_corte` returns the prior
+  month's corte while `balance_as_of` leaks the just-created owed balance backward
+  (no creation floor). Fix: nullable `credit_card_terms.first_due_date`; **clamp**
+  `due_date = max(natural_due, first_due_date)` in
+  `credit_cards.py::card_statement_status` (the single read-time choke point —
+  fixes feed + `is_overdue` + mobile at once); NULL → unchanged. Mobile:
+  two-candidate "¿Cuál es tu próxima fecha de pago?" picker at creation
+  (`CardAccountCreateScreen`), a `DateField` in `CardTermsEditModal` that doubles
+  as the **repair path** for the existing card. **Hard rule added:** a card opened
+  mid-cycle clamps its projected due to the confirmed `first_due_date`; it stays a
+  read-time projection, never materialized.
+  [[Decision - Credit Card First Due Date (Mid-Cycle Clamp)]].
+- **B3 — "Próximos pagos" tap-through (mobile only).** Home feed rows were plain
+  `<View>`; now `Pressable`, reusing `BillsScreen`'s mapping cross-tab (Inicio →
+  Mas): bill → resolve `bill`+`occurrence` → `BillDetail` mark-paid; debt →
+  `DebtDetail` "Registrar pago"; card → `TransferModal` (card payment is a
+  transfer). Added the missing `recurring_bill_id` to the mobile `UpcomingFeedItem`
+  (backend `calendar.py` already returned it — no backend change). Payment-write
+  code untouched (honors the `paid_at → Optional[date]` ruling).
+- **B4 — «Empezar de cero» reset flows.** New `api/services/reset.py`. **A
+  (non-destructive)** `POST /accounts/reset-balances` batches
+  `anchors.apply_anchor` per account in one transaction (history intact — reuses
+  reconciliation). **B (destructive)** `POST /accounts/wipe-history` (typed phrase
+  `BORRAR HISTORIAL`, else 400) deletes movements + derived records + anchors in
+  FK-safe order (debt_payments, goal_contributions, bill_occurrences→pending,
+  transactions, transfers, account_anchors) and resets debt/goal progress; **KEEPS**
+  config + Gmail dedup (`gmail_message_seen`); then routes into the A balance form.
+  Mobile `ResetScreen` (chooser → confirm → shared balance form) under a new "Más"
+  → "Configuración" tile. No migration.
+  [[Decision - Empezar De Cero (Reset Flows)]].
+
+**Verification:** `tests/test_fixpack_income_tool.py` (5) + `test_statement_cycle.py`
+(+3 clamp) + `test_reset_flows.py` (4); full gate `scripts/test_phase_7b.sh` green
+(mobile `tsc --noEmit` + 48 focused + 141 regression, cashflow byte-lock intact);
+`alembic → 0044 (head)`. **Deferred:** auto-detect card first-due from a statement
+PDF; Option-B undo (deliberately irreversible); credit-account re-anchor in the
+reset form (fund accounts only).
+
+---
+
 ## Closed phases — hard rules to preserve
 
 These are extracted from the closed-phase notes in `11_Phases/`. **Do not relax without an explicit decision in `05_Decisions/`.**
