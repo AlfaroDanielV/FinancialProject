@@ -2825,8 +2825,8 @@ there (DATE columns, no past/future validation) → **no migration**. **Branch
 
 Four dogfood-driven fixes, **committed `d03b683`, merged to `dev` (fast-forward,
 pushed to origin); operator on-device sign-off pending.** Migration `0044`
-(one column). `committed_outflows`/cashflow byte-lock untouched. Canonical
-vault notes linked per block.
+(one column). `committed_outflows`/cashflow byte-lock untouched. Canonical:
+`docs/fix-pack-2026-07-decisions.md`; vault decision notes linked per block.
 
 - **B1 — Dispatcher uses stored salary (bug).** "¿Con mi salario puedo hacerle
   frente a mis deudas?" asked "¿Cuánto ganás al mes?" despite a registered
