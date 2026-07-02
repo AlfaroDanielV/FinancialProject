@@ -9,8 +9,11 @@
  *
  * Phase 7f: "Próximos pagos" also merges the unified feed's projected debt
  * cuotas + card minimums (item_type "debt" / "card_payment") — they are
- * recurring obligations too. Debt rows navigate to DebtDetail; card rows are
- * informational. "Todos" lists active debts read-only below the bills.
+ * recurring obligations too. Debt rows navigate to DebtDetail; card rows open
+ * a card-payment sheet (TransferModal: a transfer from a chosen fund account →
+ * the card, prefilled with the full owed balance). A card payment is a
+ * transfer, never an expense, and the row disappears once the statement is
+ * settled. "Todos" lists active debts read-only below the bills.
  * Projected, never materialized — no RecurringBill rows exist for these.
  *
  * Tap an occurrence row to navigate to BillDetailScreen for mark-paid,
@@ -42,6 +45,7 @@ import {
 import { fetchUpcomingFeed, type UpcomingFeedItem } from "../api/dashboard";
 import { fetchDebts, type DebtSummary } from "../api/debts";
 import { BillFormModal } from "../components/BillFormModal";
+import { TransferModal } from "../components/TransferModal";
 import { CardShadow, Colors, FontSize, Radius, Spacing } from "../theme";
 import type { MasStackParamList } from "../navigation/MasNavigator";
 
@@ -133,6 +137,8 @@ export function BillsScreen({ navigation }: Props) {
   const [viewMode, setViewMode] = useState<"upcoming" | "all">("upcoming");
   const [showInactive, setShowInactive] = useState(false);
   const [formVisible, setFormVisible] = useState(false);
+  // Credit account id whose payment sheet is open (card row tapped), else null.
+  const [payCardAccountId, setPayCardAccountId] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
   const billsQuery = useQuery({
@@ -234,10 +240,13 @@ export function BillsScreen({ navigation }: Props) {
   }
 
   function handlePressObligation(row: ObligationRow) {
-    // Debt cuotas navigate to the debt; card minimums are informational
-    // (credit accounts live in the Cuentas tab stack).
+    // Debt cuotas navigate to the debt (its own payment form). Card payments
+    // open a transfer sheet here: fund account → the card, prefilled with the
+    // full owed balance. A card payment is a transfer, never an expense.
     if (row.item.item_type === "debt" && row.item.debt_id) {
       navigation.navigate("DebtDetail", { debtId: row.item.debt_id });
+    } else if (row.item.item_type === "card_payment" && row.item.account_id) {
+      setPayCardAccountId(row.item.account_id);
     }
   }
 
@@ -322,6 +331,10 @@ export function BillsScreen({ navigation }: Props) {
                 row.kind === "obligation" &&
                 row.item.item_type === "debt" &&
                 row.item.debt_id != null;
+              const isCardRow =
+                row.kind === "obligation" &&
+                row.item.item_type === "card_payment" &&
+                row.item.account_id != null;
               const name =
                 row.kind === "occurrence" ? row.bill.name : row.item.title;
               const sub =
@@ -340,7 +353,8 @@ export function BillsScreen({ navigation }: Props) {
                       row.bill.currency,
                     )
                   : fmtAmount(row.item.amount, row.item.currency);
-              const tappable = row.kind === "occurrence" || isDebtRow;
+              const tappable =
+                row.kind === "occurrence" || isDebtRow || isCardRow;
               return (
                 <Pressable
                   style={({ pressed }) => [
@@ -507,6 +521,16 @@ export function BillsScreen({ navigation }: Props) {
         mode="create"
         onClose={() => setFormVisible(false)}
         onSaved={onFormSaved}
+      />
+
+      {/* Card row → pay the card (transfer from a chosen account, prefilled
+          with the full owed balance). TransferModal invalidates the feed on
+          success, so a settled card drops off "Próximos pagos". */}
+      <TransferModal
+        visible={payCardAccountId != null}
+        initialToAccountId={payCardAccountId}
+        autofillPayInFull
+        onClose={() => setPayCardAccountId(null)}
       />
     </SafeAreaView>
   );

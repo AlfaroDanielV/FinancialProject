@@ -8,7 +8,7 @@
  * TransactionEditModal — KeyboardAvoidingView + ScrollView with
  * keyboardShouldPersistTaps, otherwise the sheet renders behind the keyboard.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -36,6 +36,13 @@ interface Props {
   onClose: () => void;
   /** Prefill the destination (e.g. "Registrar pago" on a credit account). */
   initialToAccountId?: string | null;
+  /**
+   * Prefill the amount with the destination card's full owed balance ("de
+   * contado") once it's known, editable. Used by the Gastos-fijos card row
+   * one-tap payment; other callers keep the empty amount + the manual
+   * "Cancelar de contado" fill below.
+   */
+  autofillPayInFull?: boolean;
 }
 
 function todayIso(): string {
@@ -118,7 +125,12 @@ function AccountPicker({
   );
 }
 
-export function TransferModal({ visible, onClose, initialToAccountId }: Props) {
+export function TransferModal({
+  visible,
+  onClose,
+  initialToAccountId,
+  autofillPayInFull = false,
+}: Props) {
   const qc = useQueryClient();
   const [fromId, setFromId] = useState<string | null>(null);
   const [toId, setToId] = useState<string | null>(initialToAccountId ?? null);
@@ -184,6 +196,22 @@ export function TransferModal({ visible, onClose, initialToAccountId }: Props) {
     setError(null);
   };
 
+  // Auto-fill the full owed balance once (for the Gastos-fijos one-tap card
+  // payment). Waits for the card's live balance to load; the guard keeps a
+  // later user edit/clear from being overwritten. Reset when the sheet closes.
+  const autofilledRef = useRef(false);
+  useEffect(() => {
+    if (!visible) {
+      autofilledRef.current = false;
+      return;
+    }
+    if (autofillPayInFull && payInFull != null && !autofilledRef.current) {
+      autofilledRef.current = true;
+      setAmount(payInFull.amountStr);
+      setInputCurrency(toAccount?.currency ?? null);
+    }
+  }, [visible, autofillPayInFull, payInFull, toAccount]);
+
   // Effective input currency: the funding (from) currency unless the user
   // toggled to the destination currency on a cross-currency transfer.
   const inputCcy = !fromAccount
@@ -229,6 +257,11 @@ export function TransferModal({ visible, onClose, initialToAccountId }: Props) {
       qc.invalidateQueries({ queryKey: ["accountTransactions"] });
       qc.invalidateQueries({ queryKey: ["transactions"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
+      // Refresh the projected obligations feed on both surfaces (Gastos fijos
+      // uses ["upcoming-feed", …]; Inicio uses ["calendar", …]) so a settled
+      // card payment drops off "Próximos pagos".
+      qc.invalidateQueries({ queryKey: ["upcoming-feed"] });
+      qc.invalidateQueries({ queryKey: ["calendar"] });
       onClose();
     },
   });
