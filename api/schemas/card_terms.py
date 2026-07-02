@@ -24,6 +24,9 @@ class CardTermsCreate(BaseModel):
     credit_limit: Optional[Decimal] = Field(None, gt=0)
     statement_day: Optional[int] = Field(None, ge=1, le=31)
     payment_due_day: int = Field(..., ge=1, le=31)
+    # Real next payment date confirmed at creation (a card opened mid-cycle
+    # pays next month, not the phantom past-corte). Clamps the projected due.
+    first_due_date: Optional[date] = None
     # Recurring-payment preference: 'minimum' (default) or 'full' (pago de
     # contado). Selects which live figure the upcoming-payment projection
     # surfaces; budget/affordability/reservation stay on the minimum.
@@ -44,6 +47,7 @@ class CardTermsUpdate(BaseModel):
     credit_limit: Optional[Decimal] = Field(None, gt=0)
     statement_day: Optional[int] = Field(None, ge=1, le=31)
     payment_due_day: Optional[int] = Field(None, ge=1, le=31)
+    first_due_date: Optional[date] = None
     payment_mode: Optional[Literal["minimum", "full"]] = None
     notes: Optional[str] = Field(None, max_length=500)
 
@@ -59,6 +63,7 @@ class CardTermsResponse(BaseModel):
     credit_limit: Optional[Decimal]
     statement_day: Optional[int]
     payment_due_day: int
+    first_due_date: Optional[date]
     payment_mode: str
     envelope_id: Optional[uuid.UUID]
     notes: Optional[str]

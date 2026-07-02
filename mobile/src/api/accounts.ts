@@ -101,6 +101,37 @@ export async function setAccountAnchor(
   return data;
 }
 
+// ── «Empezar de cero» — reset flows ──────────────────────────────────────────
+
+export interface ResetBalanceItem {
+  account_id: string;
+  value: string;
+}
+
+/** Option A (non-destructive): re-anchor every listed account to its stated
+ *  real balance in one transaction. History is preserved (anchor + ajuste). */
+export async function resetBalances(
+  items: ResetBalanceItem[],
+): Promise<{ anchored: number }> {
+  const { data } = await api.post<{ anchored: number }>(
+    "/accounts/reset-balances",
+    { accounts: items },
+  );
+  return data;
+}
+
+/** Option B (DESTRUCTIVE): delete the user's movements + derived records +
+ *  anchors and reset debt/goal progress. Requires the typed confirm phrase. */
+export async function wipeHistory(
+  confirm: string,
+): Promise<{ deleted: Record<string, number> }> {
+  const { data } = await api.post<{ deleted: Record<string, number> }>(
+    "/accounts/wipe-history",
+    { confirm },
+  );
+  return data;
+}
+
 // ── Phase 7b B2: TRUE hard delete ────────────────────────────────────────────
 
 export interface AccountDeleteImpact {

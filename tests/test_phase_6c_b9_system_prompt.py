@@ -29,7 +29,9 @@ from app.queries.prompts.system import (
 # Going above this should require an intentional bump + cache-rate check.
 # Bumped 8500 → 8900 at Phase 7b B4 (card-analysis capability bullet).
 # Bumped 8900 → 9100 at Phase 8 B4 (reallocation "¿de dónde muevo plata?" bullet).
-MAX_PROMPT_CHARS = 9100
+# Bumped 9100 → 9500 at fix-pack B1 (fetch-registered-income routing: never ask
+#   "¿cuánto ganás?" + debt-affordability → get_savings_capacity).
+MAX_PROMPT_CHARS = 9500
 
 
 def _user(

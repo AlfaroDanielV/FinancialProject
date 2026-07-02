@@ -99,6 +99,17 @@ const ADVANCED_MODULES: ModuleTile[] = [
   },
 ];
 
+// Configuración — account-wide maintenance actions.
+const SETTINGS_MODULES: ModuleTile[] = [
+  {
+    key: "reset",
+    title: "Empezar de cero",
+    subtitle: "Reiniciar tus saldos o borrar el historial",
+    icon: "refresh-cw",
+    screen: "ResetScreen",
+  },
+];
+
 export function MasHubScreen({ navigation }: Props) {
   const renderTile = (mod: ModuleTile) => (
     <Pressable
@@ -157,6 +168,12 @@ export function MasHubScreen({ navigation }: Props) {
         </View>
 
         {ADVANCED_MODULES.map(renderTile)}
+
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Configuración</Text>
+        </View>
+
+        {SETTINGS_MODULES.map(renderTile)}
       </ScrollView>
     </SafeAreaView>
   );

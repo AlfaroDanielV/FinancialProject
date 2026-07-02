@@ -6,11 +6,11 @@ copy would drift. See vault `Decision - Credit Card Terms As Account
 Parameters (Not A Debt)`.
 """
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import ForeignKey, Integer, Numeric, Text
+from sqlalchemy import Date, ForeignKey, Integer, Numeric, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import TIMESTAMP
@@ -56,6 +56,12 @@ class CreditCardTerms(Base):
     # Día de corte (statement) / fecha límite de pago.
     statement_day: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     payment_due_day: Mapped[int] = mapped_column(Integer, nullable=False)
+    # The real next payment date the user confirmed at creation (e.g. a card
+    # opened Jul 1 with due day 28 pays Jul 28, not the phantom Jun 28 corte).
+    # The projected due is clamped to max(natural_due, first_due_date), so no
+    # obligation is ever surfaced before the card actually had a statement.
+    # NULL → behave exactly as before (pure statement-cycle projection).
+    first_due_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     # Recurring-payment preference: 'minimum' (the must-pay floor) or 'full'
     # (pago de contado — the full live balance). Selects which LIVE figure the
     # upcoming-payment projection surfaces; never a stored amount, never a

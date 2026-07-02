@@ -34,6 +34,7 @@ import { GmailIntroScreen } from "../screens/GmailIntroScreen";
 import { GmailScreen } from "../screens/GmailScreen";
 import { GmailSendersScreen } from "../screens/GmailSendersScreen";
 import { GmailReviewScreen } from "../screens/GmailReviewScreen";
+import { ResetScreen } from "../screens/ResetScreen";
 import { Colors, FontSize } from "../theme";
 import type { RecurringBillResponse, BillOccurrenceResponse } from "../api/bills";
 import type { DebtPrefill } from "../api/chat";
@@ -58,6 +59,7 @@ export type MasStackParamList = {
   GmailHome: undefined;
   GmailSenders: undefined;
   GmailReview: undefined;
+  ResetScreen: undefined;
 };
 
 const Stack = createNativeStackNavigator<MasStackParamList>();
@@ -155,6 +157,11 @@ export function MasNavigator() {
       <Stack.Screen
         name="GmailReview"
         component={GmailReviewScreen}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="ResetScreen"
+        component={ResetScreen}
         options={{ headerShown: false }}
       />
     </Stack.Navigator>

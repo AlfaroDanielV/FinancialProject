@@ -56,6 +56,44 @@ function parseNum(s: string): number {
   return parseFloat(s.replace(",", "."));
 }
 
+const MONTHS_ES = [
+  "enero", "febrero", "marzo", "abril", "mayo", "junio",
+  "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+];
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/** The two candidate first-payment dates for a due day: the most recent one
+ * that already passed, and the next one still ahead. A card opened mid-cycle
+ * must NOT anchor on the phantom past corte — the user picks which is real. */
+function candidateDueDates(dueDay: number, today: Date) {
+  const clamp = (y: number, m1: number, day: number) =>
+    Math.min(day, new Date(y, m1, 0).getDate()); // m1 is 1-based
+  const y = today.getFullYear();
+  const m = today.getMonth() + 1;
+  const d = today.getDate();
+  const iso = (yy: number, mm: number, dd: number) =>
+    `${yy}-${pad2(mm)}-${pad2(dd)}`;
+  const label = (yy: number, mm: number, dd: number) =>
+    `${dd} de ${MONTHS_ES[mm - 1]}`;
+  const make = (yy: number, mm: number) => {
+    const day = clamp(yy, mm, dueDay);
+    return { iso: iso(yy, mm, day), label: label(yy, mm, day) };
+  };
+  const thisDay = clamp(y, m, dueDay);
+  const prevY = m === 1 ? y - 1 : y;
+  const prevM = m === 1 ? 12 : m - 1;
+  const nextY = m === 12 ? y + 1 : y;
+  const nextM = m === 12 ? 1 : m + 1;
+  // If this month's due day already passed (or is today) → past = this month,
+  // future = next month; else future = this month, past = last month.
+  return thisDay <= d
+    ? { past: make(y, m), future: make(nextY, nextM) }
+    : { past: make(prevY, prevM), future: make(y, m) };
+}
+
 function formatMoney(amount: number, currency: string): string {
   if (currency === "USD")
     return `$${amount.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
@@ -92,6 +130,12 @@ export function CardAccountCreateScreen() {
   // de contado — the full balance). Only changes the upcoming-payment reminder
   // + what the agent reports; the budget keeps using the minimum.
   const [paymentMode, setPaymentMode] = useState<"minimum" | "full">("minimum");
+  // Which of the two candidate dates is the REAL next payment (default: the
+  // upcoming one). Clamps the card's projected due so a mid-cycle card doesn't
+  // show a phantom past-corte overdue.
+  const [firstDueChoice, setFirstDueChoice] = useState<"past" | "future">(
+    "future",
+  );
   const [lowConfidenceNote, setLowConfidenceNote] = useState(false);
 
   const dual = mode === "BOTH";
@@ -104,6 +148,13 @@ export function CardAccountCreateScreen() {
   const floorUsdNum = parseNum(minFloorUsd) || 0;
   const dueDayNum = parseInt(dueDay, 10);
   const stmtDayNum = parseInt(statementDay, 10);
+  const dueDayValid = !isNaN(dueDayNum) && dueDayNum >= 1 && dueDayNum <= 31;
+  const dueCandidates = dueDayValid
+    ? candidateDueDates(dueDayNum, new Date())
+    : null;
+  const firstDueDateIso = dueCandidates
+    ? dueCandidates[firstDueChoice].iso
+    : null;
 
   const rateProvided = ratePct.trim() !== "" && !isNaN(rateNum) && rateNum >= 0;
   const minPctProvided =
@@ -201,6 +252,7 @@ export function CardAccountCreateScreen() {
       credit_limit: opts.limit.trim() ? String(parseNum(opts.limit)) : null,
       statement_day: statementDay.trim() ? stmtDayNum : null,
       payment_due_day: dueDayNum,
+      first_due_date: firstDueDateIso,
       payment_mode: paymentMode,
     });
     return account;
@@ -609,6 +661,41 @@ export function CardAccountCreateScreen() {
             maxLength={2}
           />
         </Field>
+
+        {dueCandidates && (
+          <Field
+            label="¿Cuál es tu próxima fecha de pago?"
+            hint="Si abriste la tarjeta hace poco, el primer pago suele ser el próximo — así no te aparece un pago vencido que en realidad no debés."
+          >
+            <View style={styles.currencyRow}>
+              {(
+                [
+                  ["past", `${dueCandidates.past.label} (ya pasó)`],
+                  ["future", dueCandidates.future.label],
+                ] as const
+              ).map(([value, label]) => (
+                <Pressable
+                  key={value}
+                  onPress={() => setFirstDueChoice(value)}
+                  style={({ pressed }) => [
+                    styles.currencyBtn,
+                    firstDueChoice === value && styles.currencyBtnActive,
+                    pressed && { opacity: 0.8 },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.currencyLabel,
+                      firstDueChoice === value && styles.currencyLabelActive,
+                    ]}
+                  >
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </Field>
+        )}
 
         <Pressable
           onPress={() => canSubmit && createMutation.mutate()}

@@ -33,13 +33,22 @@ from api.services.recurrence import get_upcoming_feed
 TODAY = date(2026, 6, 28)
 
 
-async def _card(session, user_id, *, payment_mode="full", statement_day=19):
+async def _card(
+    session,
+    user_id,
+    *,
+    payment_mode="full",
+    statement_day=19,
+    payment_due_day=30,
+    first_due_date=None,
+    initial_balance="0",
+):
     acc = Account(
         user_id=user_id,
         name="BAC Visa",
         account_type="credit",
         currency="CRC",
-        initial_balance=Decimal("0"),
+        initial_balance=Decimal(initial_balance),
     )
     session.add(acc)
     await session.commit()
@@ -51,8 +60,9 @@ async def _card(session, user_id, *, payment_mode="full", statement_day=19):
         minimum_payment_pct=Decimal("0.025"),
         minimum_payment_floor=Decimal("5000"),
         statement_day=statement_day,
-        payment_due_day=30,
+        payment_due_day=payment_due_day,
         payment_mode=payment_mode,
+        first_due_date=first_due_date,
     )
     session.add(terms)
     await session.commit()
@@ -247,6 +257,76 @@ async def test_feed_shows_overdue_unpaid_statement(db_with_user, monkeypatch):
         include_overdue=False,
     )
     assert [e for e in entries_no if e.item_type == "card_payment"] == []
+
+
+@pytest.mark.asyncio
+async def test_first_due_date_clamps_phantom_overdue(db_with_user):
+    # A card opened mid-cycle: statement_day 20, due day 28, today Jul 1.
+    # last_corte(20, Jul 1) = Jun 20 → natural due Jun 28 (a phantom past-due
+    # that never actually existed). first_due_date = Jul 28 clamps it forward.
+    session, user_id = db_with_user
+    today = date(2026, 7, 1)
+    card = await _card(
+        session,
+        user_id,
+        payment_mode="full",
+        statement_day=20,
+        payment_due_day=28,
+        first_due_date=date(2026, 7, 28),
+        initial_balance="-100000",  # owed at creation
+    )
+    st = await _status(session, user_id, today=today)
+    assert st is not None
+    assert st.due_date == date(2026, 7, 28)  # clamped, NOT the phantom Jun 28
+    assert st.remaining == Decimal("100000")
+
+
+@pytest.mark.asyncio
+async def test_no_first_due_date_keeps_natural_due(db_with_user):
+    # NULL first_due_date → unchanged behavior (the phantom Jun 28 still shows).
+    session, user_id = db_with_user
+    today = date(2026, 7, 1)
+    card = await _card(
+        session,
+        user_id,
+        payment_mode="full",
+        statement_day=20,
+        payment_due_day=28,
+        first_due_date=None,
+        initial_balance="-100000",
+    )
+    st = await _status(session, user_id, today=today)
+    assert st.due_date == date(2026, 6, 28)
+
+
+@pytest.mark.asyncio
+async def test_feed_no_overdue_when_first_due_clamped(db_with_user, monkeypatch):
+    # End to end: the clamp removes the phantom overdue from the home feed.
+    session, user_id = db_with_user
+    import api.services.recurrence as rec
+
+    today = date(2026, 7, 1)
+    monkeypatch.setattr(rec, "today_cr", lambda: today)
+    card = await _card(
+        session,
+        user_id,
+        payment_mode="full",
+        statement_day=20,
+        payment_due_day=28,
+        first_due_date=date(2026, 7, 28),
+        initial_balance="-100000",
+    )
+    entries = await get_upcoming_feed(
+        session,
+        user_id,
+        from_date=today,
+        to_date=today + timedelta(days=60),
+        include_overdue=True,
+    )
+    card_entries = [e for e in entries if e.item_type == "card_payment"]
+    assert len(card_entries) == 1
+    assert card_entries[0].is_overdue is False  # Jul 28 > Jul 1
+    assert Decimal(str(card_entries[0].amount)) == Decimal("100000")
 
 
 @pytest.mark.asyncio

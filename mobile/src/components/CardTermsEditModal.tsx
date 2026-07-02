@@ -25,6 +25,7 @@ import {
   type CardTermsResponse,
 } from "../api/cardTerms";
 import { AmountInput } from "./fields/AmountInput";
+import { DateField } from "./fields/DateField";
 import { EnvelopePickerModal } from "./EnvelopePickerModal";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
 
@@ -65,6 +66,7 @@ export function CardTermsEditModal({
   const [dueDay, setDueDay] = useState(
     terms?.payment_due_day != null ? String(terms.payment_due_day) : "",
   );
+  const [firstDueDate, setFirstDueDate] = useState(terms?.first_due_date ?? "");
   const [envelopeId, setEnvelopeId] = useState<string | null>(
     terms?.envelope_id ?? null,
   );
@@ -94,6 +96,7 @@ export function CardTermsEditModal({
       setDueDay(
         terms?.payment_due_day != null ? String(terms.payment_due_day) : "",
       );
+      setFirstDueDate(terms?.first_due_date ?? "");
       setEnvelopeId(terms?.envelope_id ?? null);
       setPaymentMode(terms?.payment_mode ?? "minimum");
       setError(null);
@@ -113,6 +116,7 @@ export function CardTermsEditModal({
         credit_limit: creditLimit.trim() ? String(parseNum(creditLimit)) : null,
         statement_day: statementDay.trim() ? parseInt(statementDay, 10) : null,
         payment_due_day: due,
+        first_due_date: firstDueDate.trim() ? firstDueDate : null,
         payment_mode: paymentMode,
         envelope_id: envelopeId,
       });
@@ -239,6 +243,19 @@ export function CardTermsEditModal({
                 placeholderTextColor={Colors.textMuted}
                 maxLength={2}
               />
+            </Field>
+            <Field label="Próxima fecha de pago (opcional)">
+              <DateField
+                value={firstDueDate}
+                onChange={setFirstDueDate}
+                placeholder="Elegir fecha"
+                style={styles.input}
+              />
+              <Text style={styles.modeHint}>
+                Corregí acá si aparece un pago vencido que en realidad todavía
+                no debés (p. ej. una tarjeta nueva). No mostramos ningún pago
+                antes de esta fecha.
+              </Text>
             </Field>
             <Field label="¿Cómo pagás esta tarjeta?">
               <View style={styles.modeRow}>

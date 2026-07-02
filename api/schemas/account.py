@@ -59,6 +59,31 @@ class AnchorResponse(BaseModel):
     current_balance: Decimal  # == value (post-anchor; no future-dated txns)
 
 
+class ResetBalanceItem(BaseModel):
+    """One account's stated real balance for «Reiniciar saldos» (Option A)."""
+
+    account_id: uuid.UUID
+    value: Decimal = Field(..., max_digits=14, decimal_places=2)
+
+
+class ResetBalancesRequest(BaseModel):
+    accounts: list[ResetBalanceItem] = Field(..., min_length=1)
+
+
+class ResetBalancesResponse(BaseModel):
+    anchored: int  # number of accounts re-anchored
+
+
+class WipeHistoryRequest(BaseModel):
+    """«Borrar historial» (Option B) — destructive; requires the typed phrase."""
+
+    confirm: str = Field(..., min_length=1, max_length=64)
+
+
+class WipeHistoryResponse(BaseModel):
+    deleted: dict[str, int]  # per-table counts of what was removed/reset
+
+
 class AccountDeleteImpactResponse(BaseModel):
     """Phase 7b B2 — preview of what a hard delete removes / detaches. The
     native confirm sheet shows these counts before asking for the typed name."""

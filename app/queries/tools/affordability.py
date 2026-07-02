@@ -166,7 +166,11 @@ GET_SAVINGS_CAPACITY_DESCRIPTION = (
     "ahorrar: surplus = ingreso − lo ya asignado en sobres (committed_outflows), y "
     "el sobrante seguro (margen del 80%, safe_surplus). Usá esto SIEMPRE que pida "
     "planear ahorros sin meta concreta («¿cuánto puedo ahorrar al mes?», «¿cuánto "
-    "me queda libre?», «¿cómo reparto mi plata?»). IMPORTANTE — gate_reason: si "
+    "me queda libre?», «¿cómo reparto mi plata?») Y para «¿me alcanza el "
+    "salario/ingreso para mis deudas?»: trae monthly_income (ingreso registrado, "
+    "NO se lo preguntés al usuario), monthly_debt_payments y debt_to_income_ratio "
+    "(cuota mensual ÷ ingreso; p. ej. 0.35 = las deudas consumen el 35% del "
+    "ingreso) — narrá ese número tal cual. IMPORTANTE — gate_reason: si "
     "viene 'no_income'/'no_budget'/'under_coverage', NO muestres un número de "
     "sobrante; pedí la acción que corresponde, y son DISTINTAS: no_income → "
     "registrar el ingreso; no_budget → armar los sobres; under_coverage → que los "
@@ -215,11 +219,23 @@ async def get_savings_capacity(*, user_id: uuid.UUID) -> dict[str, Any]:
                 }
             )
 
+    # Deterministic debt-service ratio: what share of monthly income the debt
+    # cuotas consume. Answers "¿me alcanza el salario para mis deudas?" with a
+    # real number computed in Python — the LLM narrates, never recomputes.
+    dti: Optional[float] = None
+    if result.monthly_income and result.monthly_income > 0:
+        dti = float(
+            (result.monthly_debt_payments / result.monthly_income).quantize(
+                Decimal("0.001")
+            )
+        )
+
     payload = {
         "currency": currency,
         "monthly_income": _money(result.monthly_income),
         "monthly_fixed_expenses": _money(result.monthly_fixed_expenses),
         "monthly_debt_payments": _money(result.monthly_debt_payments),
+        "debt_to_income_ratio": dti,
         "envelope_allocations": _money(result.envelope_allocations),
         "committed_outflows": _money(result.committed_outflows),
         "savings_allocations": _money(result.savings_allocations),

@@ -37,8 +37,15 @@ import {
   type DashboardPeriod,
   type UpcomingFeedItem,
 } from "../api/dashboard";
+import {
+  fetchBillOccurrences,
+  fetchRecurringBills,
+  type BillOccurrenceResponse,
+  type RecurringBillResponse,
+} from "../api/bills";
 import { fetchOnboardingStatus } from "../api/onboarding";
 import { SobresSection } from "../components/SobresSection";
+import { TransferModal } from "../components/TransferModal";
 import type { InicioStackParamList } from "../navigation/InicioNavigator";
 import { formatMoney } from "../lib/format";
 import { CardShadow, Colors, Fonts, FontSize, Radius, Spacing } from "../theme";
@@ -101,9 +108,36 @@ const PAYMENT_ICONS: Record<
 const INACTIONABLE = new Set(["paid", "skipped", "cancelled"]);
 const PREVIEW_COUNT = 3;
 
-function PaymentRow({ item }: { item: UpcomingFeedItem }) {
+// Cross-tab jump to the payment forms in the "Mas" stack (Inicio is a
+// separate tab). Mirrors the ChatTabJump / ChatJump casts used elsewhere.
+type PagosNav = {
+  navigate: {
+    (tab: "Mas", opts: { screen: "DebtDetail"; params: { debtId: string } }): void;
+    (
+      tab: "Mas",
+      opts: {
+        screen: "BillDetail";
+        params: {
+          bill: RecurringBillResponse;
+          occurrence: BillOccurrenceResponse | null;
+        };
+      },
+    ): void;
+  };
+};
+
+function PaymentRow({
+  item,
+  onPress,
+}: {
+  item: UpcomingFeedItem;
+  onPress: (item: UpcomingFeedItem) => void;
+}) {
   return (
-    <View style={styles.payRow}>
+    <Pressable
+      onPress={() => onPress(item)}
+      style={({ pressed }) => [styles.payRow, pressed && { opacity: 0.6 }]}
+    >
       <View style={styles.payIcon}>
         <Feather
           name={PAYMENT_ICONS[item.item_type] ?? "calendar"}
@@ -126,18 +160,57 @@ function PaymentRow({ item }: { item: UpcomingFeedItem }) {
       <Text style={[styles.payAmount, item.is_overdue && { color: Colors.overdue }]}>
         {item.amount !== null ? fmt(item.amount, item.currency) : "Variable"}
       </Text>
-    </View>
+      <Feather
+        name="chevron-right"
+        size={16}
+        color={Colors.textMuted}
+        style={{ marginLeft: Spacing.xs }}
+      />
+    </Pressable>
   );
 }
 
 function UpcomingCard() {
   const [expanded, setExpanded] = useState(false);
+  // Card-payment rows open a transfer sheet (fund account → card), like
+  // BillsScreen — a card payment is a transfer, never an expense.
+  const [payCardAccountId, setPayCardAccountId] = useState<string | null>(null);
+  const nav = useNavigation() as unknown as PagosNav;
 
   const { data: upcoming, isLoading } = useQuery({
     queryKey: ["calendar", "upcoming"],
     queryFn: () => fetchUpcomingFeed(todayIso(), plusDaysIso(30)),
     staleTime: 5 * 60 * 1000,
   });
+
+  // Tap → the item's payment flow, prefilled. Reuses BillsScreen's mapping.
+  async function onPressItem(item: UpcomingFeedItem) {
+    if (item.item_type === "debt" && item.debt_id) {
+      nav.navigate("Mas", {
+        screen: "DebtDetail",
+        params: { debtId: item.debt_id },
+      });
+    } else if (item.item_type === "card_payment" && item.account_id) {
+      setPayCardAccountId(item.account_id);
+    } else if (item.item_type === "bill" && item.recurring_bill_id) {
+      // BillDetail needs the full objects — resolve them, then navigate.
+      const [bills, occs] = await Promise.all([
+        fetchRecurringBills(false),
+        fetchBillOccurrences({
+          from_date: todayIso(),
+          to_date: plusDaysIso(60),
+        }),
+      ]);
+      const bill = bills.find((b) => b.id === item.recurring_bill_id);
+      const occurrence = occs.find((o) => o.id === item.id) ?? null;
+      if (bill) {
+        nav.navigate("Mas", {
+          screen: "BillDetail",
+          params: { bill, occurrence },
+        });
+      }
+    }
+  }
 
   // Everything the user still has to pay: bills + projected loan cuotas +
   // card minimums. Events stay out (they're reminders, not payments).
@@ -153,6 +226,7 @@ function UpcomingCard() {
   const hiddenCount = sorted.length - PREVIEW_COUNT;
 
   return (
+    <>
     <View style={styles.card}>
       <View style={styles.cardHeader}>
         <Text style={styles.cardTitle}>Próximos pagos</Text>
@@ -177,7 +251,11 @@ function UpcomingCard() {
         ) : (
           <>
             {visible.map((item) => (
-              <PaymentRow key={`${item.item_type}-${item.id}`} item={item} />
+              <PaymentRow
+                key={`${item.item_type}-${item.id}`}
+                item={item}
+                onPress={onPressItem}
+              />
             ))}
             {hiddenCount > 0 && (
               <Pressable
@@ -198,6 +276,14 @@ function UpcomingCard() {
         )}
       </View>
     </View>
+    {/* Card row → pay the card (transfer from a fund account, prefilled). */}
+    <TransferModal
+      visible={payCardAccountId != null}
+      initialToAccountId={payCardAccountId}
+      autofillPayInFull
+      onClose={() => setPayCardAccountId(null)}
+    />
+    </>
   );
 }
 

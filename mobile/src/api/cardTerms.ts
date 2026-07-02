@@ -16,6 +16,9 @@ export interface CardTermsPayload {
   credit_limit?: string | null;
   statement_day?: number | null;
   payment_due_day: number;
+  /** Real next payment date (YYYY-MM-DD) the user confirmed. A card opened
+   * mid-cycle pays next month, not the phantom past-corte; clamps the due. */
+  first_due_date?: string | null;
   /** 'minimum' (must-pay floor) or 'full' (pago de contado — full balance).
    * Selects which live amount the upcoming-payment reminder + agent surface. */
   payment_mode?: "minimum" | "full";
@@ -35,6 +38,7 @@ export interface CardTermsResponse {
   credit_limit: string | null;
   statement_day: number | null;
   payment_due_day: number;
+  first_due_date: string | null;
   payment_mode: "minimum" | "full";
   envelope_id: string | null;
   notes: string | null;

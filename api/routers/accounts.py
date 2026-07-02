@@ -23,6 +23,10 @@ from ..schemas.account import (
     AccountUpdate,
     AnchorRequest,
     AnchorResponse,
+    ResetBalancesRequest,
+    ResetBalancesResponse,
+    WipeHistoryRequest,
+    WipeHistoryResponse,
 )
 from ..schemas.card_terms import (
     CardAnalysisResponse,
@@ -46,6 +50,7 @@ from ..services.anchors import (
     needs_balance_confirmation,
 )
 from ..services.clock import user_today
+from ..services.reset import ResetError, reset_balances, wipe_user_history
 from ..services.llm_extractor import extract_card_terms, extract_statement
 from ..services.statement_normalize import build_reconcile_plan, plan_to_extraction
 from ..services.statements import (
@@ -264,6 +269,53 @@ async def set_account_anchor(
         ajuste_transaction_id=res.ajuste_transaction_id,
         current_balance=res.value,
     )
+
+
+# «Empezar de cero» — the phrase the destructive wipe requires (typed by the
+# user in the danger-zone confirm).
+WIPE_CONFIRM_PHRASE = "BORRAR HISTORIAL"
+
+
+@router.post("/reset-balances", response_model=ResetBalancesResponse)
+async def reset_account_balances(
+    payload: ResetBalancesRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """«Reiniciar saldos» (non-destructive) — re-anchor each listed account to
+    its stated real balance in one transaction. History is preserved (each
+    account gets an anchor + a labeled ajuste). Reuses the reconciliation
+    machinery; no new balance math."""
+    try:
+        results = await reset_balances(
+            db,
+            user=user,
+            items=[(i.account_id, i.value) for i in payload.accounts],
+        )
+    except ResetError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await db.commit()
+    return ResetBalancesResponse(anchored=len(results))
+
+
+@router.post("/wipe-history", response_model=WipeHistoryResponse)
+async def wipe_history(
+    payload: WipeHistoryRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """«Borrar historial» (DESTRUCTIVE) — delete the caller's movements +
+    derived records + balance anchors and reset debt/goal progress. Keeps
+    config (accounts/debts/bills/goals/envelopes/incomes/categories) + Gmail
+    dedup memory. Requires the exact typed confirmation phrase."""
+    if payload.confirm.strip().upper() != WIPE_CONFIRM_PHRASE:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Escribí exactamente «{WIPE_CONFIRM_PHRASE}» para confirmar.',
+        )
+    counts = await wipe_user_history(db, user=user)
+    await db.commit()
+    return WipeHistoryResponse(deleted=counts)
 
 
 @router.post("/parse-statement", response_model=StatementExtraction)

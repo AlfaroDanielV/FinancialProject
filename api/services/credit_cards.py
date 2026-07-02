@@ -172,9 +172,19 @@ async def card_statement_status(
         payment_mode=card.terms.payment_mode,
         minimum=minimum,
     )
+    # Clamp the projected due to the real first payment date. A card opened
+    # mid-cycle has no statement before `first_due_date`, so `last_corte` can
+    # land on a corte that predates it (the debt leaks backward via
+    # `balance_as_of`'s initial_balance fallback) → a phantom overdue. Showing
+    # max(natural, first_due) surfaces the next REAL payment and never a
+    # pre-creation one. NULL first_due_date → unchanged behavior.
+    due_date = statement_due_date(corte, card.terms.payment_due_day)
+    first_due = card.terms.first_due_date
+    if first_due is not None and due_date < first_due:
+        due_date = first_due
     return CardStatementStatus(
         corte=corte,
-        due_date=statement_due_date(corte, card.terms.payment_due_day),
+        due_date=due_date,
         statement_balance=statement_balance,
         paid_since_corte=paid_since_corte,
         remaining=max(Decimal("0"), statement_balance - paid_since_corte),

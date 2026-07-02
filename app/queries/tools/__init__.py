@@ -16,6 +16,7 @@ from .debts import register_debt_tools
 from .envelopes import register_envelope_tools
 from .financing import register_financing_tools
 from .goals import register_goal_tools
+from .income import register_income_tools
 from .pending import register_pending_tools
 from .reallocation import register_reallocation_tools
 from .salary import register_salary_tools
@@ -35,6 +36,7 @@ def register_builtin_tools() -> None:
     register_affordability_tools()
     register_financing_tools()
     register_goal_tools()
+    register_income_tools()
     register_salary_tools()
     register_credit_card_tools()
     if settings.insights_dispatcher_enabled:
