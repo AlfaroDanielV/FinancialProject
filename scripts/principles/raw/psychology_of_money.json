@@ -1,0 +1,93 @@
+
+[
+  {
+    "principle_id": "primacia_comportamiento_disciplinado",
+    "strategic_context": "La arquitectura del éxito financiero no se construye sobre el coeficiente intelectual, sino sobre la gestión del temperamento. En el coaching, es imperativo establecer que el resultado patrimonial es una consecuencia directa del comportamiento emocional sostenido, superando con creces la capacidad técnica de análisis matemático.",
+    "analytical_synthesis": "Deconstruir la falsa correlación entre inteligencia académica y éxito financiero mediante el contraste entre Ronald Read y Richard Fuscone. Read, un conserje sin formación, capitalizó la disciplina y el interés compuesto para amasar 8 millones de dólares, mientras que Fuscone, un ejecutivo de Merrill Lynch con MBA de Harvard, colapsó bajo el peso del apalancamiento y la soberbia. Se categoriza la disciplina a largo plazo como un activo superior a la inteligencia financiera agresiva.",
+    "behavioral_mechanisms": {
+      "identidad_señalizacion": "El gasto se utiliza como un mecanismo de señalización de estatus; la identidad del individuo está en conflicto entre 'ser' rico y 'parecer' rico.",
+      "brecha_cognitiva": "Evaluación de la diferencia crítica entre el conocimiento técnico (saber qué hacer) y la ejecución psicológica (qué sucede en la mente al intentarlo)."
+    },
+    "cultural_flags": null,
+    "tactic_excluded": [
+      "Ahorro del 10% del salario",
+      "Fondos de emergencia de 6 meses"
+    ],
+    "framing_template": "Propongo que analicemos no tu capacidad de cálculo, sino tu capacidad de mantener la calma cuando el entorno pierde el control, ya que es ahí donde se define tu patrimonio real.",
+    "transition": "Esta primacía del comportamiento nos permite descifrar decisiones que, aunque parecen irracionales bajo una fórmula, tienen una lógica interna profunda según la historia de quien las toma."
+  },
+  {
+    "principle_id": "vulnerabilidad_del_intelecto_sin_control",
+    "strategic_context": "La alta capacidad técnica es insuficiente, y a menudo peligrosa, si no se acompaña de una arquitectura de control emocional. La inteligencia no protege contra la estupidez conductual.",
+    "analytical_synthesis": "Contrasta el perfil del ejecutivo tecnológico de Housel —quien arrojaba monedas de oro al mar por diversión— con la estabilidad de los ahorradores promedio. Se evalúa cómo el ego transforma la pericia técnica en una vulnerabilidad financiera catastrófica. La inteligencia sin disciplina no es una ventaja competitiva, sino un riesgo de apalancamiento emocional.",
+    "behavioral_mechanisms": {
+      "exceso_de_confianza": "La creencia de que el éxito en un área técnica se traduce automáticamente en dominio sobre el mercado.",
+      "miopia_del_riesgo": "Incapacidad de visualizar el colapso patrimonial debido a una racha previa de éxitos fortuitos."
+    },
+    "cultural_flags": null,
+    "tactic_excluded": [
+      "Estrategias de inversión en metales preciosos (oro)",
+      "Apalancamiento técnico específico"
+    ],
+    "framing_template": "Incluso las mentes más brillantes fracasan si no dominan su relación con el ego; mi rol es asegurar que tu intelecto trabaje a favor de tu seguridad, no de tu auto-validación.",
+    "transition": "Entender que nadie es 'tonto' con su dinero, sino que todos operamos bajo una lógica individual, nos lleva a validar la historia personal de cada cliente."
+  },
+  {
+    "principle_id": "validacion_logica_individual_historica",
+    "strategic_context": "Las decisiones financieras no se gestan en una hoja de cálculo, sino en la 'mesa del comedor'. La historia personal de carencias o abundancias pesa más que cualquier proyección de rendimiento futuro. La empatía histórica es la herramienta principal del consultor.",
+    "analytical_synthesis": "Internalizar que el 80% de la visión del mundo financiero del usuario está dictada por sus experiencias tempranas, no por su educación. El 'sesgo de experiencia' es el motor de la tolerancia al riesgo, invalidando a menudo los tests de perfil de inversionista estandarizados.",
+    "behavioral_mechanisms": {
+      "anclaje_emocional": "Fijación en eventos económicos pasados (inflación, crisis) que dictan el miedo presente.",
+      "aversion_a_la_perdida": "La respuesta emocional ante el riesgo es asimétrica y profundamente personal."
+    },
+    "cultural_flags": {
+      "paternalismo_solidarista": "En Costa Rica, el 'Solidarismo' y sus excedentes anuales han creado una zona de confort de retornos percibidos como seguros, lo que genera una aversión extrema a la volatilidad del mercado bursátil internacional, vista como una amenaza al patrimonio familiar.",
+      "anclaje_del_aguinaldo": "El uso del aguinaldo como un mecanismo de alivio emocional de fin de año, más que como capital estratégico, debido a la presión social y la estructura familiar extendida."
+    },
+    "tactic_excluded": [
+      "Modelos de optimización de varianza media",
+      "Test de perfil de riesgo de 10 preguntas"
+    ],
+    "framing_template": "Honro la sabiduría de supervivencia que desarrollaste al vivir {evento_economico}; esa precaución te protegió entonces y es perfectamente lógica, aunque hoy busquemos una estrategia adaptada a tus metas actuales.",
+    "transition": "Validar esta lógica individual permite que el coachee se abra a comprender por qué gasta en lo que otros consideran frívolo, como la lotería."
+  },
+  {
+    "principle_id": "paradoja_esperanza_loteria",
+    "strategic_context": "No juzgar el gasto en 'esperanza' es vital para mantener la alianza de coaching. En segmentos de ingresos limitados, ciertos gastos no son errores de cálculo, sino válvulas de escape psicológicas ante un sistema que parece impenetrable.",
+    "analytical_synthesis": "Categorizar el gasto en lotería como un 'optimismo defensivo'. Para quien percibe que el ahorro tradicional es insuficiente para metas grandes (casa, educación), el sorteo es el único instrumento que permite el acceso temporal a la aspiración y al sueño de movilidad social.",
+    "behavioral_mechanisms": {
+      "contabilidad_mental": "Segmentación del dinero destinado a la 'suerte' como una inversión en bienestar emocional.",
+      "sesgo_de_disponibilidad": "La visibilidad de los ganadores alimenta la narrativa de que el azar es un camino viable."
+    },
+    "cultural_flags": {
+      "colectivismo_jps": "La cultura del 'pedacito' de la Junta de Protección Social en Costa Rica no es solo un juego de azar, sino un rito de colectivismo donde se comparte la suerte con colegas y familia, reforzando la obligación de cuido mutuo.",
+      "gordo_navideño": "Institucionalización de la suerte como el único mecanismo viable de 'gran salto' económico anual."
+    },
+    "tactic_excluded": [
+      "Análisis de probabilidad de pérdida en juegos de azar",
+      "Presupuesto estricto base cero"
+    ],
+    "framing_template": "Entiendo que ese gasto representa la posibilidad de soñar con algo mejor para tu familia; busquemos cómo podemos construir una 'suerte programada' mediante una estrategia que nos dé esa misma paz a largo plazo.",
+    "transition": "Este reconocimiento de nuestras necesidades emocionales nos recuerda que, frente a la modernidad financiera, todos somos, en esencia, novatos."
+  },
+  {
+    "principle_id": "inexperiencia_evolutiva_modernidad",
+    "strategic_context": "La prevalencia del error humano no se debe a la falta de capacidad, sino a la juventud de las herramientas financieras. Estamos en una fase de aprendizaje evolutivo ante sistemas (pensiones, bolsa) para los cuales nuestra biología no tiene memoria histórica.",
+    "analytical_synthesis": "Sintetizar la noción de que somos 'newbies' (novatos). La jubilación digna financiada individualmente es un concepto de apenas dos generaciones. La transición del Estado protector a la responsabilidad individual es un choque cultural y psicológico masivo que genera parálisis por análisis.",
+    "behavioral_mechanisms": {
+      "falta_memoria_historica": "Incapacidad de procesar instrumentos que no existían en el imaginario colectivo de nuestros abuelos.",
+      "paralisis_por_incertidumbre": "Ante la novedad de los sistemas, el cerebro opta por la inacción."
+    },
+    "cultural_flags": {
+      "transicion_ccss_lpt": "El paso del modelo paternalista de la CCSS a la Ley de Protección al Trabajador (año 2000) y el ROP es todavía muy reciente en la psique tica; el usuario aún añora la seguridad del Estado y se siente desprotegido ante la gestión individual de su pensión.",
+      "incertidumbre_del_rop": "Desconfianza sistémica hacia los fondos complementarios debido a la falta de historia de éxito de largo plazo en el país."
+    },
+    "tactic_excluded": [
+      "401(k)",
+      "Roth IRA",
+      "Planes de ahorro educativos específicos de EE.UU."
+    ],
+    "framing_template": "No es que seas malo con el dinero; es que estás aprendiendo a usar herramientas que tienen menos años de existir que muchos de tus hábitos. Es normal sentirse desorientado en este nuevo sistema.",
+    "transition": "Al final, el objetivo de esta biblioteca es servir de motor de empatía, permitiendo que el coaching guíe desde la comprensión del proceso evolutivo y no desde el castigo del error."
+  }
+]

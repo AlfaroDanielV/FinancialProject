@@ -1,0 +1,97 @@
+
+[
+  {
+    "seccion": "1. Fundamentos de Mentalidad: El Fin del Victimismo y los 'Guiones Invisibles'",
+    "prosa_analitica": "Ramit Sethi establece una postura disruptiva sobre la responsabilidad individual, argumentando que la agencia financiera es erosionada por el ruido informativo y una creciente 'cultura del victimismo' que fomenta el cinismo sobre la mejora personal. En el contexto latinoamericano, esta parálisis se disfraza de prudencia, pero Sethi la identifica como una abdicación del control. Al desmantelar la creencia de que el éxito financiero es producto de la suerte o de 'negocios oscuros', el marco psicológico se desplaza de la reactividad a la ofensiva. La soberanía financiera no requiere ser un experto, sino ejecutar la 'Solución del 85%': aceptar que actuar con un 85% de acierto es infinitamente superior a la parálisis perfecta del 0%.",
+    "principios_extraidos": {
+      "guiones_invisibles_fuente": [
+        "Estás tirando tu dinero a la basura con el alquiler",
+        "En esta casa no hablamos de dinero",
+        "Las tarjetas de crédito son un timo",
+        "Deja de gastarte dinero en cafés con leche",
+        "El dinero cambia a la gente",
+        "No se consigue ese nivel de riqueza sin algunos negocios oscuros",
+        "El mercado de valores es como la ruleta",
+        "Los préstamos estudiantiles son una estafa"
+      ],
+      "mecanismo_paralisis": "El exceso de opciones en planes de jubilación o inversión reduce la participación. El usuario promedio prefiere no hacer nada antes que arriesgarse a una elección subóptima."
+    },
+    "cultural_flags": "Fricción entre el individualismo de Sethi y el 'familismo' costarricense. La obligación percibida de apoyo financiero ilimitado a la familia extendida actúa como un 'guion invisible' de autosacrificio. El consultor debe reencuadrar el apoyo familiar no como una obligación reactiva, sino como una 'cubeta' planificada para mantener la agencia individual.",
+    "verbos_de_accion": [
+      "Desmantelar el sesgo de perfección mediante la validación de la Solución del 85%",
+      "Auditar los mensajes heredados sobre la 'maldad' del dinero para restaurar la capacidad de acumulación",
+      "Neutralizar el cinismo externo mediante el enfoque exclusivo en variables bajo control personal"
+    ],
+    "transicion": "Superar los bloqueos mentales es el prerrequisito para dejar de debatir sobre minucias y reinvertir esa energía cognitiva en las decisiones que realmente mueven la aguja: las Grandes Ganancias."
+  },
+  {
+    "seccion": "2. Psicología de las 'Grandes Ganancias' (Big Wins) vs. Minucias",
+    "prosa_analitica": "La estrategia de Sethi prioriza decisiones de alto apalancamiento para conservar el ancho de banda mental, denunciando el costo de oportunidad de agonizar por el precio de un café. Mientras el ahorro trivial agota la fuerza de voluntad, las 'Grandes Ganancias' generan resultados desproporcionados que permiten flexibilidad en lo micro. Psicológicamente, esto elimina la fatiga de decisión y el sentimiento de culpa. El enfoque no es la privación, sino la optimización macro para permitir la indulgencia en áreas de alto valor personal, validando que ser 'rico' es una construcción subjetiva basada en la libertad y no solo en el saldo bancario.",
+    "principios_extraidos": {
+      "grandes_ganancias_estrategicas": [
+        "Negociación agresiva de salario inicial",
+        "Optimización de los gastos fijos (vivienda y transporte)",
+        "Inversión automática y temprana (interés compuesto)",
+        "Dominio y optimización del historial crediticio"
+      ],
+      "filosofia_de_eficiencia": "En las inversiones, la media es genial; el intento de 'vencer al mercado' mediante la complejidad suele derivar en rendimientos inferiores y estrés innecesario."
+    },
+    "tactic_excluded": "Se omiten planes 401(k), Roth IRA, cuentas 529, tasas de interés específicas de bancos estadounidenses y menciones a asesores robóticos no disponibles en el mercado local.",
+    "verbos_de_accion": [
+      "Ejecutar una auditoría de categorización radical entre 'Tacañería' (restricción por miedo) y 'Gasto Consciente' (priorización de valor)",
+      "Negociar condiciones de servicios fijos bajo la premisa de que 'todo es negociable' si se tiene el guion correcto",
+      "Ignorar el ruido de 'acciones calientes' para centrarse en la compra y retención a largo plazo"
+    ],
+    "transicion": "Al asegurar las victorias macro, el usuario libera el espacio psicológico necesario para diseñar un sistema de gasto que no castigue el disfrute, sino que lo potencie."
+  },
+  {
+    "seccion": "3. Arquitectura del Gasto Consciente y Reencuadre del Valor",
+    "prosa_analitica": "El 'Gasto Consciente' es un mecanismo de liberación emocional que sustituye la restricción punitiva por la intención estratégica. Al 'gastar extravagantemente en lo que amas y recortar sin piedad lo que no te importa', se elimina la hipocresía financiera. Este enfoque es vital en contextos de alto endeudamiento como el costarricense, donde el consumo suele ser reactivo a la presión social. El sistema de cubetas no busca limitar el flujo, sino dirigirlo hacia donde genera mayor satisfacción residual, permitiendo que el dinero trabaje como un servidor de la 'Vida de Abundancia' y no como un juez moral.",
+    "principios_extraidos": {
+      "sistema_de_cuatro_cubetas": {
+        "Costes_Fijos": "50-60% del ingreso",
+        "Inversiones": "10% del ingreso (mínimo)",
+        "Ahorros": "5-10% para metas específicas",
+        "Gasto_Libre_de_Culpa": "20-35% para disfrute puro"
+      },
+      "diferenciacion_conductual": "La persona tacaña intenta ahorrar en todo; el gastador consciente es implacable en lo que no valora para ser generoso en lo que sí."
+    },
+    "criterio_adaptacion": {
+      "gestion_estacional": "Uso de la técnica de 'Pre-compromiso' para el Aguinaldo y Salario Escolar: asignar el 80% de estos fondos a las cubetas de inversión y deuda *antes* de su depósito en diciembre/enero para evitar el sesgo de presente.",
+      "contexto_de_deuda": "Dada la normalización del endeudamiento en Costa Rica, el 'Gasto Libre de Culpa' solo se activa tras haber automatizado el pago de cuotas de tarjetas por encima del mínimo."
+    },
+    "framing_template": "He recortado [GASTO IRRELEVANTE] hasta los huesos para poder disfrutar de [VALOR PRIORITARIO] como un rey y sin dar explicaciones a nadie.",
+    "transicion": "Una vez definida la arquitectura del gasto, la voluntad humana debe ser reemplazada por sistemas automáticos para blindar el plan contra la impulsividad."
+  },
+  {
+    "seccion": "4. Automatización y la Psicología del 'Default'",
+    "prosa_analitica": "La automatización es la tecnología que convierte la disciplina en un proceso invisible. Sethi argumenta que depender de la fuerza de voluntad es una estrategia fallida; en su lugar, se debe usar la psicología contra uno mismo mediante sistemas por defecto. 'Ahorrar mientras duermes' no es solo una comodidad, es una herramienta de libertad que elimina las micro-decisiones que agotan la energía mental. Al configurar un flujo donde el dinero se mueve automáticamente hacia las metas de inversión, el éxito financiero deja de ser una opción mensual y se convierte en el resultado inevitable del sistema.",
+    "principios_extraidos": {
+      "flujo_automatico": "Interconexión de cuentas donde los depósitos se distribuyen a inversión, ahorro y gastos sin intervención humana.",
+      "psicologia_del_default": "Configurar la opción correcta como la opción automática para que el esfuerzo se requiera solo para *no* ahorrar."
+    },
+    "criterio_adaptacion": "Frente al Solidarismo costarricense, el consultor debe advertir sobre la 'pasividad del pasajero'. Sethi exigiría pasar de la participación ciega a la agencia: auditar los rendimientos de la Asociación Solidarista y, si son mediocres, automatizar planes voluntarios de inversión propios para recuperar el control sobre el capital.",
+    "verbos_de_accion": [
+      "Dismantelar la necesidad de 'vivir en la hoja de cálculo' mediante la automatización de transferencias",
+      "Forzar el éxito financiero configurando el ahorro como la primera deducción del flujo, no la última",
+      "Sintetizar la 'Paz Mental' eliminando la gestión manual de recibos y facturas"
+    ],
+    "transicion": "Con el sistema técnico operando en segundo plano, el enfoque se desplaza hacia la dimensión más rica de la vida: las relaciones y el legado."
+  },
+  {
+    "seccion": "5. Dinámicas de Abundancia en Relaciones y Hitos de Vida",
+    "prosa_analitica": "La 'Vida de Abundancia' (Rich Life) trasciende la acumulación; es el diseño intencional de una existencia que refleja los valores más profundos del individuo. Esto requiere 'Jugar a la Ofensiva' en áreas críticas como la pareja y la familia. La riqueza real permite tener 'La Gran Conversación' sobre dinero sin miedo, establecer límites saludables con progenitores en deuda y navegar hitos sociales sin sucumbir a la hipocresía del estatus. Ser rico es tener la libertad de ser distinto, de elegir un camino no convencional sin arrepentimiento, utilizando el dinero como el combustible para experiencias que se recordarán durante cincuenta años.",
+    "principios_extraidos": {
+      "la_gran_conversacion": "Alineación proactiva con la pareja sobre qué significa una 'Vida Rica' antes de que surjan conflictos por gastos.",
+      "limites_familiares": "Ayudar a los padres con deudas mediante un plan estructurado que no comprometa la propia solvencia ni la automatización de la jubilación.",
+      "norma_de_compras": "Regla de los libros: si crees que un libro puede darte una idea, cómpralo sin debatir. El retorno de inversión es infinito."
+    },
+    "criterio_adaptacion": "En Costa Rica, la presión por bodas fastuosas y eventos sociales comunitarios es alta. El consultor debe validar la 'frugalidad implacable' en estos eventos si no son una prioridad de valor, rompiendo con la norma social para proteger la inversión a largo plazo.",
+    "hope_anchor": "Una Vida de Abundancia es posible para cualquiera que decida dejar de ser un pasajero y empiece a jugar al ataque. No se trata del monto inicial, sino de la agencia absoluta sobre cada colón para diseñar una vida que te emocione más que tus propios estados de cuenta.",
+    "verbos_de_accion": [
+      "Formular una visión de 'Ofensiva Financiera' que priorice la generosidad y las experiencias sobre la posesión",
+      "Negociar hitos de vida (bodas, casas, autos) basados en valores personales y no en expectativas de estatus local",
+      "Vivir fuera de la hoja de cálculo una vez que el sistema automático esté blindado"
+    ]
+  }
+]

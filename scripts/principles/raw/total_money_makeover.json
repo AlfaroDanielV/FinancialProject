@@ -1,0 +1,62 @@
+[
+  {
+    "principle_id": "mirror-radical-responsibility",
+    "source": { "title": "The Total Money Makeover", "author": "Dave Ramsey", "locator": "Introduction & Chapter 1" },
+    "centrality": "Fundamento de Identidad",
+    "core_idea": "La victoria financiera es una cuestión de carácter individual; la desproporción conductual dicta que el cambio de hábitos es el único motor real del progreso.",
+    "mechanism": "Locus de Control Interno",
+    "applies_when": { "situation": "Cuando el cliente utiliza su intelecto profesional para externalizar la culpa de su situación financiera." },
+    "money_archetype": "El Profesional en Autonegación",
+    "risk_signal": "Racionalización excesiva de la deuda basada en una supuesta 'sofisticación' financiera.",
+    "framing_template": "Incluso con todos sus títulos académicos, usted tiene un doctorado en decisiones erróneas. El problema no es el banco, es la persona que lo mira desde el espejo cada mañana.",
+    "hope_anchor": "Al ser usted el origen del problema, posee la autonomía absoluta para ser la solución.",
+    "cultural_flags": "Adaptar el concepto de responsabilidad para establecer fronteras con la familia extendida, rompiendo la cultura del 'invitar' compulsivo.",
+    "scope": "Transformación de Identidad",
+    "tactic_excluded": "Porcentajes de división de presupuesto o montos de fondos de emergencia."
+  },
+  {
+    "principle_id": "solidarista-mental-accounting-trap",
+    "source": { "title": "The Total Money Makeover", "author": "Dave Ramsey", "locator": "Chapter 2 & 3" },
+    "centrality": "Diagnóstico de Sesgos",
+    "core_idea": "La deuda contra los propios ahorros laborales es un espejismo de seguridad que desmantela el futuro para financiar el presente.",
+    "mechanism": "Contabilidad Mental y Sesgo de Presente",
+    "applies_when": { "situation": "Cuando el usuario justifica préstamos de su Asociación Solidarista como si no fueran deuda real." },
+    "money_archetype": "La Rana en Agua Solidarista",
+    "risk_signal": "Sentimiento de 'dinero fácil' al solicitar adelantos de cesantía.",
+    "framing_template": "Usted no se está pidiendo prestado; se está robando a su 'yo' del futuro. Cada crédito en la Asociación es un grillete que lo ata a un escritorio que quizás ya no quiera ocupar.",
+    "hope_anchor": "Recuperar su cesantía es recuperar su derecho a elegir su futuro laboral sin coacción.",
+    "cultural_flags": "Identificar el uso de la cesantía como un 'colchón' psicológico falso que perpetúa la negación de la crisis.",
+    "scope": "Ruptura de Negación",
+    "tactic_excluded": "Tasas de interés comparativas o plazos de cancelación."
+  },
+  {
+    "principle_id": "social-conformity-resistance",
+    "source": { "title": "The Total Money Makeover", "author": "Dave Ramsey", "locator": "Chapter 5" },
+    "centrality": "Blindaje del Entorno",
+    "core_idea": "El entorno social actúa como un lastre emocional; la libertad financiera requiere la voluntad de ser percibido como 'raro' o 'antisocial'.",
+    "mechanism": "Sesgo de Conformidad y Aversión a la Desaprobación Social",
+    "applies_when": { "situation": "Cuando el cliente siente el impulso de 'serrucharse el piso' a sí mismo por miedo al juicio de sus pares." },
+    "money_archetype": "El Tico Promedio Endeudado",
+    "risk_signal": "Sentir culpa por no participar en paseos de oficina o compras grupales por apariencia.",
+    "framing_template": "Si usted vive como nadie más está dispuesto a vivir ahora (con sacrificio), más adelante vivirá como nadie más podrá vivir (con libertad total).",
+    "hope_anchor": "La aprobación de personas que viven al límite del colapso no tiene valor real para su paz mental.",
+    "cultural_flags": "Abordar el fenómeno del 'qué dirán' y la presión social en eventos de consumo festivo costarricenses.",
+    "scope": "Resiliencia Social",
+    "tactic_excluded": "Menciones a tarjetas de crédito específicas o métodos de pago."
+  },
+  {
+    "principle_id": "gazelle-intensity-strategic-focus",
+    "source": { "title": "The Total Money Makeover", "author": "Dave Ramsey", "locator": "Chapter 1 & 13" },
+    "centrality": "Motor de Ejecución",
+    "core_idea": "La mediocridad financiera solo se rompe con una intensidad emocional extrema que priorice la supervivencia sobre el confort temporal.",
+    "mechanism": "Identidad de Supervivencia y Enfoque Láser",
+    "applies_when": { "situation": "Cuando el proceso de cambio se vuelve tedioso y surge la tentación de relajar la disciplina." },
+    "money_archetype": "El Guerrero de la Libertad",
+    "risk_signal": "Tratar el proceso de ahorro o pago de deudas como una sugerencia opcional en lugar de una emergencia.",
+    "framing_template": "Usted no está ahorrando; está comprando su libertad. Corra con la intensidad de una gacela que huye del guepardo, porque la normalidad es su depredador.",
+    "hope_anchor": "La intensidad es temporal, pero la libertad es para siempre.",
+    "cultural_flags": "Reencuadrar el Aguinaldo y el Salario Escolar como munición pesada en una guerra por la autonomía, no como juguetes de consumo.",
+    "scope": "Psicología del Esfuerzo",
+    "tactic_excluded": "Pasos numerados del plan de nieve de deudas o fondos de emergencia con montos fijos."
+  }
+]

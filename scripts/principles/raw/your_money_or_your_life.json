@@ -1,0 +1,65 @@
+[
+  {
+    "principle_id": "dinero-como-energia-vital",
+    "source": "Your Money or Your Life, Vicki Robin & Joe Dominguez, Capítulo 2",
+    "centrality": "core",
+    "core_idea": "El dinero es algo por lo que intercambiamos nuestra energía vital, la cual es limitada e irrecuperable.",
+    "mechanism": "Contabilidad mental basada en el tiempo; desmantela la ilusión del dinero como valor abstracto para personificarlo como horas de vida.",
+    "applies_when": [
+      "overworking",
+      "status_seeking",
+      "burnout"
+    ],
+    "framing_template": "Para adquirir este {item}, has decidido entregar {hours} horas de tu vida. ¿Representa este objeto un uso digno de tu existencia?",
+    "hope_anchor": "Al dejar de malgastar horas en posesiones vacías, recuperas la autonomía para dedicar tu tiempo a lo que realmente valoras.",
+    "cultural_flags": "Adaptar al 'Pura Vida' real (tiempo de calidad) frente al estatus. Vigilar la tendencia a sobretrabajar para financiar el 'quedar bien' social.",
+    "scope": "coaching",
+    "tactic_excluded": [
+      "presupuestos rígidos",
+      "reglas de ahorro del 10%",
+      "análisis de carteras de inversión"
+    ]
+  },
+  {
+    "principle_id": "hacer-paz-con-el-pasado",
+    "source": "Your Money or Your Life, Vicki Robin & Joe Dominguez, Capítulo 1",
+    "centrality": "core",
+    "core_idea": "La revisión de la historia financiera personal debe ejecutarse con honestidad radical, transformando la culpa en datos accionables.",
+    "mechanism": "Reducción de la evitación financiera mediante la aceptación radical; utiliza el concepto 'No shame, no blame'.",
+    "applies_when": [
+      "high_interest_debt",
+      "money_avoidance",
+      "financial_anxiety"
+    ],
+    "framing_template": "Tus decisiones pasadas sobre {category} no definen tu valor como persona. Son simplemente el costo de tu aprendizaje hacia la independencia.",
+    "hope_anchor": "La integridad financiera nace de mirar la verdad de frente. Al aceptar el dato, el dato deja de tener poder emocional sobre ti.",
+    "cultural_flags": "En Costa Rica, el uso de las Asociaciones Solidaristas a menudo facilita el endeudamiento pasivo. Es vital auditar las deducciones automáticas que drenan energía vital sin consciencia.",
+    "scope": "coaching",
+    "tactic_excluded": [
+      "consolidación bancaria técnica",
+      "método bola de nieve de deudas",
+      "refinanciamiento hipotecario"
+    ]
+  },
+  {
+    "principle_id": "curva-de-cumplimiento-suficiencia",
+    "source": "Your Money or Your Life, Vicki Robin & Joe Dominguez, Capítulo 4",
+    "centrality": "core",
+    "core_idea": "Existe un punto de retorno decreciente donde el gasto adicional reduce la felicidad al generar desorden y estrés.",
+    "mechanism": "Identificación de la 'Suficiencia' como el estado de máximo cumplimiento con el mínimo desperdicio de energía vital.",
+    "applies_when": [
+      "lifestyle_creep",
+      "impulsive_spending",
+      "clutter_accumulation"
+    ],
+    "framing_template": "¿Este gasto en {item} te acerca a tu punto de plenitud o es simplemente ruido que te aleja de tu paz mental?",
+    "hope_anchor": "La suficiencia es la verdadera riqueza; es el estado donde posees todo lo que necesitas y nada que te posea a ti.",
+    "cultural_flags": "Atención a la estacionalidad del Aguinaldo y Salario Escolar. Estos picos de ingresos deben ser evaluados bajo la lupa de la plenitud a largo plazo, no del alivio de estrés temporal.",
+    "scope": "coaching",
+    "tactic_excluded": [
+      "optimización fiscal",
+      "planes de ahorro programado",
+      "regla 50/30/20"
+    ]
+  }
+]
