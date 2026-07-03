@@ -108,11 +108,20 @@ export interface ChatOpenScreen {
     | MenuPrefill;
 }
 
+/**
+ * P10 B0.5 (R5) — machine-readable failure class on a handled-error reply.
+ * null/undefined on a normal answer. The server copy already carries the
+ * user-appropriate Spanish; this lets the client distinguish classes
+ * (e.g. style a system failure differently from "no entendí").
+ */
+export type ChatErrorClass = "understanding" | "budget" | "transient" | "system";
+
 export interface ChatMessageResponse {
   reply_text: string;
   buttons: ChatButton[];
   url_buttons: ChatUrlButton[];
   open_screen: ChatOpenScreen | null;
+  error_class?: ChatErrorClass | string | null;
 }
 
 export async function postChatMessage(text: string): Promise<ChatMessageResponse> {

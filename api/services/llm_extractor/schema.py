@@ -12,7 +12,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Intent(str, Enum):
@@ -43,6 +43,13 @@ VALID_QUERY_WINDOWS = frozenset(
     {"today", "yesterday", "this_week", "this_month"}
 )
 EXPECTED_QUERY_WINDOW_PREFIX = "last_n_days:"
+
+# Intents that route through the control dispatcher. Everything else that
+# isn't QUERY is a write intent — the model_validator below derives the
+# `dispatcher` tag from this partition (P10 B0.5 R4).
+_CONTROL_INTENTS = frozenset(
+    {Intent.CONFIRM_YES, Intent.CONFIRM_NO, Intent.UNDO, Intent.HELP, Intent.UNKNOWN}
+)
 
 
 class ExtractionResult(BaseModel):
@@ -133,6 +140,28 @@ class ExtractionResult(BaseModel):
     debt_target_hint: Optional[str] = Field(default=None, max_length=255)
     confidence: float = Field(..., ge=0.0, le=1.0)
     raw_notes: Optional[str] = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def _dispatcher_follows_intent(self) -> "ExtractionResult":
+        """P10 B0.5 (R4) — enforce intent↔dispatcher consistency.
+
+        The 2026-07-02 compound-message bug: a mixed write+analytical message
+        ("Ganó 2000000 al mes … dime si me alcanza") could come back as
+        `intent=query, dispatcher="write"`, reach the write dispatcher, and
+        blow up on its Intent.QUERY guard. The intent is the semantic signal;
+        the dispatcher tag is routing — so the routing is DERIVED from the
+        intent, never trusted independently. Coerce (don't reject): losing a
+        turn to a ValidationError would be worse than fixing the tag.
+        """
+        if self.intent is Intent.QUERY:
+            expected = "query"
+        elif self.intent in _CONTROL_INTENTS:
+            expected = "control"
+        else:
+            expected = "write"
+        if self.dispatcher != expected:
+            self.dispatcher = expected
+        return self
 
     @field_validator("currency")
     @classmethod

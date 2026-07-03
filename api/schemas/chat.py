@@ -76,6 +76,12 @@ class ChatMessageResponse(BaseModel):
     buttons: list[ChatButton] = Field(default_factory=list)
     url_buttons: list[ChatUrlButton] = Field(default_factory=list)
     open_screen: Optional[ChatOpenScreen] = None
+    # P10 B0.5 (R5) — machine-readable failure class so the client can render
+    # distinct copy per class instead of one generic banner. None on a normal
+    # answer. Known values: "understanding" | "budget" | "transient" |
+    # "system". Deliberately a plain str (not a Literal): an unexpected value
+    # must degrade gracefully, never fail response validation into a 500.
+    error_class: Optional[str] = None
 
 
 # ChatImageResponse is intentionally the same shape as ChatMessageResponse —

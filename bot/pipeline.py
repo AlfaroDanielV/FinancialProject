@@ -9,6 +9,7 @@ JSON response.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import unicodedata
@@ -47,6 +48,7 @@ from api.services.telegram_dispatcher import (
     OpenScreenAction,
     ProposeAction,
     Reject,
+    RerouteToQuery,
     ShowHelp,
     StartAccountCreation,
     UndoRequest,
@@ -138,6 +140,12 @@ class BotReply:
     buttons: list[ConfirmButton] = field(default_factory=list)
     url_buttons: list[UrlButton] = field(default_factory=list)
     open_screen: Optional[OpenScreen] = None
+    # P10 B0.5 (R5) — machine-readable failure class so clients can render
+    # distinct copy instead of one generic banner. None = a normal answer.
+    # Values: "understanding" (extractor couldn't parse), "budget" (daily
+    # token budget), "transient" (rate limit / retryable), "system"
+    # (unexpected internal failure).
+    error_class: Optional[str] = None
 
 
 # ── small helpers ─────────────────────────────────────────────────────────────
@@ -153,6 +161,12 @@ _COMMAND_HELP = {"/help", "/ayuda"}
 _COMMAND_UNDO = {"/undo", "/deshacer"}
 _COMMAND_CANCEL = {"/cancel", "/cancelar"}
 _COMMAND_MENU = {"/menu", "/menú"}
+
+
+def _message_hash(text: str) -> str:
+    """Short stable hash for failure-class log correlation (R6). Never logs
+    the message content itself — chat text can hold amounts and merchants."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def _today_for(user: User) -> date:
@@ -280,7 +294,7 @@ async def process_message(
     # ── rate limit gate ──
     allowed = await check_and_increment_rate(user_id=user.id, redis=redis)
     if not allowed:
-        return BotReply(text=messages_es.RATE_LIMIT_HIT)
+        return BotReply(text=messages_es.RATE_LIMIT_HIT, error_class="transient")
 
     today = _today_for(user)
 
@@ -499,7 +513,9 @@ async def process_message(
     except BudgetExceeded as e:
         # Reuse the same Spanish copy as the query dispatcher's error
         # handler so both paths look identical to the user.
-        return BotReply(text=handle_query_error(e, user_id=user.id))
+        return BotReply(
+            text=handle_query_error(e, user_id=user.id), error_class="budget"
+        )
 
     # ── extract ──
     try:
@@ -511,14 +527,25 @@ async def process_message(
             db=db,
         )
     except (LLMClientError, ValidationError) as e:
-        log.info("extractor_failure user_id=%s err=%s", user.id, type(e).__name__)
-        return BotReply(text=messages_es.EXTRACTOR_FAILED)
+        log.info(
+            "extractor_failure user_id=%s err=%s failure_class=understanding "
+            "message_hash=%s",
+            user.id,
+            type(e).__name__,
+            _message_hash(text),
+        )
+        return BotReply(text=messages_es.EXTRACTOR_FAILED, error_class="understanding")
     except Exception:
         # Anything else (e.g. a raw Anthropic SDK overload/429/529/BadRequest the
         # extractor didn't wrap as LLMClientError) must not bubble to the native
         # chat endpoint as a raw 500. Logged with full traceback for diagnosis.
-        log.exception("extractor_unexpected_failure user_id=%s", user.id)
-        return BotReply(text=messages_es.EXTRACTOR_FAILED)
+        log.exception(
+            "extractor_unexpected_failure user_id=%s failure_class=understanding "
+            "message_hash=%s",
+            user.id,
+            _message_hash(text),
+        )
+        return BotReply(text=messages_es.EXTRACTOR_FAILED, error_class="understanding")
 
     return await _route_extraction(
         user=user,
@@ -971,8 +998,20 @@ async def _route_extraction(
                 telegram_chat_id=user.telegram_user_id,
             )
         except Exception as e:  # noqa: BLE001 - last line of defense
-            log.exception("query_dispatcher_unhandled user_id=%s", user.id)
-            return BotReply(text=handle_query_error(e, user_id=user.id))
+            log.exception(
+                "query_dispatcher_unhandled user_id=%s dispatcher=%s intent=%s "
+                "confidence=%s failure_class=%s message_hash=%s",
+                user.id,
+                extraction.dispatcher,
+                extraction.intent.value,
+                extraction.confidence,
+                "budget" if isinstance(e, BudgetExceeded) else "system",
+                _message_hash(text),
+            )
+            return BotReply(
+                text=handle_query_error(e, user_id=user.id),
+                error_class="budget" if isinstance(e, BudgetExceeded) else "system",
+            )
         open_screen = None
         if outcome.open_screen:
             open_screen = OpenScreen(
@@ -981,12 +1020,30 @@ async def _route_extraction(
             )
         return BotReply(text=outcome.text, open_screen=open_screen)
 
-    decision = await dispatch(
-        extraction=extraction, user=user, today=today, db=db
-    )
-    return await _apply_decision(
-        user=user, decision=decision, db=db, redis=redis, source_text=text
-    )
+    # P10 B0.5 (R2): the write/control branch gets the same last-line-of-defense
+    # net the query branch has had since 2026-06-15. Before this, a throw from
+    # dispatch()/_apply_decision() propagated raw out of process_message — the
+    # native endpoint's outer guard caught it, but with an undifferentiated
+    # "system" story and no structured failure log (the 2026-07-02 compound-
+    # intent bug rode exactly this asymmetry).
+    try:
+        decision = await dispatch(
+            extraction=extraction, user=user, today=today, db=db
+        )
+        return await _apply_decision(
+            user=user, decision=decision, db=db, redis=redis, source_text=text
+        )
+    except Exception:  # noqa: BLE001 - last line of defense
+        log.exception(
+            "write_dispatcher_unhandled user_id=%s dispatcher=%s intent=%s "
+            "confidence=%s failure_class=system message_hash=%s",
+            user.id,
+            extraction.dispatcher,
+            extraction.intent.value,
+            extraction.confidence,
+            _message_hash(text),
+        )
+        return BotReply(text=messages_es.CHAT_UNEXPECTED_ERROR, error_class="system")
 
 
 async def _apply_decision(
@@ -1005,6 +1062,30 @@ async def _apply_decision(
     # decision that isn't a new question ends the clarification.
     if not isinstance(decision, AskClarification):
         await clear_clarification(user_id=user.id, redis=redis)
+
+    if isinstance(decision, RerouteToQuery):
+        # P10 B0.5 (R3): an analytical intent slipped into the write path
+        # (compound / mis-tagged message). Preferring the analytical answer is
+        # the correct behavior — route the ORIGINAL text through the query
+        # dispatcher instead of erroring.
+        log.warning(
+            "reroute_to_query user_id=%s message_hash=%s",
+            user.id,
+            _message_hash(source_text),
+        )
+        try:
+            outcome = await run_dispatch(
+                user_id=user.id,
+                message_text=source_text,
+                telegram_chat_id=user.telegram_user_id,
+            )
+        except Exception as e:  # noqa: BLE001 - last line of defense
+            log.exception("reroute_query_unhandled user_id=%s", user.id)
+            return BotReply(
+                text=handle_query_error(e, user_id=user.id),
+                error_class="budget" if isinstance(e, BudgetExceeded) else "system",
+            )
+        return BotReply(text=outcome.text)
 
     if isinstance(decision, ProposeAction):
         short_id = new_short_id()

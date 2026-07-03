@@ -1,7 +1,11 @@
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError, ResponseValidationError
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -98,6 +102,59 @@ app = FastAPI(
 # Phase 6f B16: CORS middleware removed with the SPA. The native app
 # (React Native / axios) and the iPhone Shortcut webhook are non-browser
 # clients that don't enforce CORS. Re-add if a browser client returns.
+
+
+# ── P10 B0.5 (R1/D13): chat-route validation nets ────────────────────────────
+# A well-formed chat message must never surface as a non-2xx. The endpoint
+# guard covers the pipeline + serialization; these handlers cover the two
+# validation seams that fire OUTSIDE the handler body: request-body validation
+# (RequestValidationError, pre-handler) and response-model validation
+# (ResponseValidationError, post-return). Both degrade to the handled 200 chat
+# body ONLY for /api/v1/chat/* — every other route keeps FastAPI defaults.
+
+_CHAT_PATH_PREFIX = "/api/v1/chat"
+
+
+def _is_chat_path(request: Request) -> bool:
+    return request.url.path.startswith(_CHAT_PATH_PREFIX)
+
+
+def _chat_error_json() -> JSONResponse:
+    from bot import messages_es  # local: keep api.main light at import time
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "reply_text": messages_es.CHAT_UNEXPECTED_ERROR,
+            "buttons": [],
+            "url_buttons": [],
+            "open_screen": None,
+            "error_class": "system",
+        },
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def _request_validation_handler(request: Request, exc: RequestValidationError):
+    if _is_chat_path(request):
+        logging.getLogger("api.main").warning(
+            "chat_request_validation_failed path=%s errors=%s",
+            request.url.path,
+            exc.errors()[:3],
+        )
+        return _chat_error_json()
+    return await request_validation_exception_handler(request, exc)
+
+
+@app.exception_handler(ResponseValidationError)
+async def _response_validation_handler(request: Request, exc: ResponseValidationError):
+    if _is_chat_path(request):
+        logging.getLogger("api.main").error(
+            "chat_response_validation_failed path=%s", request.url.path
+        )
+        return _chat_error_json()
+    raise exc
+
 
 app.include_router(users.router)
 app.include_router(accounts.router)

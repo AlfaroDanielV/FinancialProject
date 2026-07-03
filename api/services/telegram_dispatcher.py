@@ -11,6 +11,7 @@ Everything downstream of this module is deterministic.
 from __future__ import annotations
 
 import calendar
+import logging
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -51,6 +52,9 @@ from .llm_extractor import ExtractionResult, Intent
 from .transactions import window_bounds
 
 from app.domain.payroll import UnconfiguredYearError, compute_net_salary
+
+
+log = logging.getLogger("api.services.telegram_dispatcher")
 
 
 # ── result variants ───────────────────────────────────────────────────────────
@@ -173,6 +177,17 @@ class Reject:
     message_es: str
 
 
+@dataclass(frozen=True)
+class RerouteToQuery:
+    """P10 B0.5 (R3) — an analytical intent reached the write dispatcher.
+
+    Should be unreachable (the extractor's model_validator derives
+    `dispatcher` from `intent`, and the pipeline forks on it), but a
+    compound/mis-tagged message must degrade to the analytical path the
+    user actually wanted — never a RuntimeError. The pipeline handler
+    re-routes the ORIGINAL message text through the query dispatcher."""
+
+
 DispatcherResult = Union[
     ProposeAction,
     OpenScreenAction,
@@ -183,6 +198,7 @@ DispatcherResult = Union[
     UndoRequest,
     ShowHelp,
     Reject,
+    RerouteToQuery,
 ]
 
 
@@ -306,11 +322,19 @@ async def dispatch(
         )
 
     if intent is Intent.QUERY:
-        raise RuntimeError(
-            "Intent.QUERY no debe llegar al dispatcher de write. "
-            "Verificá el routing en bot/pipeline.py — el dispatcher de query "
-            "debe interceptar antes."
+        # P10 B0.5 (R3): previously a RuntimeError ("Intent.QUERY no debe
+        # llegar al dispatcher de write") — correct as an invariant, wrong as
+        # a failure mode: a compound message that slipped through mis-tagged
+        # crashed instead of getting the analytical answer it asked for.
+        # Now the pipeline re-routes the original text to the query
+        # dispatcher. The extractor's model_validator makes this branch
+        # near-unreachable; the warning keeps regressions visible.
+        log.warning(
+            "query_intent_reached_write_dispatcher user_id=%s confidence=%s",
+            user.id,
+            extraction.confidence,
         )
+        return RerouteToQuery()
 
     if intent in (Intent.LOG_EXPENSE, Intent.LOG_INCOME):
         return await _dispatch_log(

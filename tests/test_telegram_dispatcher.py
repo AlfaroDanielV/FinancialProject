@@ -328,23 +328,27 @@ async def test_log_expense_unknown_hint_falls_back_to_today(monkeypatch):
 # ── queries: routed before write dispatcher ──────────────────────────────────
 
 
-async def test_query_intent_is_rejected_by_write_dispatcher(monkeypatch):
+async def test_query_intent_is_rerouted_by_write_dispatcher(monkeypatch):
+    # P10 B0.5 (R3): the old contract raised RuntimeError("Intent.QUERY no
+    # debe llegar…") — correct as an invariant, wrong as a failure mode. A
+    # mis-tagged/compound message now degrades to a graceful re-route the
+    # pipeline resolves through the query dispatcher.
     _stub_accounts(monkeypatch, [], None)
-    with pytest.raises(RuntimeError, match="Intent.QUERY no debe llegar"):
-        await td.dispatch(
-            extraction=_extraction(
-                intent=Intent.QUERY,
-                amount=None,
-                currency=None,
-                merchant=None,
-                category_hint=None,
-                query_window="this_month",
-                confidence=0.9,
-            ),
-            user=_user(),
-            today=date(2026, 4, 20),
-            db=object(),
-        )
+    result = await td.dispatch(
+        extraction=_extraction(
+            intent=Intent.QUERY,
+            amount=None,
+            currency=None,
+            merchant=None,
+            category_hint=None,
+            query_window="this_month",
+            confidence=0.9,
+        ),
+        user=_user(),
+        today=date(2026, 4, 20),
+        db=object(),
+    )
+    assert isinstance(result, td.RerouteToQuery)
 
 
 # ── clarification round-trip ──────────────────────────────────────────────────

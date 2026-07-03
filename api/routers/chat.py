@@ -70,6 +70,7 @@ def _build_response(reply) -> ChatMessageResponse:
             for u in reply.url_buttons
         ],
         open_screen=open_screen,
+        error_class=getattr(reply, "error_class", None),
     )
 
 
@@ -83,7 +84,9 @@ def _chat_error_response() -> ChatMessageResponse:
     the same throw. So we wrap process_message and, on anything unexpected, return
     this handled response instead of letting the 500 escape.
     """
-    return ChatMessageResponse(reply_text=messages_es.CHAT_UNEXPECTED_ERROR)
+    return ChatMessageResponse(
+        reply_text=messages_es.CHAT_UNEXPECTED_ERROR, error_class="system"
+    )
 
 
 @router.post("/message", response_model=ChatMessageResponse)
@@ -102,12 +105,15 @@ async def post_chat_message(
             llm_client=get_llm_client(),
             llm_model=settings.llm_extraction_model,
         )
+        # P10 B0.5 (R1): serialization happens INSIDE the guard — a BotReply
+        # that fails to serialize must degrade to the handled 200 body, not
+        # escape as a 500 the client can only show as a generic banner.
+        return _build_response(reply)
     except HTTPException:
         raise
     except Exception:
         log.exception("chat_message_unhandled user_id=%s", user.id)
         return _chat_error_response()
-    return _build_response(reply)
 
 
 @router.post("/reset")
@@ -123,22 +129,31 @@ async def reset_chat(
     side, so a stuck flow (e.g. a stale account prompt) can't leak across.
     """
     redis = get_redis()
-    existing = await load_pending(user_id=user.id, redis=redis)
-    if existing is not None:
-        # Close the Phase 5d audit row before dropping the Redis key.
-        await resolve_from_pending(
-            session=db, pending=existing, resolution="cancelled"
-        )
-        await db.commit()
-    await clear_pending(user_id=user.id, redis=redis)
-    await clear_clarification(user_id=user.id, redis=redis)
-    await clear_account_creation(user_id=user.id, redis=redis)
-    # Imported lazily, matching the bot's /cancel handler (avoids a heavy import
-    # at module load for a rarely-hit path).
-    from bot.memory_handlers import clear_memory_edit_state
+    try:
+        existing = await load_pending(user_id=user.id, redis=redis)
+        if existing is not None:
+            # Close the Phase 5d audit row before dropping the Redis key.
+            await resolve_from_pending(
+                session=db, pending=existing, resolution="cancelled"
+            )
+            await db.commit()
+        await clear_pending(user_id=user.id, redis=redis)
+        await clear_clarification(user_id=user.id, redis=redis)
+        await clear_account_creation(user_id=user.id, redis=redis)
+        # Imported lazily, matching the bot's /cancel handler (avoids a heavy
+        # import at module load for a rarely-hit path).
+        from bot.memory_handlers import clear_memory_edit_state
 
-    await clear_memory_edit_state(user_id=user.id, redis=redis)
-    await clear_history(user.id, redis=redis)
+        await clear_memory_edit_state(user_id=user.id, redis=redis)
+        await clear_history(user.id, redis=redis)
+    except HTTPException:
+        raise
+    except Exception:
+        # P10 B0.5: same no-500 contract as /message — a partial reset is
+        # reported honestly so the client can retry instead of showing the
+        # generic network banner.
+        log.exception("chat_reset_unhandled user_id=%s", user.id)
+        return {"reset": False}
     return {"reset": True}
 
 
@@ -182,9 +197,10 @@ async def post_chat_image(
             image_media_type=media_type,
             vision_model=settings.llm_query_model,
         )
+        # P10 B0.5 (R1): serialize inside the guard (see post_chat_message).
+        return _build_response(reply)
     except HTTPException:
         raise
     except Exception:
         log.exception("chat_image_unhandled user_id=%s", user.id)
         return _chat_error_response()
-    return _build_response(reply)

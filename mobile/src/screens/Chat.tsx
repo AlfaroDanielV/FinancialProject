@@ -65,6 +65,10 @@ type Message = {
   reclassify?: { txId: string; toIncome: boolean; magnitude: number };
   // /menu reply: keep these chips repeatable (don't disable after one tap).
   menu?: boolean;
+  // P10 B0.5 (R5): failure class of a handled-error reply — "understanding" |
+  // "budget" | "transient" | "system" (server) or "network" (client-side
+  // non-2xx). Undefined on a normal answer. Drives distinct styling.
+  errorClass?: string;
 };
 
 let _nextId = 1;
@@ -134,6 +138,7 @@ export function ChatScreen() {
         duplicate,
         reclassify,
         menu: screen === "menu",
+        errorClass: data.error_class ?? undefined,
       },
     ]);
     // Phase 6f debt slice: the chat hands off to a native form instead of
@@ -320,10 +325,18 @@ export function ChatScreen() {
     },
   });
 
+  // P10 B0.5 (R5): this banner fires ONLY on a non-2xx / network failure —
+  // every server-handled failure now comes back as HTTP 200 with its own
+  // Spanish copy + error_class. Name the network so the classes stay distinct.
   const onError = () => {
     setMessages((prev) => [
       ...prev,
-      { id: nextId(), role: "bot", text: "Hubo un error. Intentá de nuevo." },
+      {
+        id: nextId(),
+        role: "bot",
+        text: "No pude conectar con el servidor. Revisá tu conexión e intentá de nuevo.",
+        errorClass: "network",
+      },
     ]);
   };
 

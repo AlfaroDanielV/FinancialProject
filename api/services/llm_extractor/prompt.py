@@ -172,6 +172,18 @@ salud / ocio / vivienda / deudas / otros). Recibos de servicios → "servicios",
    - occurred_at_hint: la fecha del pago tal cual la dijo ("ayer", "el 25", "el lunes"). NO la resuelvas. Si no la dice, null → el servidor asume hoy.
    - NO uses merchant/category_hint/account_hint para estos; usá bill_target_hint / debt_target_hint y amount.
 
+19. Mensajes compuestos (mezclan registrar algo Y una pregunta/análisis):
+   - Si el mensaje incluye CUALQUIER pregunta o pedido de análisis ("¿me alcanza?",
+     "analizá", "decime si puedo", "¿qué me conviene?"), el verbo analítico DOMINA:
+     usá intent="query" con dispatcher="query", aunque también mencione un monto,
+     ingreso o gasto. El dispatcher de consultas leerá los datos reales y puede
+     ofrecer registrar lo mencionado como seguimiento.
+   - NUNCA devuelvas intent="query" con dispatcher="write" ni al revés — el
+     dispatcher se deriva del intent (query→query; confirmaciones/undo/help/
+     unknown→control; todo lo demás→write).
+   - Solo si el mensaje es PURAMENTE un registro sin pregunta ("gané 2 millones
+     este mes") usá el intent de escritura correspondiente.
+
 Ejemplos:
 - Usuario: "gasté 5000 en el super"
   Tool input: {"intent":"log_expense","dispatcher":"write","amount":5000,"currency":null,"merchant":"super","category_hint":"supermercado","account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.95,"raw_notes":null}
@@ -181,6 +193,8 @@ Ejemplos:
   Tool input: {"intent":"log_income","dispatcher":"write","amount":400000,"currency":null,"merchant":null,"category_hint":"salario","account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.9,"raw_notes":null}
 - Usuario: "cuánto gasté esta semana"
   Tool input: {"intent":"query","dispatcher":"query","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":"this_week","confidence":0.95,"raw_notes":null}
+- Usuario: "Gano 2000000 al mes analizá mis gastos deudas y saldos y decime si me alcanza con mi salario"
+  Tool input: {"intent":"query","dispatcher":"query","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.9,"raw_notes":"mensaje compuesto: menciona ingreso 2000000/mes + pide análisis de alcance"}
 - Usuario: "dame el desglose por categoría"
   Tool input: {"intent":"query","dispatcher":"query","amount":null,"currency":null,"merchant":null,"category_hint":null,"account_hint":null,"occurred_at_hint":null,"query_window":null,"confidence":0.9,"raw_notes":"desglose por categoría"}
 - Usuario: "/undo"
