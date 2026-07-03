@@ -22,9 +22,11 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  getAdvisorySession,
   postChatImage,
   postChatMessage,
   resetChat,
+  setAdvisorySession,
   type AssignEnvelopePrefill,
   type CardPrefill,
   type ChatButton,
@@ -89,6 +91,30 @@ export function ChatScreen() {
     null,
   );
   const listRef = useRef<FlatList<Message>>(null);
+
+  // P10 B2: "Modo asesor" header control — reflects the server-side session
+  // state on load; hidden entirely while the feature flag is off.
+  const { data: advisorySession } = useQuery({
+    queryKey: ["advisorySession"],
+    queryFn: getAdvisorySession,
+    staleTime: 30 * 1000,
+  });
+  const advisoryMutation = useMutation({
+    mutationFn: setAdvisorySession,
+    onSuccess: (state) => {
+      qc.setQueryData(["advisorySession"], state);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextId(),
+          role: "bot",
+          text: state.active
+            ? "Modo asesor activado. Contame qué querés planear — lo vemos con tus números reales. Las consultas puntuales siguen normal."
+            : "Listo, salimos del modo asesor.",
+        },
+      ]);
+    },
+  });
 
   // Phase 8 B2: a not-yet-activated user gets a first-run guidance hint in the
   // empty state (no fabricated message is auto-sent).
@@ -435,25 +461,53 @@ export function ChatScreen() {
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Ledger</Text>
-        <Pressable
-          onPress={newConversation}
-          disabled={messages.length === 0 || resetMutation.isPending}
-          hitSlop={8}
-          style={({ pressed }) => [
-            styles.newChatBtn,
-            (messages.length === 0 || resetMutation.isPending) && { opacity: 0.4 },
-            pressed && { opacity: 0.6 },
-          ]}
-        >
-          {resetMutation.isPending ? (
-            <ActivityIndicator size="small" color={Colors.accent} />
-          ) : (
-            <>
-              <Feather name="edit" size={15} color={Colors.accent} />
-              <Text style={styles.newChatText}>Nueva</Text>
-            </>
+        <View style={styles.headerActions}>
+          {advisorySession?.enabled && (
+            <Pressable
+              onPress={() => advisoryMutation.mutate(!advisorySession.active)}
+              disabled={advisoryMutation.isPending}
+              hitSlop={8}
+              style={({ pressed }) => [
+                styles.advisoryBtn,
+                advisorySession.active && styles.advisoryBtnActive,
+                (pressed || advisoryMutation.isPending) && { opacity: 0.6 },
+              ]}
+            >
+              <Feather
+                name="compass"
+                size={15}
+                color={advisorySession.active ? Colors.bgCard : Colors.accent}
+              />
+              <Text
+                style={[
+                  styles.advisoryText,
+                  advisorySession.active && styles.advisoryTextActive,
+                ]}
+              >
+                Asesor
+              </Text>
+            </Pressable>
           )}
-        </Pressable>
+          <Pressable
+            onPress={newConversation}
+            disabled={messages.length === 0 || resetMutation.isPending}
+            hitSlop={8}
+            style={({ pressed }) => [
+              styles.newChatBtn,
+              (messages.length === 0 || resetMutation.isPending) && { opacity: 0.4 },
+              pressed && { opacity: 0.6 },
+            ]}
+          >
+            {resetMutation.isPending ? (
+              <ActivityIndicator size="small" color={Colors.accent} />
+            ) : (
+              <>
+                <Feather name="edit" size={15} color={Colors.accent} />
+                <Text style={styles.newChatText}>Nueva</Text>
+              </>
+            )}
+          </Pressable>
+        </View>
       </View>
       <KeyboardAvoidingView
         style={styles.flex}
@@ -769,6 +823,32 @@ const styles = StyleSheet.create({
     fontSize: FontSize.md,
     fontWeight: "700",
     color: Colors.textPrimary,
+  },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+  },
+  advisoryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    borderWidth: 1,
+    borderColor: Colors.accent,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+  },
+  advisoryBtnActive: {
+    backgroundColor: Colors.accent,
+  },
+  advisoryText: {
+    color: Colors.accent,
+    fontSize: FontSize.sm,
+    fontWeight: "600",
+  },
+  advisoryTextActive: {
+    color: Colors.bgCard,
   },
   newChatBtn: {
     flexDirection: "row",

@@ -33,6 +33,15 @@ class Settings(BaseSettings):
     # Example 6/7 few-shots in the system prompt). Off during shadow
     # validation; flipped to True after the 7-day review per B12.
     insights_dispatcher_enabled: bool = False
+    # P10 B2/B3: gate on the advisory persona/toolset. Off by default —
+    # /asesor and the native "Modo asesor" control reply "no disponible" and
+    # the per-turn resolver never routes advisory until this flips. The
+    # normal-mode prompt + tool list stay byte-identical either way.
+    advisory_persona_enabled: bool = False
+    # P10 B3: iteration cap for advisory turns (a holistic assessment fans out
+    # over more read-only tools than a factual lookup). Normal turns keep
+    # llm_query_iteration_cap.
+    llm_advisory_iteration_cap: int = 8
     llm_insight_input_usd_per_mtok: Decimal = Decimal("1.00")
     llm_insight_output_usd_per_mtok: Decimal = Decimal("5.00")
     llm_insight_cache_read_usd_per_mtok: Decimal = Decimal("0.10")

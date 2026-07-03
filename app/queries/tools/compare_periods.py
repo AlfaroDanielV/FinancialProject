@@ -170,4 +170,9 @@ def register_compare_periods_tool() -> None:
         )(compare_periods)
 
 
-register_compare_periods_tool()
+# P10 B3 fix — deliberately NO module-level self-registration (unlike the
+# other tool modules). compare_periods must be the LAST tool in registry wire
+# order (the cache breakpoint anchor, Phase 6c decision #8), so it registers
+# ONLY via register_builtin_tools()'s final call. The module-level call that
+# used to live here put it mid-list in any process whose import order ran
+# ahead of the canonical register order — silently moving the cache anchor.

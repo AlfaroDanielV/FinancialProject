@@ -275,6 +275,55 @@ async def on_resumen(message: Message) -> None:
     await message.answer(reply.text)
 
 
+@router.message(Command("asesor", "asesoria"))
+async def on_advisory_start(message: Message) -> None:
+    """P10 B2 — thin Telegram entry to the advisory continuity session.
+
+    Mirrors the pipeline's /asesor short-circuit (the native chat reaches it
+    as text; Telegram's Command router intercepts slash commands before
+    on_text, so this thin handler is required — same pattern as /menu)."""
+    if message.from_user is None:
+        return
+    from api.config import settings
+
+    from .advisory import start_advisory_session
+
+    async with AsyncSessionLocal() as db:
+        user = await user_by_telegram_id(
+            telegram_user_id=message.from_user.id, db=db
+        )
+    if user is None:
+        await message.answer(messages_es.PAIR_PROMPT)
+        return
+    if not settings.advisory_persona_enabled:
+        await message.answer(messages_es.ADVISORY_UNAVAILABLE)
+        return
+    await start_advisory_session(user_id=user.id, redis=get_redis())
+    await message.answer(messages_es.ADVISORY_STARTED)
+
+
+@router.message(Command("normal", "salir_asesor"))
+async def on_advisory_end(message: Message) -> None:
+    """P10 B2 — thin Telegram exit from the advisory continuity session."""
+    if message.from_user is None:
+        return
+    from .advisory import end_advisory_session, is_advisory_session_active
+
+    async with AsyncSessionLocal() as db:
+        user = await user_by_telegram_id(
+            telegram_user_id=message.from_user.id, db=db
+        )
+    if user is None:
+        await message.answer(messages_es.PAIR_PROMPT)
+        return
+    redis = get_redis()
+    was_active = await is_advisory_session_active(user_id=user.id, redis=redis)
+    await end_advisory_session(user_id=user.id, redis=redis)
+    await message.answer(
+        messages_es.ADVISORY_ENDED if was_active else messages_es.ADVISORY_NOT_ACTIVE
+    )
+
+
 @router.message(Command("gmail", "correos", "correo"))
 async def on_gmail(message: Message) -> None:
     await message.answer(
@@ -345,6 +394,9 @@ async def on_cancel(message: Message) -> None:
         # Phase 6c B7: also clear an in-progress /editar_memoria reply.
         from .memory_handlers import clear_memory_edit_state
         await clear_memory_edit_state(user_id=user.id, redis=redis)
+        # P10 B2: /cancel also leaves the advisory continuity session.
+        from .advisory import end_advisory_session
+        await end_advisory_session(user_id=user.id, redis=redis)
     await message.answer(messages_es.CANCELLED)
 
 

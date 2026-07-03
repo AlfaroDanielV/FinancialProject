@@ -555,6 +555,22 @@ CANCELLED = "Cancelado."
 CONTEXT_CLEARED = "Listo, contexto limpio."
 
 
+# ── P10 B2: modo asesor ───────────────────────────────────────────────────────
+
+ADVISORY_STARTED = (
+    "Listo, entramos en modo asesor. Contame qué querés planear — una compra "
+    "grande, salir de deudas, tu pensión, una meta — y lo vemos con tus "
+    "números reales.\n\n"
+    "Las consultas puntuales («¿cuánto tengo?») siguen respondiéndose normal. "
+    "Salís con /normal, o el modo se apaga solo si dejás de usarlo un rato."
+)
+ADVISORY_ENDED = "Listo, salimos del modo asesor. Seguimos normal."
+ADVISORY_NOT_ACTIVE = "No estabas en modo asesor. Si lo querés, mandá /asesor."
+ADVISORY_UNAVAILABLE = (
+    "El modo asesor no está disponible por ahora. Pronto lo activamos."
+)
+
+
 # ── /menu + /resumen (chat command menu) ──────────────────────────────────────
 
 MENU_INTRO = "Esto es lo que puedo hacer. Tocá una opción para enviarla:"

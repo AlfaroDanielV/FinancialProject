@@ -35,7 +35,7 @@ from .llm_client import (
 from .prompts import build_system_prompt
 from .session import AsyncSessionLocal
 from .tools.base import execute_tool, list_tools_for_anthropic
-from .tools import register_builtin_tools
+from .tools import ADVISORY_TOOLSET, BASE_TOOLSET, register_builtin_tools
 
 
 @dataclass
@@ -200,18 +200,26 @@ async def run_dispatch(
     user_id: uuid.UUID,
     message_text: str,
     telegram_chat_id: int | None = None,
+    advisory: bool = False,
 ) -> DispatchOutcome:
     """Run one read-only query dispatch and return rich metadata.
 
     Loads the user, builds the formal Phase 6a system prompt with date
     context anchored in the user's timezone, runs the tool-use loop, and
     logs one llm_query_dispatches row.
+
+    P10 B2/B3: `advisory=True` (resolved per turn by `bot/advisory.py`)
+    swaps in the advisory persona prompt, the ADVISORY_TOOLSET allowlist and
+    the higher iteration cap. The write path is untouched either way — the
+    advisory mode is a read-only persona variant, never a new pipeline.
     """
     log.info(
-        "query_dispatcher_invoked user_id=%s message_len=%d telegram_chat_id=%s",
+        "query_dispatcher_invoked user_id=%s message_len=%d telegram_chat_id=%s "
+        "advisory=%s",
         user_id,
         len(message_text),
         telegram_chat_id,
+        advisory,
     )
     started = time.perf_counter()
     message_hash = _hash_message(message_text)
@@ -258,15 +266,26 @@ async def run_dispatch(
             system_prompt = build_system_prompt(
                 user=user,
                 now=datetime.now(timezone.utc),
+                advisory=advisory,
             )
+            # P10 B3: explicit per-mode allowlist (the global-registry trap) —
+            # normal turns keep the byte-locked BASE_TOOLSET wire order;
+            # advisory turns add the assessment/framing tools. Filtering
+            # preserves registry order, so compare_periods stays the cache
+            # breakpoint anchor in BOTH modes.
+            toolset = ADVISORY_TOOLSET if advisory else BASE_TOOLSET
             result = await get_query_llm_client().run_query_loop(
                 system_prompt=system_prompt,
                 user_message=message_text,
                 user_id=user_id,
-                tools=list_tools_for_anthropic(),
+                tools=list_tools_for_anthropic(allowed=toolset),
                 tool_executor=execute_tool,
                 model=settings.llm_query_model,
-                max_iterations=settings.llm_query_iteration_cap,
+                max_iterations=(
+                    settings.llm_advisory_iteration_cap
+                    if advisory
+                    else settings.llm_query_iteration_cap
+                ),
                 prior_messages=prior_messages,
             )
         except IterationCapExceeded as e:

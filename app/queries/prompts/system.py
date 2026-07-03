@@ -303,6 +303,47 @@ y tu postura es conservadora, la categoría con más margen este mes es \
 Bajar a la mitad ahí libera ₡70.000 hacia tu meta sin tocar lo esencial."""
 
 
+# ── P10 B3: advisory persona (static, number-free, brace-free) ────────────────
+# Prepended (after the base persona) ONLY on advisory turns. The normal-mode
+# prompt stays byte-identical — locked by tests — so the cache entry for the
+# everyday path is untouched; advisory turns warm their own cache entry.
+
+_ADVISORY_PERSONA = """\
+Este turno estás en modo asesor: acompañás a la persona a planear con calma \
+(compras grandes, deudas, pensión, metas), no solo a consultar datos.
+- Evaluación integral: antes de aconsejar, mirá el panorama con las \
+herramientas — patrimonio, sobrante mensual, deudas, sobres, y la memoria del \
+usuario si está disponible. Cada número sale de una herramienta; NUNCA \
+inventés ni recalculés una cifra.
+- Los veredictos (alcanza o no, factible o no) los dan las herramientas \
+deterministas. Vos explicás el porqué con claridad y calidez; jamás los \
+contradecís ni los suavizás.
+- Si un resultado viene con gate_reason (sin ingreso registrado, sin \
+presupuesto, sobres sin cubrir obligaciones), NO afirmés un sobrante ni un \
+veredicto: pedí la acción correctiva concreta.
+- Esperanza anclada en números reales, nunca optimismo fabricado: si los \
+números están mal, decilo con compasión y mostrá las palancas concretas que \
+las herramientas devuelven (esperar más, meta más pequeña, mover presupuesto, \
+subir ingreso). Prohibido el «todo va a estar bien» sin sustento.
+- Nada de vergüenza ni sermones. Coaching y educación, no terapia ni \
+diagnóstico clínico.
+- Una proyección de pensión SIEMPRE se presenta como rango (pesimista, \
+esperado, optimista) con su incertidumbre y el descargo del regulador — nunca \
+como una cifra única confiable.
+- Si la consulta es puntual y transaccional, respondé directo sin sermón de \
+asesor."""
+
+# ── P10 B9 contract (static): how matched principles shape narration ─────────
+_PRINCIPLE_FRAMING = """\
+Si usás get_framing_principles: los principios devueltos son SOLO marcos de \
+tono y encuadre (cómo decirlo), nunca fuentes de cifras ni veredictos. Los \
+números salen únicamente de las herramientas de datos. Tejé los hallazgos \
+reales dentro del encuadre del principio; citá la fuente del principio con \
+naturalidad si aporta. Un principio jamás justifica optimismo que los números \
+no soportan, y si su encuadre pide un dato que el usuario nunca dio, omitilo \
+— no inventés contexto personal."""
+
+
 def _first_name_from(full_name: Optional[str]) -> Optional[str]:
     if not full_name:
         return None
@@ -310,7 +351,7 @@ def _first_name_from(full_name: Optional[str]) -> Optional[str]:
     return parts[0] if parts else None
 
 
-def build_system_prompt(user: User, now: datetime) -> str:
+def build_system_prompt(user: User, now: datetime, advisory: bool = False) -> str:
     """Build the full Phase 6a system prompt.
 
     Stable for identical inputs (important for prompt cache hit rate).
@@ -322,6 +363,11 @@ def build_system_prompt(user: User, now: datetime) -> str:
     the pre-B6 footprint — no memory section, no Example 6/7 few-shot,
     and the capabilities list omits the get_user_context bullet. The
     flag flips after the 7-day shadow review per B12.
+
+    P10 B3: `advisory=True` prepends the static advisory persona after the
+    base persona and appends the principle-framing contract after
+    _CONVENTIONS. `advisory=False` output is byte-identical to before P10
+    (locked by tests) so the everyday cache entry never fragments.
     """
     from api.config import settings
 
@@ -339,6 +385,9 @@ def build_system_prompt(user: User, now: datetime) -> str:
             _FEW_SHOTS,
             _MEMORY_FEW_SHOT,
         ]
+        if advisory:
+            sections.insert(1, _ADVISORY_PERSONA)
+            sections.insert(6, _PRINCIPLE_FRAMING)  # after _CONVENTIONS
     else:
         sections = [
             _persona(first_name),
@@ -348,4 +397,7 @@ def build_system_prompt(user: User, now: datetime) -> str:
             _CONVENTIONS,
             _FEW_SHOTS,
         ]
+        if advisory:
+            sections.insert(1, _ADVISORY_PERSONA)
+            sections.insert(6, _PRINCIPLE_FRAMING)  # after _CONVENTIONS
     return "\n\n".join(sections)

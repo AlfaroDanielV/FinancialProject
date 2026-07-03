@@ -56,6 +56,12 @@ from api.services.telegram_dispatcher import (
 )
 
 from . import messages_es
+from .advisory import (
+    advisory_this_turn,
+    end_advisory_session,
+    is_advisory_session_active,
+    start_advisory_session,
+)
 from .account_creation import (
     AccountCreationError,
     clear_account_creation,
@@ -161,6 +167,9 @@ _COMMAND_HELP = {"/help", "/ayuda"}
 _COMMAND_UNDO = {"/undo", "/deshacer"}
 _COMMAND_CANCEL = {"/cancel", "/cancelar"}
 _COMMAND_MENU = {"/menu", "/menú"}
+# P10 B2: advisory continuity session entry/exit (deterministic, zero LLM).
+_COMMAND_ADVISORY = {"/asesor", "/asesoria", "/asesoría"}
+_COMMAND_ADVISORY_END = {"/normal", "/salir_asesor"}
 
 
 def _message_hash(text: str) -> str:
@@ -336,7 +345,24 @@ async def process_message(
         await clear_pending(user_id=user.id, redis=redis)
         await clear_clarification(user_id=user.id, redis=redis)
         await clear_account_creation(user_id=user.id, redis=redis)
+        await end_advisory_session(user_id=user.id, redis=redis)
         return BotReply(text=messages_es.CANCELLED)
+    if lowered in _COMMAND_ADVISORY:
+        # P10 B2: explicit entry into the advisory continuity session.
+        from api.config import settings as _settings
+
+        if not _settings.advisory_persona_enabled:
+            return BotReply(text=messages_es.ADVISORY_UNAVAILABLE)
+        await start_advisory_session(user_id=user.id, redis=redis)
+        return BotReply(text=messages_es.ADVISORY_STARTED)
+    if lowered in _COMMAND_ADVISORY_END:
+        was_active = await is_advisory_session_active(user_id=user.id, redis=redis)
+        await end_advisory_session(user_id=user.id, redis=redis)
+        return BotReply(
+            text=messages_es.ADVISORY_ENDED
+            if was_active
+            else messages_es.ADVISORY_NOT_ACTIVE
+        )
     if lowered in _COMMAND_MENU:
         # Imported lazily so bot.menu can import the reply dataclasses from this
         # module at top level without a circular import.
@@ -991,11 +1017,18 @@ async def _route_extraction(
         # Call run_dispatch (not the str-only `handle`) so we can carry the
         # outcome's optional open_screen handoff (e.g. → the native 'Sin cuenta'
         # screen after listing unassigned movements). Telegram ignores it.
+        # P10 B2: per-turn advisory resolution (D12) — a planning question (or
+        # an active continuity session) gets the advisory persona/toolset; a
+        # transactional lookup stays plain even mid-session.
+        advisory = await advisory_this_turn(
+            user_id=user.id, text=text, redis=redis
+        )
         try:
             outcome = await run_dispatch(
                 user_id=user.id,
                 message_text=text,
                 telegram_chat_id=user.telegram_user_id,
+                advisory=advisory,
             )
         except Exception as e:  # noqa: BLE001 - last line of defense
             log.exception(
@@ -1073,11 +1106,15 @@ async def _apply_decision(
             user.id,
             _message_hash(source_text),
         )
+        advisory = await advisory_this_turn(
+            user_id=user.id, text=source_text, redis=redis
+        )
         try:
             outcome = await run_dispatch(
                 user_id=user.id,
                 message_text=source_text,
                 telegram_chat_id=user.telegram_user_id,
+                advisory=advisory,
             )
         except Exception as e:  # noqa: BLE001 - last line of defense
             log.exception("reroute_query_unhandled user_id=%s", user.id)

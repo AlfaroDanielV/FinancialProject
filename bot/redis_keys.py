@@ -26,6 +26,11 @@ LAST_ACTION_TTL_S = 24 * 60 * 60
 RATE_WINDOW_S = 60
 RATE_LIMIT_PER_WINDOW = 30
 
+# P10 B2: advisory continuity session — idle-expiring, refreshed on each
+# advisory turn (D12: NO persist-until-/normal sticky mode; forgetting to
+# exit must cost nothing). Shared by Telegram and the native chat.
+ADVISORY_SESSION_TTL_S = 3 * 60 * 60
+
 
 def pairing_key(code: str) -> str:
     return f"telegram:pairing:{code}"
@@ -140,6 +145,12 @@ def gmail_shadow_summary_key(
 # /cancel, or TTL expiry. Same 5-minute window as pending/clarification —
 # anything longer and the user has forgotten what they tapped.
 MEMORY_EDIT_TTL_S = 300
+
+
+def advisory_session_key(user_id: uuid.UUID | str) -> str:
+    """P10 B2 — advisory continuity session marker (value '1', TTL
+    ADVISORY_SESSION_TTL_S, refreshed on each advisory turn)."""
+    return f"telegram:advisory_session:{user_id}"
 
 
 def memory_edit_key(user_id: uuid.UUID | str) -> str:

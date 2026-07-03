@@ -36,6 +36,11 @@ from ..schemas.chat import (
 
 from app.queries.history import clear_history
 from bot.account_creation import clear_account_creation
+from bot.advisory import (
+    end_advisory_session,
+    is_advisory_session_active,
+    start_advisory_session,
+)
 from bot.app import get_llm_client
 from bot.clarification import clear_clarification
 from bot.pending import clear_pending, load_pending
@@ -146,6 +151,8 @@ async def reset_chat(
 
         await clear_memory_edit_state(user_id=user.id, redis=redis)
         await clear_history(user.id, redis=redis)
+        # P10 B2: a fresh conversation also leaves the advisory session.
+        await end_advisory_session(user_id=user.id, redis=redis)
     except HTTPException:
         raise
     except Exception:
@@ -155,6 +162,38 @@ async def reset_chat(
         log.exception("chat_reset_unhandled user_id=%s", user.id)
         return {"reset": False}
     return {"reset": True}
+
+
+@router.get("/advisory-session")
+async def get_advisory_session(
+    user: User = Depends(current_user),
+) -> dict:
+    """P10 B2 — session state for the native 'Modo asesor' header control."""
+    redis = get_redis()
+    active = await is_advisory_session_active(user_id=user.id, redis=redis)
+    return {"active": active, "enabled": settings.advisory_persona_enabled}
+
+
+@router.post("/advisory-session")
+async def set_advisory_session(
+    payload: dict,
+    user: User = Depends(current_user),
+) -> dict:
+    """P10 B2 — start/end the advisory continuity session from the native app.
+
+    Body: {"active": bool}. Mirrors /asesor · /normal in the chat. When the
+    feature flag is off the session never starts (the control shows the
+    unavailable copy client-side via `enabled`).
+    """
+    active = bool(payload.get("active"))
+    redis = get_redis()
+    if active:
+        if not settings.advisory_persona_enabled:
+            return {"active": False, "enabled": False}
+        await start_advisory_session(user_id=user.id, redis=redis)
+    else:
+        await end_advisory_session(user_id=user.id, redis=redis)
+    return {"active": active, "enabled": settings.advisory_persona_enabled}
 
 
 @router.post("/image", response_model=ChatImageResponse)

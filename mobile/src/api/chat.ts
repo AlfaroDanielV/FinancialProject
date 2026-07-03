@@ -130,6 +130,31 @@ export async function postChatMessage(text: string): Promise<ChatMessageResponse
 }
 
 /**
+ * P10 B2 — advisory continuity session ("Modo asesor"). The header control
+ * reflects `active` on load; `enabled=false` means the feature flag is off
+ * server-side and the control should stay hidden. The session is idle-
+ * expiring server-side — the client never has to remember to turn it off.
+ */
+export interface AdvisorySessionState {
+  active: boolean;
+  enabled: boolean;
+}
+
+export async function getAdvisorySession(): Promise<AdvisorySessionState> {
+  const { data } = await api.get<AdvisorySessionState>("/chat/advisory-session");
+  return data;
+}
+
+export async function setAdvisorySession(
+  active: boolean,
+): Promise<AdvisorySessionState> {
+  const { data } = await api.post<AdvisorySessionState>("/chat/advisory-session", {
+    active,
+  });
+  return data;
+}
+
+/**
  * Start a new conversation — clears durable server-side conversational state
  * (pending write, clarification, account-creation flow, memory-edit flow, and
  * the LLM query history). The visible message list is cleared client-side.

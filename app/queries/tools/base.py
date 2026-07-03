@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
 from typing import Any, get_type_hints
 
@@ -41,7 +41,17 @@ def query_tool(name: str, description: str) -> Callable[[ToolFunc], ToolFunc]:
     return _decorator
 
 
-def list_tools_for_anthropic() -> list[dict[str, Any]]:
+def list_tools_for_anthropic(
+    allowed: "Collection[str] | None" = None,
+) -> list[dict[str, Any]]:
+    """Serialize registered tools for the Anthropic API.
+
+    P10 B3 — per-mode scoping is an EXPLICIT allowlist (the global-registry
+    trap): registration stays global/import-time, but each dispatch passes
+    the toolset for its mode. Filtering preserves REGISTRY ORDER, so
+    `compare_periods` stays last and remains the cache breakpoint anchor.
+    ``allowed=None`` keeps the historical everything-registered behavior.
+    """
     return [
         {
             "name": tool.name,
@@ -49,6 +59,7 @@ def list_tools_for_anthropic() -> list[dict[str, Any]]:
             "input_schema": tool.args_model.model_json_schema(),
         }
         for tool in _REGISTRY.values()
+        if allowed is None or tool.name in allowed
     ]
 
 
