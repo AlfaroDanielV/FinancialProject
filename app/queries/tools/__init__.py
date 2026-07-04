@@ -23,8 +23,11 @@ from .debts import register_debt_tools
 from .envelopes import register_envelope_tools
 from .financing import register_financing_tools
 from .goals import register_goal_tools
+from .advisory_planning import register_advisory_planning_tools
 from .income import register_income_tools
+from .net_worth import register_net_worth_tool
 from .pending import register_pending_tools
+from .retirement import register_retirement_tools
 from .reallocation import register_reallocation_tools
 from .salary import register_salary_tools
 from .recurring_bills import register_recurring_bill_tools
@@ -89,6 +92,11 @@ def register_builtin_tools() -> None:
     register_income_tools()
     register_salary_tools()
     register_credit_card_tools()
+    # P10 advisory-only tools — registered globally, shipped ONLY via
+    # ADVISORY_TOOLSET (never in the normal-mode wire list).
+    register_net_worth_tool()
+    register_advisory_planning_tools()
+    register_retirement_tools()
     if settings.insights_dispatcher_enabled:
         register_user_context_tool()
     # compare_periods stays last so it remains the cache breakpoint anchor

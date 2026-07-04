@@ -45,6 +45,12 @@ KNOWN_KINDS: frozenset[str] = frozenset(
         "goal_feasibility",
         "card_analysis",
         "over_commitment_nudge",
+        # P10 advisory-mode kinds (B4–B6, B9/B10, B11).
+        "net_worth",
+        "counterfactual",
+        "multiyear_plan",
+        "retirement_projection",
+        "advisory_assessment",
     }
 )
 
