@@ -88,9 +88,11 @@ class ContextPack:
 _PACK_CONTRACT = """\
 Vas a recibir un paquete de hallazgos deterministas (etiqueta, valor, motor \
 de origen) y, aparte, principios de encuadre. Reglas absolutas:
-- Narrá usando SOLO los números del paquete, con el formato que gustés. Si \
-un dato que necesitás no está en el paquete, decí honestamente que no lo \
-tenés — jamás lo estimés ni lo completés.
+- Narrá usando SOLO los números del paquete. Si un dato que necesitás no \
+está en el paquete, decí honestamente que no lo tenés — jamás lo estimés ni \
+lo completés.
+- Escribí todo monto o cantidad EN DÍGITOS, nunca en palabras (nada de \
+«quinientos» ni «medio»): el verificador solo acepta cifras del paquete.
 - No tenés herramientas este turno: no podés consultar nada más.
 - Los principios de encuadre dan tono y estructura, nunca cifras ni \
 veredictos.
@@ -184,6 +186,18 @@ async def build_context_pack(db, *, user: User) -> ContextPack:
 
 _NUM_TOKEN_RE = re.compile(r"\d[\d.,]*")
 
+# A figure spelled out in words («quinientos mil», «dos millones») would slip
+# past the digit tracer — so word-numbers are violations outright: the pack
+# contract instructs the narrator to write amounts in digits, and the honest
+# fallback costs less than a fabricated spelled-out figure. «mil gracias» is
+# collateral (acceptable: it degrades to honest numbers, never to an error).
+_WORD_NUMBER_RE = re.compile(
+    r"\b(mil(?:es)?|mill[oó]n(?:es)?|cien(?:to)?s?|doscient[oa]s|trescient[oa]s|"
+    r"cuatrocient[oa]s|quinient[oa]s|seiscient[oa]s|setecient[oa]s|"
+    r"ochocient[oa]s|novecient[oa]s)\b",
+    re.IGNORECASE,
+)
+
 
 def _normalize_digits(token: str) -> str:
     return re.sub(r"[^\d]", "", token)
@@ -225,6 +239,8 @@ def score_narration(narration: str, pack: ContextPack, *, now: datetime) -> list
             pass
         if digits not in allowed:
             violations.append(raw)
+    # Spelled-out magnitudes can't be traced to the pack → always violations.
+    violations.extend(m.group(0) for m in _WORD_NUMBER_RE.finditer(narration))
     return violations
 
 

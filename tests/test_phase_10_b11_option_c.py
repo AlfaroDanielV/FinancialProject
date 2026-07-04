@@ -76,6 +76,16 @@ def test_scorer_flags_a_percentage_not_in_pack():
     assert score_narration(narration, _pack(), now=_NOW) == ["35"]
 
 
+def test_scorer_flags_spelled_out_figures():
+    # A figure in words would slip past the digit tracer — always a violation.
+    for bad in (
+        "Podés ahorrar quinientos mil colones al mes.",
+        "Con dos millones salís de la deuda.",
+        "Apartá cien mil para el colchón.",
+    ):
+        assert score_narration(bad, _pack(), now=_NOW), bad
+
+
 # ── template fallback ─────────────────────────────────────────────────────────
 
 
