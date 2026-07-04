@@ -555,6 +555,30 @@ CANCELLED = "Cancelado."
 CONTEXT_CLEARED = "Listo, contexto limpio."
 
 
+# ── P10 B10: distress hand-off (D7/O3 — dos niveles) ─────────────────────────
+# Tier 2 — genuine crisis. Draft copy per plan §6; ⛳ pending clinical review
+# before shipping user-visible (the advisory feature flag holds it dark).
+# The bot never assesses, diagnoses, or promises confidentiality.
+DISTRESS_CRISIS = (
+    "Lo que me estás contando suena muy pesado, y no tenés que cargarlo solo. "
+    "Yo te acompaño con lo financiero, pero para esto hay gente preparada "
+    "para escucharte ahora mismo: en Costa Rica podés llamar al 1322, que "
+    "atiende las 24 horas, o al 9-1-1 si es una emergencia. Cuando te sientas "
+    "listo seguimos con tus finanzas, sin apuro."
+)
+
+# Tier 1 — financial despair, no crisis signal. Appended (once per day) to
+# the normal answer — ordinary money-stress is NEVER escalated to a suicide
+# line; it gets warmth + a real person.
+DISTRESS_FINANCIAL_SUFFIX = (
+    "\n\nY una cosa más: lo que estás cargando pesa, y no tenés que "
+    "resolverlo solo. Hablalo con alguien de confianza; si querés criterio "
+    "profesional, un asesor financiero acreditado o tu asociación "
+    "solidarista pueden revisarlo con vos. Yo sigo aquí con los números, "
+    "sin apuro y sin juzgar."
+)
+
+
 # ── P10 B2: modo asesor ───────────────────────────────────────────────────────
 
 ADVISORY_STARTED = (

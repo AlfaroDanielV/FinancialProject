@@ -153,6 +153,15 @@ def advisory_session_key(user_id: uuid.UUID | str) -> str:
     return f"telegram:advisory_session:{user_id}"
 
 
+# P10 B10: the Tier-1 financial-distress warm note is appended at most once
+# per day — repeated venting must not turn the note into nagging.
+DISTRESS_NOTE_TTL_S = 24 * 60 * 60
+
+
+def distress_note_key(user_id: uuid.UUID | str) -> str:
+    return f"telegram:distress_note:{user_id}"
+
+
 def memory_edit_key(user_id: uuid.UUID | str) -> str:
     return f"telegram:memory_edit:{user_id}"
 

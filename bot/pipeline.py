@@ -56,6 +56,8 @@ from api.services.telegram_dispatcher import (
 )
 
 from . import messages_es
+from api.services.advisory.guardrails import detect_distress
+
 from .advisory import (
     advisory_this_turn,
     end_advisory_session,
@@ -96,6 +98,7 @@ from .pending_db import (
     resolve_from_pending,
 )
 from .rate_limit import check_and_increment_rate
+from .redis_keys import DISTRESS_NOTE_TTL_S, distress_note_key
 from app.queries.delivery import BudgetExceeded, handle_query_error
 from api.services.budget import assert_within_budget
 from .undo import run_undo
@@ -293,8 +296,59 @@ async def process_message(
     image_media_type: Optional[str] = None,
     vision_model: Optional[str] = None,
 ) -> BotReply:
-    """One round-trip: text in (or image in), BotReply out. Side effects
-    (Redis writes, DB commits) happen as dispatcher branches fire.
+    """One round-trip: text in (or image in), BotReply out.
+
+    P10 B10 — the deterministic distress net runs PRE-LLM, for both channels:
+    a genuine crisis signal short-circuits to the warm línea-1322 hand-off
+    (never assessed by an LLM); financial despair flows through normally and
+    gets a warm point-to-a-real-person note appended (once per day). Ordinary
+    money-stress is never escalated to a crisis line (O3)."""
+    tier = detect_distress(text) if image_bytes is None else None
+    if tier == "crisis":
+        log.info("distress_crisis_handoff user_id=%s", user.id)
+        return BotReply(text=messages_es.DISTRESS_CRISIS)
+
+    reply = await _process_message_inner(
+        user=user,
+        text=text,
+        db=db,
+        redis=redis,
+        llm_client=llm_client,
+        llm_model=llm_model,
+        image_bytes=image_bytes,
+        image_media_type=image_media_type,
+        vision_model=vision_model,
+    )
+
+    if tier == "financial":
+        # Warmth WITHOUT hijacking the financial answer — appended, deduped
+        # per day, and best-effort (a Redis hiccup must never eat the reply).
+        try:
+            marked = await redis.set(
+                distress_note_key(user.id), "1", ex=DISTRESS_NOTE_TTL_S, nx=True
+            )
+            if marked:
+                log.info("distress_financial_note user_id=%s", user.id)
+                reply.text = reply.text + messages_es.DISTRESS_FINANCIAL_SUFFIX
+        except Exception:  # noqa: BLE001 — the note is optional; the answer is not
+            log.exception("distress_note_failed user_id=%s", user.id)
+    return reply
+
+
+async def _process_message_inner(
+    *,
+    user: User,
+    text: str,
+    db: AsyncSession,
+    redis: Redis,
+    llm_client: LLMClient,
+    llm_model: str,
+    image_bytes: Optional[bytes] = None,
+    image_media_type: Optional[str] = None,
+    vision_model: Optional[str] = None,
+) -> BotReply:
+    """The pre-B10 pipeline body. Side effects (Redis writes, DB commits)
+    happen as dispatcher branches fire.
 
     When `image_bytes` is provided the text pipeline branches (commands,
     account creation, clarification, pending-confirm) are skipped and vision
