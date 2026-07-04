@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     # over more read-only tools than a factual lookup). Normal turns keep
     # llm_query_iteration_cap.
     llm_advisory_iteration_cap: int = 8
+    # P10 B11: route advisory turns through the Option C orchestrator (frozen
+    # deterministic context-pack → no-tools narration → Gate-D scorer →
+    # template fallback) instead of the Option A agentic loop. "No invented
+    # number" becomes structural. Same per-turn resolver either way.
+    advisory_option_c_enabled: bool = False
     llm_insight_input_usd_per_mtok: Decimal = Decimal("1.00")
     llm_insight_output_usd_per_mtok: Decimal = Decimal("5.00")
     llm_insight_cache_read_usd_per_mtok: Decimal = Decimal("0.10")

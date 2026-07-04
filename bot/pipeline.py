@@ -181,6 +181,13 @@ def _message_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def _option_c_enabled() -> bool:
+    """P10 B11 routing flag, read late so tests can flip it per-turn."""
+    from api.config import settings
+
+    return settings.advisory_option_c_enabled
+
+
 def _today_for(user: User) -> date:
     """User's local calendar date. Thin alias over the shared single source
     (`api.services.clock.user_today`) kept so existing callsites don't churn."""
@@ -1078,12 +1085,23 @@ async def _route_extraction(
             user_id=user.id, text=text, redis=redis
         )
         try:
-            outcome = await run_dispatch(
-                user_id=user.id,
-                message_text=text,
-                telegram_chat_id=user.telegram_user_id,
-                advisory=advisory,
-            )
+            if advisory and _option_c_enabled():
+                # P10 B11: the hardened path — frozen deterministic context
+                # pack, no-tools narration, Gate-D scorer, template fallback.
+                from app.queries.advisory import run_advisory
+
+                outcome = await run_advisory(
+                    user_id=user.id,
+                    message_text=text,
+                    telegram_chat_id=user.telegram_user_id,
+                )
+            else:
+                outcome = await run_dispatch(
+                    user_id=user.id,
+                    message_text=text,
+                    telegram_chat_id=user.telegram_user_id,
+                    advisory=advisory,
+                )
         except Exception as e:  # noqa: BLE001 - last line of defense
             log.exception(
                 "query_dispatcher_unhandled user_id=%s dispatcher=%s intent=%s "
