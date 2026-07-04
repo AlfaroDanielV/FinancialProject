@@ -2887,6 +2887,175 @@ reset form (fund accounts only).
 
 ---
 
+## Phase 10 — Advisory Mode + Principle Library (2026-07-03)
+
+Toggleable **advisory mode** (planning/coach persona over the read-only query
+dispatcher) + a curated **behavioral-finance principle library** that shapes
+HOW verdicts are narrated, never WHAT. **Code-complete on branch
+`phase-10-advisory` (B0–B11, one commit per block); ships dark behind
+`advisory_persona_enabled=false`; operator ⛳ gates pending (below).** No
+migration (`0044` head). `committed_outflows`/cashflow byte-lock untouched.
+Canonical: `docs/advisory-mode-and-principle-library.md` (plan, D1–D13/O1–O5)
++ `docs/phase-10-principle-library.md` (Gates A–E) +
+`docs/phase-10-b6-cr-pension-constants.md`; vault `Decision - Advisory Mode &
+Principle Library (P10)`.
+
+- **B0.5 chat robustness (D13, closes the 2026-07-02 compound-intent bug).**
+  A well-formed chat message can never surface a non-2xx or a bare banner:
+  serialization inside the endpoint guard + chat-route Request/Response-
+  ValidationError handlers (200 chat body, chat routes only); the
+  write/control branch of `_route_extraction` netted symmetrically;
+  `Intent.QUERY` on the write dispatcher → graceful `RerouteToQuery` (was
+  RuntimeError; the pipeline re-routes the original text to the query
+  dispatcher); an `ExtractionResult` `model_validator` DERIVES `dispatcher`
+  from `intent` (query→query, control→control, else write) + extractor
+  prompt rule 19 + the verbatim bug message as an example;
+  `ChatMessageResponse.error_class` (understanding|budget|transient|system)
+  with distinct native copy (the network banner names the network).
+- **B1 — `financial_state` single owner (D8).** Frozen 6-label enum in
+  `api/services/finance/financial_state.py` (`negative_surplus`,
+  `high_interest_debt`, `irregular_income_stress`, `recent_overspend`,
+  `first_time_saving`, `stable_building`) + pure worst-first classifier
+  (thresholds: APR ≥ 0.20, DTI ≥ 0.40 [the insights-lifecycle precedent]);
+  `classify_for_user` composes `compute_monthly_cashflow` /
+  `compute_net_worth` / `compute_envelope_summary` — recomputes nothing. New
+  `api/services/finance/net_worth.py`: per-currency assets−liabilities from
+  the balance invariant + `Debt.current_balance` (superseded credit_card
+  debts excluded — never counted twice); USD apart, never ₡+$-summed (D3).
+- **B2 — activation, intent-per-message (D12/O5, NO sticky mode).**
+  `bot/advisory.py::advisory_this_turn`: advisory iff flag on ∧ NOT a
+  transactional lookup ∧ (session active ∨ deterministic planning-question
+  match). Idle-expiring continuity session `telegram:advisory_session:{id}`
+  (TTL 3h, refreshed per advisory turn), shared by both channels; `/asesor`
+  (alias `/asesoria`) starts, `/normal` (`/salir_asesor`) ends; `/cancel` +
+  `POST /chat/reset` clear it; `GET/POST /api/v1/chat/advisory-session` +
+  native "Asesor" header pill (hidden while the flag is off). «¿cuánto
+  tengo?» stays plain even mid-session.
+- **B3 — persona + tool scoping.** `build_system_prompt(user, now,
+  advisory=False)`: advisory prepends the static `_ADVISORY_PERSONA` +
+  `_PRINCIPLE_FRAMING` contract (number-free, brace-free, after
+  `_CONVENTIONS`); `advisory=False` output BYTE-IDENTICAL (test-locked, the
+  everyday cache entry never fragments). Explicit per-mode allowlists
+  `BASE_TOOLSET`/`ADVISORY_TOOLSET` → `list_tools_for_anthropic(allowed=…)`
+  (the global-registry trap guard — an advisory tool can never leak into the
+  normal wire list); `llm_advisory_iteration_cap = 8`. **Pre-existing bug
+  found+fixed:** `compare_periods.py` had a module-level self-registration
+  that stranded the cache-breakpoint anchor MID-LIST whenever import order
+  ran ahead of the canonical register order (`test_tool_registry.py` masked
+  it by resetting the registry); it now registers ONLY via
+  `register_builtin_tools()`'s final call.
+- **B4/B5/B6 — assessment tools** (advisory-only, all advice-traced, own
+  sessions): `get_net_worth` (per-currency, delegation only);
+  `assess_counterfactual` (re-frames the affordability engine's OWN
+  `min_timeline`/`max_amount`/`shortfall` as levers + top reallocation
+  candidates); `build_multiyear_plan` (prima savings phase at the long
+  horizon + `assess_financing` cuota phase; **LINEAR v1**, stated; no rate →
+  asks, never invents); `project_retirement` over the NEW pure
+  `app/domain/retirement/` engine — IVM defined-benefit formula (Reglamento
+  arts. 23–29, brackets/proporcional/postergación/topes) + ROP under the
+  three SUPEN scenarios (versioned per-OPC methodology, Popular ene-2026,
+  VANU stand-in) — **always 3 bands + the SUPEN disclaimer, never a single
+  figure**; gross from `recurring_incomes.gross_monthly` (NET never used as
+  gross → asks); SPR approximation flagged. `KNOWN_KINDS` += net_worth,
+  counterfactual, multiyear_plan, retirement_projection,
+  advisory_assessment.
+- **B7 — memory (O1).** P6c `archetype`/`risk_posture` insights as OPTIONAL
+  ranking modifiers (Klontz labels only; conservative→low_tolerance,
+  aggressive→high_tolerance) — they re-RANK matched principles, never
+  select; absent → same principles fire (test-locked).
+- **B8 — principle library (Gates A/B/E, D10 — curated, NOT RAG).**
+  `api/data/principle_library_cr.py`: `Principle` TypedDict; **5 Housel
+  principles LIVE** (applies_when per the operator-locked plan §4.2 starter
+  set; book anecdotes quarantined in `source_illustration` — never
+  narrated); `match_principles` — financial_state dominates (∈ applies_when
+  ∧ ∉ forbidden_when ∧ requires_positive_state honored ∧ reviewed ∧
+  non-clinical), centrality + intent rank, top-k=2, Gate-D specificity
+  tie-break; **un-reviewed records are structurally inert**.
+  `scripts/import_principles.py` (Gate E): raw → staging, additive, never
+  touches live, human-only fields never auto-filled; `staging.json` holds 12
+  records (Ramsey ×4 + Robin ×3 pending review; Sethi ×5 needs_atomization).
+- **B9 — narration + CI gates (D5/D11).** `get_framing_principles`:
+  financial_state derived SERVER-side (the LLM can pass only the
+  conversational intent topic); returns framing intent + source + CR
+  cultural flags — zero numbers; advice-traced `advisory_assessment` with
+  state + matched ids. CI: CR-aware **no-number-in-principle scorer**
+  (digits/₡/%/millones/mil/por-ciento; `excluded_tactics` exempt) +
+  **human-review completeness gate** (missing
+  source/reviewed_by/scope/applies_when/forbidden_when/hope_anchor fails).
+- **B10 — safety (D7/O3).** `api/services/advisory/guardrails.py::
+  detect_distress` — deterministic two-tier net PRE-LLM, both channels:
+  **Tier 2 (crisis)** short-circuits to the warm **línea 1322** (24/7) +
+  **9-1-1** hand-off (never assessed by an LLM; no diagnosis, no
+  confidentiality promise; Aquí Estoy deliberately not primary); **Tier 1
+  (financial despair)** keeps its financial answer + appends a warm
+  real-person note (asesor acreditado / solidarista) once per day
+  (`telegram:distress_note:{id}`) — money-stress NEVER escalates to a crisis
+  line. «matar de risa» idiom guarded. Toxic-positivity ban (D6) +
+  gate_reason honesty live in the persona.
+- **B11 — Option C (structural no-invented-number).**
+  `app/queries/advisory/orchestrator.py::run_advisory`: frozen deterministic
+  context pack (`Finding{label, value, source_engine}` + matched principles
+  as `framing`) → ONE no-tools completion (`tools=[]` — the narrator
+  physically cannot fetch/recompute) → Gate-D scorer (every numeric token
+  traces to the pack; ints ≤12 + current year free; **spelled-out figures
+  are always violations**, digits-only contract) → deterministic template
+  fallback on violation OR LLM failure (honest voseo numbers, never a
+  fabricated verdict) → advice_events + llm_query_dispatches rows. Behind
+  `advisory_option_c_enabled` (default off — Option A agentic loop is the
+  live path). **B12 (MCP adapter) documented only, deliberately NOT built
+  (D4).**
+
+**Hard rules added:**
+1. The principle library shapes narration, NEVER computation — no principle,
+   match, or template may produce/alter/imply a financial figure
+   (CI-enforced, not a guideline).
+2. `financial_state` has ONE owner (the P7 finance layer); the matcher
+   consumes labels, never computes them; the money archetype is a ranking
+   modifier, never a selector.
+3. Advisory mode is a read-only persona variant of the query dispatcher —
+   per-turn intent + idle-expiring session, no sticky mode, a transactional
+   lookup always gets a plain answer, the write path is untouched.
+4. A retirement projection is ALWAYS the three SUPEN bands + the regulator's
+   disclaimer — never a single confident number; the pesimista band is never
+   dropped.
+5. Distress tiering is deterministic (pattern net, pre-LLM); ordinary
+   money-stress is never escalated to a crisis line.
+
+**⛳ Pending operator gates (feature stays dark meanwhile):** B1 enum
+sign-off; B6 pension constants validated against the primary Reglamento IVM +
+Popular's methodology manual (constants-doc §7 open items); Tier-2 crisis
+copy clinical review; B8 human-field sign-off of the 5 live principles; then
+flip `advisory_persona_enabled` (Option C separately via
+`advisory_option_c_enabled`).
+
+**Verification:** `scripts/test_phase_10.sh` green — mobile `tsc --noEmit`;
+144 focused (`test_phase_10_b05_chat_robustness` 14,
+`test_phase_10_b1_financial_state` 16, `test_phase_10_b2_b3_advisory_
+activation` 16, `test_phase_10_b4_b6_assessment_tools` 9, `test_cr_pension`
+37, `test_phase_10_b8_principle_library` 10, `test_phase_10_b9_narration_
+scorers` 6, `test_phase_10_b10_guardrails` 25, `test_phase_10_b11_option_c`
+11) + 143 regression; `scripts/test_phase_7b.sh` cross-check green (48 + 141,
+cashflow byte-lock intact). **Pre-merge adversarial review** (6 finders →
+2-skeptic refutation): the run was cut short by a session limit (finance +
+library finders completed; the 4 verify agents all died), so the 4 surfaced
+findings were evaluated manually — **all 4 confirmed + fixed**: (1)
+`card_carries_balance = any(balance_owed>0)` labeled every normal
+intra-cycle card user `high_interest_debt` → now `card_revolving` = an
+UNPAID STATEMENT past its due date via `card_statement_status` (no
+statement_day → contributes nothing); (2) the max-rate signal now excludes
+SUPERSEDED credit_card Debts + zero-balance debts (parity with net
+worth/affordability); (3) wealth in a non-display currency counts against
+`first_time_saving` (sign-only crosses currencies, no FX — D3); (4) the B9
+CI no-number scorer brought to parity with the B11 runtime word-number rule
+(shared `_WORD_NUMBER_RE` + spelled number+time-unit pattern). The 4
+incomplete finder scopes (robustness/activation/tools/optionc) were NOT
+agent-reviewed — flagged for the operator. **Deferred:** B12 MCP adapter;
+atomization + review of the 12 staged principles; proactive advisory (still
+a flag away, per the P8 fork); inflation/compounding in
+`build_multiyear_plan`; real observed ROP density.
+
+---
+
 ## Closed phases — hard rules to preserve
 
 These are extracted from the closed-phase notes in `11_Phases/`. **Do not relax without an explicit decision in `05_Decisions/`.**

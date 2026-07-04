@@ -42,7 +42,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models.debt import Debt
 from ...models.user import User
-from ..credit_cards import list_active_cards_with_terms
+from ..clock import user_today
+from ..credit_cards import (
+    card_statement_status,
+    list_active_cards_with_terms,
+    superseded_credit_card_debt_ids,
+)
 from ..envelopes import compute_envelope_summary
 from .cashflow import MonthlyCashflow, compute_monthly_cashflow
 from .net_worth import compute_net_worth
@@ -79,14 +84,19 @@ def classify_financial_state(
     net_worth: Optional[Decimal] = None,
     dti: Optional[Decimal] = None,
     max_debt_interest_rate: Optional[Decimal] = None,
-    card_carries_balance: bool = False,
+    card_revolving: bool = False,
     over_limit_envelopes: int = 0,
 ) -> FinancialState:
     """Pure classifier — no LLM, no DB, no network. See module precedence.
 
-    ``net_worth``/``dti`` are the user-display-currency figures from their
-    single owners (``compute_net_worth`` / income+debt from the cashflow);
-    None means unknown and degrades gracefully (plan §2 / O1 spirit).
+    ``net_worth``/``dti`` come from their single owners (``compute_net_worth``
+    / income+debt from the cashflow); None means unknown and degrades
+    gracefully (plan §2 / O1 spirit). ``net_worth`` is a per-currency figure —
+    the composer passes the strongest single-currency net (only its SIGN
+    crosses currencies, never a converted sum — D3). ``card_revolving`` means
+    an UNPAID STATEMENT past its due date — normal intra-cycle card usage
+    (charge, pay at corte, zero interest) must never read as expensive debt
+    (adversarial-review fix, 2026-07-03).
     """
     # 1 — deficit dominates. Deliberately income_known+has_budget (NOT the full
     # `reliable`): an unattached obligation only understates committed, so a
@@ -98,10 +108,10 @@ def classify_financial_state(
     if not cashflow.income_known:
         return FinancialState.IRREGULAR_INCOME_STRESS
 
-    # 3 — expensive debt by rate, revolving balance, or load.
+    # 3 — expensive debt by rate, an overdue revolving statement, or load.
     if (
         (max_debt_interest_rate is not None and max_debt_interest_rate >= HIGH_INTEREST_APR)
-        or card_carries_balance
+        or card_revolving
         or (dti is not None and dti >= HIGH_DTI)
     ):
         return FinancialState.HIGH_INTEREST_DEBT
@@ -134,15 +144,31 @@ async def classify_for_user(db: AsyncSession, *, user: User) -> FinancialStateRe
     """Compose the existing engines into one labeled reading.
 
     Reuses ``compute_monthly_cashflow`` (surplus/gates), ``compute_net_worth``
-    (per-currency; the display-currency entry feeds the classifier),
-    ``compute_envelope_summary`` (own-envelope over-limit count) and stored
-    debt/card fields. Recomputes no financial figure.
+    (per-currency), ``compute_envelope_summary`` (own-envelope over-limit
+    count), ``card_statement_status`` (revolving detection) and stored debt
+    fields. Recomputes no financial figure.
+
+    Three composition rules hardened by the 2026-07-03 adversarial review:
+    - The rate signal excludes SUPERSEDED credit_card Debts (the card's live
+      terms carry that obligation — same rule as net worth / affordability)
+      and debts whose balance is already zero.
+    - ``card_revolving`` = an unpaid statement past its due date — never mere
+      intra-cycle usage (a de-contado payer must not read as expensive debt).
+      Cards without a ``statement_day`` contribute nothing here (can't tell;
+      the rate + DTI signals still cover real debt stress).
+    - The net-worth signal is the strongest single-currency net (display
+      currency preferred): wealth built in ANY currency counts against
+      ``first_time_saving``. Only the SIGN crosses currencies — no FX (D3).
     """
     cashflow = await compute_monthly_cashflow(db, user=user)
 
     net_reading = await compute_net_worth(db, user=user)
     primary = net_reading.primary
-    net_worth = primary.net if primary is not None else None
+    net_worth: Optional[Decimal] = primary.net if primary is not None else None
+    positive_nets = [e.net for e in net_reading.entries if e.net > _ZERO]
+    if positive_nets and (net_worth is None or net_worth <= _ZERO):
+        # Wealth held in a non-display currency still counts as "built".
+        net_worth = max(positive_nets)
 
     dti: Optional[Decimal] = None
     if cashflow.income_known and cashflow.monthly_income > _ZERO:
@@ -150,18 +176,31 @@ async def classify_for_user(db: AsyncSession, *, user: User) -> FinancialStateRe
             Decimal("0.001")
         )
 
+    superseded = await superseded_credit_card_debt_ids(db, user_id=user.id)
     max_rate_row = await db.execute(
         select(func.max(Debt.interest_rate)).where(
             Debt.user_id == user.id,
             Debt.is_active.is_(True),
             Debt.archived.is_(False),
+            Debt.current_balance > 0,
+            ~Debt.id.in_(superseded) if superseded else Debt.id.is_not(None),
         )
     )
     max_rate_val = max_rate_row.scalar()
     max_rate = Decimal(max_rate_val) if max_rate_val is not None else None
 
+    today = user_today(user)
     cards = await list_active_cards_with_terms(db, user_id=user.id)
-    card_carries_balance = any(card.balance_owed > _ZERO for card in cards)
+    card_revolving = False
+    for card in cards:
+        status = await card_statement_status(db, card=card, today=today)
+        if (
+            status is not None
+            and status.remaining > _ZERO
+            and today > status.due_date
+        ):
+            card_revolving = True
+            break
 
     summary = await compute_envelope_summary(db, user=user)
     over_limit = sum(
@@ -173,7 +212,7 @@ async def classify_for_user(db: AsyncSession, *, user: User) -> FinancialStateRe
         net_worth=net_worth,
         dti=dti,
         max_debt_interest_rate=max_rate,
-        card_carries_balance=card_carries_balance,
+        card_revolving=card_revolving,
         over_limit_envelopes=over_limit,
     )
     signals: dict[str, Any] = {
@@ -184,9 +223,12 @@ async def classify_for_user(db: AsyncSession, *, user: User) -> FinancialStateRe
         "savings_allocations": str(cashflow.savings_allocations),
         "net_worth": str(net_worth) if net_worth is not None else None,
         "net_worth_currency": net_reading.currency,
+        "net_worth_by_currency": {
+            e.currency: str(e.net) for e in net_reading.entries
+        },
         "dti": str(dti) if dti is not None else None,
         "max_debt_interest_rate": str(max_rate) if max_rate is not None else None,
-        "card_carries_balance": card_carries_balance,
+        "card_revolving": card_revolving,
         "over_limit_envelopes": over_limit,
     }
     return FinancialStateReading(state=state, signals=signals)

@@ -32,14 +32,25 @@ from api.data.principle_library_cr import PRINCIPLES_CR
 
 # ── CI Gate 1: no-number-in-principle ────────────────────────────────────────
 
+# The B11 runtime word-number rule is the single source for spelled-out
+# magnitudes — the CI gate stays at parity with it (adversarial-review fix:
+# the two scorers had drifted).
+from app.queries.advisory.orchestrator import _WORD_NUMBER_RE  # noqa: E402
+
 # CR-aware figure detector. Word-bounded so «familia»/«similar» never match.
 _NUMBER_PATTERNS = [
     re.compile(r"[0-9]"),
     re.compile(r"₡"),
     re.compile(r"%"),
-    re.compile(r"\bmill[oó]n(?:es)?\b", re.IGNORECASE),
-    re.compile(r"\bmil\b", re.IGNORECASE),
     re.compile(r"\bpor\s+ciento\b", re.IGNORECASE),
+    _WORD_NUMBER_RE,  # mil(es)/millón(es)/cien(tos)/quinientos/…
+    # A spelled small number attached to a time unit is a TIMELINE figure
+    # («seis meses», «dos años») — principles must stay timeless.
+    re.compile(
+        r"\b(un[oa]?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)"
+        r"\s+(mes(?:es)?|añ[oa]s?|semanas?|d[ií]as?|quincenas?)\b",
+        re.IGNORECASE,
+    ),
 ]
 
 
@@ -75,7 +86,8 @@ def test_ci_gate_no_number_in_any_live_principle():
 
 
 def test_scorer_detects_cr_figures():
-    # The scorer itself must catch the CR-specific shapes.
+    # The scorer itself must catch the CR-specific shapes — including the
+    # spelled-out ones the B11 runtime rule catches (parity, review fix).
     for bad in (
         "ahorrá ₡50.000 al mes",
         "guardá el 10% del salario",
@@ -83,12 +95,17 @@ def test_scorer_detects_cr_figures():
         "unos quinientos mil colones",
         "en 6 meses lo lográs",
         "medio millón de colchón",
+        "apartá unos cientos de miles",
+        "en seis meses lo lográs",
+        "dale dos años al plan",
+        "guardá el diez por ciento",
     ):
         assert _find_number(bad) is not None, bad
     # And must NOT flag figure-free framing prose.
     for good in (
         "validá la lógica histórica detrás de su aversión al riesgo",
         "una familia similar a la suya, sin milagros",
+        "presentá el siguiente paso como un hábito a mantener",
     ):
         assert _find_number(good) is None, good
 
