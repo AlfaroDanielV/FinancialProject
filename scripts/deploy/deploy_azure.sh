@@ -129,14 +129,14 @@ if [[ $SKIP_MIGRATE -eq 0 ]]; then
   [[ "${STATUS:-}" == "Succeeded" ]] || die "Migrate job did not finish in time; verify manually before continuing."
 
   # Verify the alembic head chain via Log Analytics (NOT 'containerapp exec' — needs a TTY, L2)
-  log "A2 · verifying alembic head in Log Analytics (expect '… -> 0043')"
+  log "A2 · verifying alembic head in Log Analytics (expect '… -> 0044')"
   LA_WS=$(az containerapp env show -g "$RG" -n "$ENV_CAE" \
     --query "properties.appLogsConfiguration.logAnalyticsConfiguration.customerId" -o tsv 2>/dev/null || true)
   if [[ -n "$LA_WS" ]]; then
     az monitor log-analytics query -w "$LA_WS" \
       --analytics-query "ContainerAppConsoleLogs_CL | where ContainerGroupName_s contains 'migrate' | order by TimeGenerated desc | take 15 | project TimeGenerated, Log_s" \
       -o table 2>/dev/null || log "  (Log Analytics query failed; check the portal — ingestion can lag ~1–2 min)"
-    echo "  ↑ confirm the 'Running upgrade … -> 0043' chain above before trusting the redeploy."
+    echo "  ↑ confirm the 'Running upgrade … -> 0044' chain above before trusting the redeploy."
   else
     log "  (could not resolve Log Analytics workspace; verify head manually)"
   fi
@@ -152,6 +152,15 @@ REV_SUFFIX="p8$(date +%H%M%S)"
 # explicitly so prod is deterministic even if a prior manual "instant env flip"
 # left an opposing LLM_STATEMENT_MODEL override on the app. The per-transaction
 # extractor / query models stay unpinned on their code defaults, as before.
+#
+# ADVISORY_PERSONA_ENABLED / ADVISORY_OPTION_C_ENABLED (P10, 2026-07-04) are
+# pinned FALSE — the advisory mode ships dark until the operator ⛳ gates close
+# (B1 financial_state enum, B6 pension constants vs the primary Reglamento IVM,
+# Tier-2 crisis copy clinical review, B8 principle sign-off; see the CLAUDE.md
+# P10 section). Pinning means a manual portal flip cannot survive a redeploy
+# while the gates are open. To launch: flip ADVISORY_PERSONA_ENABLED=true HERE
+# (Option C separately via ADVISORY_OPTION_C_ENABLED). LLM_ADVISORY_ITERATION_CAP
+# stays unpinned on its code default (8), like the other caps.
 az containerapp update -g "$RG" -n "$CA_NAME" \
   --image "$API_IMAGE" \
   --revision-suffix "$REV_SUFFIX" \
@@ -182,6 +191,8 @@ az containerapp update -g "$RG" -n "$CA_NAME" \
     NUDGE_SCHEDULER_ENABLED=true \
     NUDGE_SCHEDULER_INTERVAL_S=21600 \
     NUDGE_SCHEDULER_INITIAL_DELAY_S=60 \
+    ADVISORY_PERSONA_ENABLED=false \
+    ADVISORY_OPTION_C_ENABLED=false \
   >/dev/null
 ok "Container App updated → revision suffix '$REV_SUFFIX'."
 
@@ -241,8 +252,11 @@ $(ok "Azure deploy complete.")
   Image tag            : $TAG
 
   Next (manual, per runbook):
-    • Confirm alembic head = 0043 in the A2 Log Analytics output above.
+    • Confirm alembic head = 0044 in the A2 Log Analytics output above.
     • If demo reviewer login is needed, set APPLE_REVIEW_DEMO_CODE / _EMAIL (B7).
     • Smoke /login → device-code exchange end to end.
-    • Update [[Deployment-State]] with tag $TAG + head 0043 (D4).
+    • P10 advisory mode deployed DARK (flags pinned false) — /asesor replies
+      "no disponible" and the native Asesor pill stays hidden until the ⛳
+      gates close and the flags flip in this script.
+    • Update [[Deployment-State]] with tag $TAG + head 0044 (D4).
 EOF
