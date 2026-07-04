@@ -429,3 +429,71 @@ async def test_run_dispatch_advisory_swaps_prompt_toolset_and_cap(
     )
     assert _ADVISORY_PERSONA not in captured.kwargs["system_prompt"]
     assert captured.kwargs["max_iterations"] == settings.llm_query_iteration_cap
+
+
+# ── "/asesor <pregunta>" (TestFlight repro 2026-07-04) ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_asesor_with_args_flag_off_replies_unavailable(
+    _redis, db_with_user, monkeypatch
+):
+    """The repro: '/asesor <texto>' fell through the exact-match set into the
+    LLM path. Flag off it must hit the SAME graceful stub as bare /asesor."""
+    monkeypatch.setattr(settings, "advisory_persona_enabled", False)
+    session, user_id = db_with_user
+    from api.models.user import User
+
+    user = await session.get(User, user_id)
+    reply = await pipeline.process_message(
+        user=user,
+        text="/asesor analizá mis deudas y mi flujo recurrente",
+        db=session, redis=_redis, llm_client=object(), llm_model="x",
+    )
+    assert reply.text == messages_es.ADVISORY_UNAVAILABLE
+    assert not await _redis.exists(advisory_session_key(user_id))
+
+
+@pytest.mark.asyncio
+async def test_asesor_with_args_flag_on_starts_session_and_answers(
+    _redis, db_with_user, monkeypatch
+):
+    """Flag on: '/asesor <pregunta>' starts the session AND the question is
+    answered as the first advisory turn — never dropped, never an error."""
+    from api.services.llm_extractor import ExtractionResult, Intent
+    from app.queries.dispatcher import DispatchOutcome
+
+    session, user_id = db_with_user
+    from api.models.user import User
+
+    user = await session.get(User, user_id)
+    await _redis.delete(f"telegram:pending:{user_id}")
+
+    seen: dict = {}
+
+    async def _fake_extract(*a, **k):
+        # The command prefix must already be stripped before extraction.
+        assert not k.get("text", "").startswith("/asesor")
+        return ExtractionResult(intent=Intent.QUERY, dispatcher="query", confidence=0.9)
+
+    async def _fake_query(**kwargs):
+        seen.update(kwargs)
+        return DispatchOutcome(text="Análisis con tus números reales: …")
+
+    monkeypatch.setattr(pipeline, "extract_finance_intent", _fake_extract)
+    monkeypatch.setattr(pipeline, "run_dispatch", _fake_query)
+
+    reply = await pipeline.process_message(
+        user=user,
+        text="/asesor analizá mis deudas y mi flujo recurrente",
+        db=session, redis=_redis, llm_client=object(), llm_model="x",
+    )
+    try:
+        assert reply.text == "Análisis con tus números reales: …"
+        assert await _redis.exists(advisory_session_key(user_id))
+        # The remainder (not the slash command) reached the dispatcher, in
+        # advisory mode (session just started → resolver True).
+        assert seen["message_text"] == "analizá mis deudas y mi flujo recurrente"
+        assert seen["advisory"] is True
+    finally:
+        await advisory.end_advisory_session(user_id=user_id, redis=_redis)

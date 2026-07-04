@@ -279,27 +279,31 @@ async def on_resumen(message: Message) -> None:
 async def on_advisory_start(message: Message) -> None:
     """P10 B2 — thin Telegram entry to the advisory continuity session.
 
-    Mirrors the pipeline's /asesor short-circuit (the native chat reaches it
-    as text; Telegram's Command router intercepts slash commands before
-    on_text, so this thin handler is required — same pattern as /menu)."""
-    if message.from_user is None:
+    Telegram's Command router intercepts slash commands before on_text (same
+    pattern as /menu), so this delegates to the pipeline's /asesor handling —
+    which owns BOTH shapes: bare "/asesor" (start session / graceful stub)
+    and "/asesor <pregunta>" (start session + answer the question as the
+    first advisory turn — the question must never be dropped)."""
+    if message.from_user is None or not message.text:
         return
     from api.config import settings
-
-    from .advisory import start_advisory_session
 
     async with AsyncSessionLocal() as db:
         user = await user_by_telegram_id(
             telegram_user_id=message.from_user.id, db=db
         )
-    if user is None:
-        await message.answer(messages_es.PAIR_PROMPT)
-        return
-    if not settings.advisory_persona_enabled:
-        await message.answer(messages_es.ADVISORY_UNAVAILABLE)
-        return
-    await start_advisory_session(user_id=user.id, redis=get_redis())
-    await message.answer(messages_es.ADVISORY_STARTED)
+        if user is None:
+            await message.answer(messages_es.PAIR_PROMPT)
+            return
+        reply = await process_message(
+            user=user,
+            text=message.text,
+            db=db,
+            redis=get_redis(),
+            llm_client=get_llm_client(),
+            llm_model=settings.llm_extraction_model,
+        )
+    await _send(message, reply)
 
 
 @router.message(Command("normal", "salir_asesor"))

@@ -171,7 +171,10 @@ _COMMAND_UNDO = {"/undo", "/deshacer"}
 _COMMAND_CANCEL = {"/cancel", "/cancelar"}
 _COMMAND_MENU = {"/menu", "/menú"}
 # P10 B2: advisory continuity session entry/exit (deterministic, zero LLM).
+# Entry also supports "/asesor <pregunta>" — matched longest-alias-first so a
+# shorter alias can never shadow a longer sibling's prefix.
 _COMMAND_ADVISORY = {"/asesor", "/asesoria", "/asesoría"}
+_COMMAND_ADVISORY_BY_LENGTH = tuple(sorted(_COMMAND_ADVISORY, key=len, reverse=True))
 _COMMAND_ADVISORY_END = {"/normal", "/salir_asesor"}
 
 
@@ -408,14 +411,31 @@ async def _process_message_inner(
         await clear_account_creation(user_id=user.id, redis=redis)
         await end_advisory_session(user_id=user.id, redis=redis)
         return BotReply(text=messages_es.CANCELLED)
-    if lowered in _COMMAND_ADVISORY:
+    advisory_cmd = next(
+        (
+            c
+            for c in _COMMAND_ADVISORY_BY_LENGTH
+            if lowered == c or lowered.startswith(c + " ")
+        ),
+        None,
+    )
+    if advisory_cmd is not None:
         # P10 B2: explicit entry into the advisory continuity session.
+        # "/asesor <pregunta>" must behave like the bare command (TestFlight
+        # repro 2026-07-04: the args variant fell through the exact-match set
+        # into the LLM path): flag-off → the same graceful stub; flag-on →
+        # start the session AND fall through so the question is answered as
+        # the first advisory turn.
         from api.config import settings as _settings
 
         if not _settings.advisory_persona_enabled:
             return BotReply(text=messages_es.ADVISORY_UNAVAILABLE)
         await start_advisory_session(user_id=user.id, redis=redis)
-        return BotReply(text=messages_es.ADVISORY_STARTED)
+        remainder = text.strip()[len(advisory_cmd):].strip()
+        if not remainder:
+            return BotReply(text=messages_es.ADVISORY_STARTED)
+        text = remainder
+        lowered = remainder.lower()
     if lowered in _COMMAND_ADVISORY_END:
         was_active = await is_advisory_session_active(user_id=user.id, redis=redis)
         await end_advisory_session(user_id=user.id, redis=redis)

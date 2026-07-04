@@ -1,4 +1,4 @@
-import { api, LLM_UPLOAD_TIMEOUT_MS } from "./client";
+import { api, CHAT_TIMEOUT_MS, LLM_UPLOAD_TIMEOUT_MS } from "./client";
 
 export interface ChatButton {
   label: string;
@@ -125,7 +125,13 @@ export interface ChatMessageResponse {
 }
 
 export async function postChatMessage(text: string): Promise<ChatMessageResponse> {
-  const { data } = await api.post<ChatMessageResponse>("/chat/message", { text });
+  // CHAT_TIMEOUT_MS: an analytical/advisory turn can legitimately take the
+  // server 20-90s — the 15s client default abandoned answers mid-flight.
+  const { data } = await api.post<ChatMessageResponse>(
+    "/chat/message",
+    { text },
+    { timeout: CHAT_TIMEOUT_MS },
+  );
   return data;
 }
 

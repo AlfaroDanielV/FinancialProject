@@ -46,4 +46,12 @@ function buildClient(): AxiosInstance {
 // Comfortably exceeds the server's 120s statement timeout + a 2-pass retry.
 export const LLM_UPLOAD_TIMEOUT_MS = 300_000;
 
+// Chat text turns that reach the query dispatcher (Sonnet, up to 4 tool
+// iterations — 8 on an advisory turn) legitimately run 20-90s server-side.
+// The 15s client default abandoned them mid-answer and surfaced as a false
+// "No pude conectar con el servidor" while the server finished fine
+// (TestFlight repro 2026-07-04). A truly unreachable server still fails fast
+// at connect; this only extends how long we wait for a slow ANSWER.
+export const CHAT_TIMEOUT_MS = 120_000;
+
 export const api = buildClient();

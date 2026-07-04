@@ -1,3 +1,4 @@
+import { isAxiosError } from "axios";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -353,15 +354,20 @@ export function ChatScreen() {
 
   // P10 B0.5 (R5): this banner fires ONLY on a non-2xx / network failure —
   // every server-handled failure now comes back as HTTP 200 with its own
-  // Spanish copy + error_class. Name the network so the classes stay distinct.
-  const onError = () => {
+  // Spanish copy + error_class. Two distinct client-side classes: a TIMEOUT
+  // (the server is still working on a long analytical answer — 2026-07-04
+  // TestFlight repro) vs a genuinely unreachable server.
+  const onError = (err: unknown) => {
+    const isTimeout = isAxiosError(err) && err.code === "ECONNABORTED";
     setMessages((prev) => [
       ...prev,
       {
         id: nextId(),
         role: "bot",
-        text: "No pude conectar con el servidor. Revisá tu conexión e intentá de nuevo.",
-        errorClass: "network",
+        text: isTimeout
+          ? "Me estoy tardando más de la cuenta con esa consulta. Esperá un momento y probá de nuevo."
+          : "No pude conectar con el servidor. Revisá tu conexión e intentá de nuevo.",
+        errorClass: isTimeout ? "timeout" : "network",
       },
     ]);
   };
