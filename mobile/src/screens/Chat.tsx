@@ -1,5 +1,5 @@
 import { isAxiosError } from "axios";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -36,6 +36,7 @@ import {
   type DuplicateWarningPrefill,
   type ReclassifyPrefill,
 } from "../api/chat";
+import { ChatStreamError, streamChatMessage } from "../api/chatStream";
 import { fetchOnboardingStatus } from "../api/onboarding";
 import { actOnNudge, dismissNudge } from "../api/nudges";
 import { deleteTransaction, updateTransaction } from "../api/transactions";
@@ -68,6 +69,12 @@ type Message = {
   reclassify?: { txId: string; toIncome: boolean; magnitude: number };
   // /menu reply: keep these chips repeatable (don't disable after one tap).
   menu?: boolean;
+  // P10.S: a live streaming draft bubble whose text grows token-by-token.
+  // Cleared on the canonical final replace.
+  streaming?: boolean;
+  // P10.S: a neutral "Analizando tus datos…" status shown while the server
+  // runs read tools (the streamed preamble draft is discarded when it arrives).
+  statusLabel?: string;
   // P10 B0.5 (R5): failure class of a handled-error reply — "understanding" |
   // "budget" | "transient" | "system" (server) or "network" (client-side
   // non-2xx). Undefined on a normal answer. Drives distinct styling.
@@ -92,6 +99,12 @@ export function ChatScreen() {
     null,
   );
   const listRef = useRef<FlatList<Message>>(null);
+  // P10.S: a streaming turn is in flight (folded into isPending so the input,
+  // camera, and re-entry are gated exactly like the axios mutations).
+  const [streaming, setStreaming] = useState(false);
+  // Accumulated stream deltas + a throttle timer so we flush at most ~1/60ms.
+  const streamTextRef = useRef("");
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // P10 B2: "Modo asesor" header control — reflects the server-side session
   // state on load; hidden entirely while the feature flag is off.
@@ -125,7 +138,12 @@ export function ChatScreen() {
     staleTime: 60 * 1000,
   });
 
-  const onBotReply = (data: Awaited<ReturnType<typeof postChatMessage>>) => {
+  // P10.S: build a bot Message from a ChatMessageResponse. Shared by the
+  // append path (axios / fallback) and the streaming canonical-replace path.
+  const buildBotMessage = (
+    data: Awaited<ReturnType<typeof postChatMessage>>,
+    id: string,
+  ): Message => {
     const screen = data.open_screen?.screen;
     const assignTxId =
       screen === "assign_envelope"
@@ -153,21 +171,36 @@ export function ChatScreen() {
         magnitude: Math.abs(Number(p.amount)),
       };
     }
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: nextId(),
-        role: "bot",
-        text: stripHtml(data.reply_text),
-        buttons: data.buttons.length > 0 ? data.buttons : undefined,
-        urlButtons: data.url_buttons.length > 0 ? data.url_buttons : undefined,
-        assignTxId,
-        duplicate,
-        reclassify,
-        menu: screen === "menu",
-        errorClass: data.error_class ?? undefined,
-      },
-    ]);
+    return {
+      id,
+      role: "bot",
+      text: stripHtml(data.reply_text),
+      buttons: data.buttons.length > 0 ? data.buttons : undefined,
+      urlButtons: data.url_buttons.length > 0 ? data.url_buttons : undefined,
+      assignTxId,
+      duplicate,
+      reclassify,
+      menu: screen === "menu",
+      errorClass: data.error_class ?? undefined,
+    };
+  };
+
+  // P10.S: apply a final reply. `replaceId` (the streaming draft) replaces that
+  // bubble in place with the canonical message — the final frame is
+  // authoritative (absorbs suggestion appends / newline joins, carries the
+  // buttons + open_screen + error_class). Absent → append (axios / fallback).
+  const applyBotReply = (
+    data: Awaited<ReturnType<typeof postChatMessage>>,
+    replaceId?: string,
+  ) => {
+    const id = replaceId ?? nextId();
+    const msg = buildBotMessage(data, id);
+    setMessages((prev) =>
+      replaceId && prev.some((m) => m.id === replaceId)
+        ? prev.map((m) => (m.id === replaceId ? msg : m))
+        : [...prev, msg],
+    );
+    const screen = data.open_screen?.screen;
     // Phase 6f debt slice: the chat hands off to a native form instead of
     // committing. Show the reply bubble (above), then open the pre-filled form.
     if (screen === "debt_create") {
@@ -218,6 +251,10 @@ export function ChatScreen() {
       ).navigate(d.tab, d.screen ? { screen: d.screen } : undefined);
     }
   };
+
+  // Append path for the axios mutations (image, and the streaming fallback).
+  const onBotReply = (data: Awaited<ReturnType<typeof postChatMessage>>) =>
+    applyBotReply(data);
 
   const assignMutation = useMutation({
     mutationFn: ({ txId, envelopeId }: { txId: string; envelopeId: string | null }) =>
@@ -402,7 +439,7 @@ export function ChatScreen() {
     },
   });
 
-  const isPending = mutation.isPending || imageMutation.isPending;
+  const isPending = mutation.isPending || imageMutation.isPending || streaming;
 
   const newConversation = () => {
     if (messages.length === 0 || resetMutation.isPending) return;
@@ -420,15 +457,100 @@ export function ChatScreen() {
     );
   };
 
-  const send = (text: string, sourceMessageId?: string) => {
+  // P10.S: stream a text turn (SSE). Appends a growing bot draft bubble; on the
+  // terminal `final` frame the draft is replaced with the canonical reply.
+  // Falls back to the blocking endpoint ONLY when the stream route is
+  // capability-missing (404/405/501) — never after a 2xx (a write may have run).
+  const streamSend = async (text: string, sourceMessageId?: string) => {
     const trimmed = text.trim();
     if (!trimmed || isPending) return;
     if (sourceMessageId) {
       setUsedChips((prev) => new Set(prev).add(sourceMessageId));
     }
-    setMessages((prev) => [...prev, { id: nextId(), role: "user", text: trimmed }]);
+    // Compute both ids OUTSIDE the updater — nextId() is a side effect and the
+    // updater can double-invoke (dev StrictMode).
+    const userId = nextId();
+    const draftId = nextId();
+    setMessages((prev) => [
+      ...prev,
+      { id: userId, role: "user", text: trimmed },
+      { id: draftId, role: "bot", text: "", streaming: true },
+    ]);
     setInput("");
-    mutation.mutate(trimmed);
+    setStreaming(true);
+    streamTextRef.current = "";
+
+    const clearFlush = () => {
+      if (flushTimerRef.current) {
+        clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+    };
+    const flush = () => {
+      flushTimerRef.current = null;
+      const t = streamTextRef.current;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === draftId ? { ...m, text: t, statusLabel: undefined } : m,
+        ),
+      );
+    };
+
+    try {
+      const final = await streamChatMessage(trimmed, {
+        onDelta: (chunk) => {
+          streamTextRef.current += chunk;
+          if (flushTimerRef.current == null) {
+            flushTimerRef.current = setTimeout(flush, 60);
+          }
+        },
+        onStatus: (label) => {
+          // A tool turn: the streamed text so far was preamble — discard it and
+          // show the neutral status while the server works.
+          clearFlush();
+          streamTextRef.current = "";
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === draftId ? { ...m, text: "", statusLabel: label } : m,
+            ),
+          );
+        },
+      });
+      clearFlush();
+      applyBotReply(final, draftId);
+    } catch (e) {
+      clearFlush();
+      if (e instanceof ChatStreamError && e.capabilityMissing) {
+        // Old server build / flag off: the stream route ran nothing. Drop the
+        // draft and fall back to the blocking endpoint.
+        setMessages((prev) => prev.filter((m) => m.id !== draftId));
+        mutation.mutate(trimmed);
+      } else {
+        // A post-response failure — NEVER auto-resend (the turn may have
+        // committed). Keep any partial text; surface a soft error.
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === draftId
+              ? {
+                  ...m,
+                  streaming: false,
+                  statusLabel: undefined,
+                  text: m.text
+                    ? m.text + "\n\n(Se cortó la respuesta.)"
+                    : "No pude conectar con el servidor. Revisá tu conexión e intentá de nuevo.",
+                  errorClass: "network",
+                }
+              : m,
+          ),
+        );
+      }
+    } finally {
+      setStreaming(false);
+    }
+  };
+
+  const send = (text: string, sourceMessageId?: string) => {
+    void streamSend(text, sourceMessageId);
   };
 
   // Phase 7h: a prefilled question handed in from another screen (e.g.
@@ -559,7 +681,9 @@ export function ChatScreen() {
           )}
           contentContainerStyle={styles.listContent}
           onContentSizeChange={() =>
-            listRef.current?.scrollToEnd({ animated: true })
+            // Non-animated while streaming: an animated scroll on every ~60ms
+            // delta flush janks and fights a user scrolling up to re-read.
+            listRef.current?.scrollToEnd({ animated: !streaming })
           }
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
@@ -660,7 +784,7 @@ interface MessageBubbleProps {
   onTapReclassify?: () => void;
 }
 
-function MessageBubble({
+const MessageBubble = memo(function MessageBubble({
   message,
   chipsUsed,
   onTapButton,
@@ -685,9 +809,17 @@ function MessageBubble({
             isUser ? styles.bubbleUser : styles.bubbleBot,
           ]}
         >
-          <Text style={[styles.bubbleText, isUser && styles.bubbleTextUser]}>
-            {message.text}
-          </Text>
+          {message.statusLabel && !message.text ? (
+            <Text style={[styles.bubbleText, styles.bubbleTextStatus]}>
+              {message.statusLabel}
+            </Text>
+          ) : message.streaming && !message.text ? (
+            <ActivityIndicator size="small" color={Colors.textMuted} />
+          ) : (
+            <Text style={[styles.bubbleText, isUser && styles.bubbleTextUser]}>
+              {message.text}
+            </Text>
+          )}
         </View>
       )}
 
@@ -805,7 +937,7 @@ function MessageBubble({
       )}
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   safe: {
@@ -930,6 +1062,10 @@ const styles = StyleSheet.create({
   },
   bubbleTextUser: {
     color: Colors.textOnDark,
+  },
+  bubbleTextStatus: {
+    color: Colors.textMuted,
+    fontStyle: "italic",
   },
   thumbnail: {
     width: 180,

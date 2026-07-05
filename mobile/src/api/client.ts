@@ -18,10 +18,19 @@ function attachAuthHeader(config: InternalAxiosRequestConfig): InternalAxiosRequ
   return config;
 }
 
+/**
+ * Clear the session + fire the unauthorized handler. Shared so the SSE
+ * streaming client (which bypasses the axios interceptor via expo/fetch) can
+ * reuse the exact same 401 behavior on a stream response.
+ */
+export async function notifyUnauthorized(): Promise<void> {
+  await clearSession();
+  unauthorizedHandler?.();
+}
+
 async function handleResponseError(error: AxiosError): Promise<never> {
   if (error.response?.status === 401) {
-    await clearSession();
-    unauthorizedHandler?.();
+    await notifyUnauthorized();
   }
   return Promise.reject(error);
 }
@@ -52,6 +61,9 @@ export const LLM_UPLOAD_TIMEOUT_MS = 300_000;
 // "No pude conectar con el servidor" while the server finished fine
 // (TestFlight repro 2026-07-04). A truly unreachable server still fails fast
 // at connect; this only extends how long we wait for a slow ANSWER.
-export const CHAT_TIMEOUT_MS = 120_000;
+// P10.S: this is now the FALLBACK (non-stream) timeout — the streaming path
+// (chatStream.ts) uses a stall timer + a ~210s cap instead. Raised above the
+// server's 170s whole-turn deadline so a slow fallback answer isn't cut.
+export const CHAT_TIMEOUT_MS = 180_000;
 
 export const api = buildClient();

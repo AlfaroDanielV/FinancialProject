@@ -34,7 +34,8 @@ uv run pytest -p no:cacheprovider -q \
   tests/test_phase_10_b8_principle_library.py \
   tests/test_phase_10_b9_narration_scorers.py \
   tests/test_phase_10_b10_guardrails.py \
-  tests/test_phase_10_b11_option_c.py
+  tests/test_phase_10_b11_option_c.py \
+  tests/test_phase_10_s_streaming.py
 
 echo "== Phase 10 regression slice (pipeline nets + cache invariants + cashflow byte-lock) =="
 uv run pytest -p no:cacheprovider -q \

@@ -18,6 +18,13 @@
 #     every tester's app silently calls localhost → dead beta (the #1 trap).
 #   • Native changes (new dep, config plugin, Swift/AppIntent, Info.plist) need
 #     a full build+submit — autoIncrement bumps the iOS build number.
+#   • TS-only changes do NOT need this script — ship them with `eas update`
+#     (OTA) on the existing build's channel. P10.S chat streaming
+#     (mobile/src/api/chatStream.ts + Chat.tsx) is such a change: it uses
+#     `expo/fetch` + `TextDecoder`, both already compiled into any SDK-54 build
+#     (expo core), so no new native binary is required. It is also gated by the
+#     backend CHAT_STREAMING_ENABLED flag, so an OTA'd client is a safe no-op
+#     (falls back to /chat/message) until that flag flips.
 #   • The backend at that API URL must already be deployed+migrated FIRST,
 #     otherwise new endpoints (e.g. /transactions/apple-pay) 4xx silently.
 #

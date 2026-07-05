@@ -554,6 +554,11 @@ CHAT_UNEXPECTED_ERROR = (
 CANCELLED = "Cancelado."
 CONTEXT_CLEARED = "Listo, contexto limpio."
 
+# P10.S — neutral status shown in the native chat while the query LLM is
+# calling read tools (a streamed 'status' SSE event). Never the raw tool
+# names; the client shows this while discarding any pre-tool preamble draft.
+STREAM_STATUS_TOOLS = "Analizando tus datos…"
+
 
 # ── P10 B10: distress hand-off (D7/O3 — dos niveles) ─────────────────────────
 # Tier 2 — genuine crisis. Draft copy per plan §6; ⛳ pending clinical review

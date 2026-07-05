@@ -111,7 +111,9 @@ async def test_query_dispatcher_goes_to_stub_not_telegram_dispatcher(monkeypatch
     async def _dispatch(**kwargs):  # pragma: no cover - should never run
         raise AssertionError("telegram dispatcher should not receive query traffic")
 
-    async def _query_handle(user_id, message_text, telegram_chat_id, advisory=False):
+    async def _query_handle(
+        user_id, message_text, telegram_chat_id, advisory=False, on_event=None
+    ):
         return DispatchOutcome(text=f"query stub: {message_text}")
 
     monkeypatch.setattr(pipeline, "dispatch", _dispatch)
@@ -197,7 +199,9 @@ async def test_low_confidence_query_bypasses_clarification(monkeypatch):
     async def _save_clarification(**kwargs):  # pragma: no cover - should never run
         raise AssertionError("query traffic should not create clarification state")
 
-    async def _query_handle(user_id, message_text, telegram_chat_id, advisory=False):
+    async def _query_handle(
+        user_id, message_text, telegram_chat_id, advisory=False, on_event=None
+    ):
         query_calls.append(
             {
                 "user_id": user_id,
@@ -268,7 +272,9 @@ async def test_pending_clarification_query_reply_abandons_state(
     async def _dispatch(**kwargs):  # pragma: no cover - should never run
         raise AssertionError("telegram dispatcher should not receive query traffic")
 
-    async def _query_handle(user_id, message_text, telegram_chat_id, advisory=False):
+    async def _query_handle(
+        user_id, message_text, telegram_chat_id, advisory=False, on_event=None
+    ):
         query_calls.append(
             {
                 "user_id": user_id,

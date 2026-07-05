@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.queries.dispatcher import run_dispatch
 from app.queries.history import append_turn as _append_query_history
+from app.queries.stream_events import OnEvent
 from api.models.user import User
 from api.models.lazy_detection_event import LazyDetectionEvent
 from api.services.clock import user_today
@@ -305,8 +306,16 @@ async def process_message(
     image_bytes: Optional[bytes] = None,
     image_media_type: Optional[str] = None,
     vision_model: Optional[str] = None,
+    on_event: OnEvent | None = None,
 ) -> BotReply:
     """One round-trip: text in (or image in), BotReply out.
+
+    P10.S — `on_event` (async callback), when set, streams the QUERY path's
+    LLM text as it generates. It is threaded ONLY into the top-level
+    extraction → query dispatch; every deterministic branch (commands, write,
+    clarification, confirmation, vision) ignores it and returns its single
+    reply as before. `on_event=None` (Telegram, classic `/chat/message`) is
+    byte-identical to the pre-streaming path.
 
     P10 B10 — the deterministic distress net runs PRE-LLM, for both channels:
     a genuine crisis signal short-circuits to the warm línea-1322 hand-off
@@ -328,6 +337,7 @@ async def process_message(
         image_bytes=image_bytes,
         image_media_type=image_media_type,
         vision_model=vision_model,
+        on_event=on_event,
     )
 
     if tier == "financial":
@@ -356,6 +366,7 @@ async def _process_message_inner(
     image_bytes: Optional[bytes] = None,
     image_media_type: Optional[str] = None,
     vision_model: Optional[str] = None,
+    on_event: OnEvent | None = None,
 ) -> BotReply:
     """The pre-B10 pipeline body. Side effects (Redis writes, DB commits)
     happen as dispatcher branches fire.
@@ -661,6 +672,7 @@ async def _process_message_inner(
         today=today,
         db=db,
         redis=redis,
+        on_event=on_event,
     )
 
 
@@ -1081,6 +1093,21 @@ async def process_mock_extraction(
     )
 
 
+def _query_error_class(error_category: Optional[str]) -> Optional[str]:
+    """Map a DispatchOutcome.error_category to a BotReply.error_class.
+
+    A successful answer has error_category=None → error_class=None. Handled
+    failures get the B0.5 vocabulary the client renders distinct copy for.
+    """
+    if error_category in ("budget",):
+        return "budget"
+    if error_category in ("iteration_cap", "llm_error", "user_not_found"):
+        return "transient"
+    if error_category in ("unhandled",):
+        return "system"
+    return None
+
+
 async def _route_extraction(
     *,
     user: User,
@@ -1089,6 +1116,7 @@ async def _route_extraction(
     today: date,
     db: AsyncSession,
     redis: Redis,
+    on_event: OnEvent | None = None,
 ) -> BotReply:
     if extraction.dispatcher == "query":
         # Belt-and-suspenders: the query dispatcher already maps known
@@ -1116,11 +1144,16 @@ async def _route_extraction(
                     telegram_chat_id=user.telegram_user_id,
                 )
             else:
+                # P10.S: token streaming flows through run_dispatch (the agentic
+                # loop), incl. advisory-without-Option-C. run_advisory (the
+                # Option C branch above) stays un-streamed — its Gate-D scorer
+                # vets numbers before display, so it never receives on_event.
                 outcome = await run_dispatch(
                     user_id=user.id,
                     message_text=text,
                     telegram_chat_id=user.telegram_user_id,
                     advisory=advisory,
+                    on_event=on_event,
                 )
         except Exception as e:  # noqa: BLE001 - last line of defense
             log.exception(
@@ -1143,7 +1176,15 @@ async def _route_extraction(
                 screen=outcome.open_screen["screen"],
                 prefill=outcome.open_screen.get("prefill", {}),
             )
-        return BotReply(text=outcome.text, open_screen=open_screen)
+        # P10.S: a handled dispatcher error (budget / iteration cap / LLM
+        # failure) already produced Spanish copy but the query BotReply used to
+        # drop the class — so a streamed 'final' looked like a normal answer.
+        # Map it so the client renders the right failure copy (B0.5 contract).
+        return BotReply(
+            text=outcome.text,
+            open_screen=open_screen,
+            error_class=_query_error_class(outcome.error_category),
+        )
 
     # P10 B0.5 (R2): the write/control branch gets the same last-line-of-defense
     # net the query branch has had since 2026-06-15. Before this, a throw from

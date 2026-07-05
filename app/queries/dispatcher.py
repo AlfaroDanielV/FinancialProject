@@ -34,6 +34,7 @@ from .llm_client import (
 )
 from .prompts import build_system_prompt
 from .session import AsyncSessionLocal
+from .stream_events import OnEvent
 from .tools.base import execute_tool, list_tools_for_anthropic
 from .tools import ADVISORY_TOOLSET, BASE_TOOLSET, register_builtin_tools
 
@@ -201,6 +202,7 @@ async def run_dispatch(
     message_text: str,
     telegram_chat_id: int | None = None,
     advisory: bool = False,
+    on_event: OnEvent | None = None,
 ) -> DispatchOutcome:
     """Run one read-only query dispatch and return rich metadata.
 
@@ -287,6 +289,7 @@ async def run_dispatch(
                     else settings.llm_query_iteration_cap
                 ),
                 prior_messages=prior_messages,
+                on_event=on_event,
             )
         except IterationCapExceeded as e:
             await _update_error(

@@ -3056,6 +3056,111 @@ a flag away, per the P8 fork); inflation/compounding in
 
 ---
 
+## Phase 10.S — Token-Streaming Chat (SSE) (2026-07-04)
+
+Native chat now **streams** the query LLM's answer token-by-token instead of
+waiting for the whole blocking reply. **Code-complete on branch
+`feature/chat-streaming-sse`; the code default is `chat_streaming_enabled=false`
+(route 404s → the native client silently falls back to the blocking
+`/chat/message`), but the Azure deploy sets `CHAT_STREAMING_ENABLED=true` so
+streaming is LAUNCHED in prod. Operator on-device sign-off pending.** No
+migration (`0044` head). `committed_outflows`/cashflow byte-lock untouched — this is a transport
+change only; the dispatcher, tools, and write path are unmodified.
+
+- **Semantic events (transport-neutral)** `app/queries/stream_events.py`:
+  frozen `Delta{text}` (a chunk of streamed assistant text) + `ToolBatch
+  {tool_names}` (emitted when the model turns to tool use — the client's signal
+  to DISCARD any streamed pre-tool preamble draft and show a neutral status);
+  `OnEvent = Callable[[StreamEvent], Awaitable[None]]`. Spanish copy + SSE wire
+  framing live in the route, NEVER here — `tool_names` is for server logs + a
+  neutral status label, raw tool names never reach the client.
+- **LLM loop** `app/queries/llm_client.py`: `run_query_loop` gained an optional
+  `on_event`. When set, `_create_message_streaming` uses the SDK
+  `messages.stream()` (anthropic 0.39.0 — a plain `def` returning an async
+  context manager) instead of `messages.create()`, emits a `Delta` per
+  `text_stream` chunk, then `get_final_message()` — **the returned Message shape
+  is identical**, so `_usage`/`_content`/`_text_from_response` consume it
+  unchanged and the caller's returned text stays authoritative. **The request
+  body (model/system/tools/messages) is byte-identical to the create() path** —
+  only the transport `timeout` differs (`_STREAM_SDK_TIMEOUT_S = 90.0`, a
+  per-read stall guard httpx resets each chunk, NOT part of the body → **prompt-
+  cache keys unaffected**). A `ToolBatch` is emitted before each tool turn. Full
+  Anthropic-error mapping mirrors the create() path + raw `httpx` errors that
+  can surface mid-stream. `on_event=None` is byte-identical to the pre-streaming
+  path (one blocking call, no events).
+- **Threading** `bot/pipeline.py`: `process_message`/`_process_message_inner`/
+  `_route_extraction` accept `on_event` and thread it **ONLY** into the top-level
+  extraction → query dispatch (`run_dispatch`). Every deterministic branch
+  (commands, write, clarification, confirmation, vision) ignores it and returns
+  its single reply as before. **Advisory Option C stays un-streamed** — its
+  Gate-D scorer must vet numbers before display, so `run_advisory` never receives
+  `on_event` (only the Option A agentic loop streams). New
+  `_query_error_class` maps a handled `DispatchOutcome.error_category`
+  (budget / iteration_cap / llm_error / unhandled) onto `BotReply.error_class`
+  (the B0.5 vocabulary) so a streamed `final` renders the right failure copy
+  instead of looking like a normal answer.
+- **SSE route** `api/routers/chat.py::post_chat_message_stream` (`POST
+  /chat/message/stream`, bearer auth, flag-gated 404): `text/event-stream`,
+  headers `Cache-Control: no-cache, no-transform` + `X-Accel-Buffering: no` +
+  `Connection: keep-alive`. Frame order: `: connected` → `event: started` →
+  `event: delta`\* (`{text}`) → `event: status` (`{label}` = neutral
+  `messages_es.STREAM_STATUS_TOOLS = "Analizando tus datos…"` during tools) →
+  exactly ONE `event: final` carrying the full `ChatMessageResponse` (buttons /
+  open_screen / error_class). A deterministic write turn emits **no deltas** —
+  just the terminal `final`. **Two hardening blockers:** (1) the pipeline runs in
+  a **runner task with its OWN `AsyncSessionLocal`** (re-fetches the user by id)
+  because the request-scoped `Depends(get_db)` session is torn down before the
+  `StreamingResponse` body iterates; (2) the runner is **NEVER cancelled on
+  client disconnect** — a write turn must commit exactly once, so it runs to
+  completion under its own `_TURN_DEADLINE_S = 170.0` deadline, closes its own
+  session, and de-registers via a done-callback (held in a module `_RUNNERS` set
+  so asyncio doesn't GC it mid-flight). A `_HEARTBEAT_S = 10.0` `: ka` comment
+  keeps the connection non-idle under the ingress timeout during the tool phase.
+  Whole-turn timeout → `_chat_transient_response` (retryable "transient" copy).
+- **Mobile** `mobile/src/api/chatStream.ts` (new) uses **`expo/fetch`** (bundled
+  in Expo core — no new dep, Expo-Go-safe) because axios buffers the whole body
+  in RN; `TextDecoder` for frame parsing; `STALL_MS = 25_000` (no bytes incl.
+  heartbeats) + `HARD_CAP_MS = 210_000` (> the server's 170s). **Write-safety
+  fallback contract:** a SILENT fallback to blocking `/chat/message` fires ONLY
+  on a capability-missing response (HTTP 404/405/501 = old build or flag off);
+  **any other failure (network drop, 5xx, a stream ending without `final`) is
+  NON-retryable** — the turn may already have committed a write, so it surfaces
+  an error rather than re-sending. `mobile/src/screens/Chat.tsx` renders deltas
+  live + the neutral status. `client.ts`: extracted shared `notifyUnauthorized`
+  (the SSE client bypasses the axios interceptor, so it reuses the exact 401
+  behavior); `CHAT_TIMEOUT_MS` 120s→**180s** (now the fallback timeout, above the
+  server's 170s deadline). `mobile/app.json` `buildNumber` 16→17.
+- **Deploy (LAUNCHED):** `scripts/deploy/deploy_azure.sh` sets
+  `CHAT_STREAMING_ENABLED=true` — streaming goes live with the revision (the code
+  default in `api/config.py` stays `false`; this env override is the single ON
+  switch, so an instant kill is flipping it back + a redeploy, no app release).
+  The "Next (manual)" note carries a `curl -N` recipe to VERIFY **unbuffered**
+  delivery through ACA/Envoy ingress (expect incremental `delta` frames, NOT one
+  buffered blob; worst case if ingress buffers, the answer still arrives correct,
+  just not live). `deploy_testflight.sh` documents that this TS-only mobile change
+  ships via **`eas update` (OTA)** OR the full build (`buildNumber` 17) — both
+  deliver the JS; `expo/fetch` + `TextDecoder` are already compiled into any
+  SDK-54 build, and the backend flag makes an old/blocking client a safe no-op.
+  `scripts/test_phase_10.sh` adds `tests/test_phase_10_s_streaming.py`.
+- **Hard rule added:** streaming is a transport variant of the **query** path
+  only — the write dispatcher never streams, and a stream client's ONLY safe
+  auto-fallback trigger is a 404/405/501 capability-missing (never a 5xx or
+  network error), so a disabled flag / old server can never double-execute a
+  write.
+- **Verification:** `tests/test_phase_10_s_streaming.py` (7: streaming branch
+  `on_event=None` byte-identical to `.create` / `Delta` order + `ToolBatch` +
+  identical request body; the SSE route flag-gated 404 + `connected → started →
+  delta* → final` order + lone `final` for a write turn; the
+  `process_message(on_event=...)` default-None contract so Telegram stays
+  un-streamed) via `scripts/test_phase_10.sh`. Mobile `tsc --noEmit` clean. No
+  migration.
+- **Deferred:** streaming the advisory Option-C narrator (blocked by its Gate-D
+  number-vetting); streaming vision/receipt turns; a Telegram
+  edit-message streaming surface (native-only for now); confirming unbuffered
+  delivery through prod ingress before the cohort flip.
+
+---
+
 ## Closed phases — hard rules to preserve
 
 These are extracted from the closed-phase notes in `11_Phases/`. **Do not relax without an explicit decision in `05_Decisions/`.**
@@ -3228,6 +3333,12 @@ LLM_EXTRACTION_MODEL=claude-haiku-4-5
 LLM_QUERY_MODEL=claude-sonnet-4-5
 LLM_STATEMENT_MODEL=claude-haiku-4-5   # statement-PDF reconciliation ONLY (inventory + per-product passes); statements run at max_tokens=8192, timeout 275s (Haiku: faster + more accurate than Opus per the 2026-06-28 repro)
 LLM_DAILY_TOKEN_BUDGET_PER_USER=100000
+
+# Chat streaming (Phase 10.S) — token-streaming SSE chat endpoint.
+# false → POST /chat/message/stream 404s and the native app falls back to the
+# blocking /chat/message. Flip true per-cohort for a staged rollout; a
+# server-side kill needs no app release. Ships DARK in deploy_azure.sh.
+CHAT_STREAMING_ENABLED=false
 
 # Gmail (Phase 6b) — see Phase-6b-Gmail-Ingestion.md
 GMAIL_CLIENT_ID=...

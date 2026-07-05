@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+import httpx
 from anthropic import AsyncAnthropic
 from anthropic import APIError as AnthropicAPIError
 from anthropic import APITimeoutError as AnthropicTimeoutError
@@ -20,6 +21,15 @@ from anthropic import (
 )
 
 from api.config import settings
+from app.queries.stream_events import Delta, OnEvent, ToolBatch
+
+
+# P10.S: the SDK read timeout for the STREAMING branch only. httpx resets it
+# per read, so it's a between-chunks stall guard, not a wall clock — generous
+# enough that a legitimately long narration turn isn't cut mid-stream (the
+# non-stream path keeps its tight 20s per-call timeout unchanged). The endpoint
+# wraps the whole turn in its own asyncio.timeout as the hard ceiling.
+_STREAM_SDK_TIMEOUT_S = 90.0
 
 
 # Error categories used by app/queries/delivery.handle_query_error to
@@ -104,6 +114,7 @@ class AnthropicQueryClient:
         max_iterations: int | None = None,
         timeout_s: float = 20.0,
         prior_messages: list[dict[str, Any]] | None = None,
+        on_event: OnEvent | None = None,
     ) -> QueryLLMResponse:
         """Run one tool-use loop.
 
@@ -111,6 +122,14 @@ class AnthropicQueryClient:
         Each entry must already be in the Anthropic-API shape
         (`{"role": "user"|"assistant", "content": str}`); see
         `app.queries.history.to_anthropic_messages` for the converter.
+
+        P10.S: `on_event` (async callback) turns on token streaming. When set,
+        the model's assistant text is emitted as `Delta` chunks as it
+        generates, and a `ToolBatch` is emitted whenever the model turns to
+        tool use (so a client can discard any streamed pre-tool preamble). The
+        terminal (no-tool) turn's `Delta`s are the answer draft; the caller's
+        returned text stays authoritative. `on_event=None` is byte-identical to
+        the pre-streaming path (one blocking `messages.create`, no events).
         """
         model = model or settings.llm_query_model
         max_iterations = max_iterations or settings.llm_query_iteration_cap
@@ -131,6 +150,7 @@ class AnthropicQueryClient:
                 messages=messages,
                 tools=tools,
                 timeout_s=timeout_s,
+                on_event=on_event,
             )
             usage = _usage(resp)
             total_input += usage["input_tokens"]
@@ -162,6 +182,14 @@ class AnthropicQueryClient:
                     cache_creation_input_tokens=total_cache_creation,
                 )
 
+            # P10.S: signal the tool turn so a streaming client discards any
+            # pre-tool preamble draft it just rendered. Best-effort — the
+            # answer must never depend on the event landing.
+            if on_event is not None:
+                await on_event(
+                    ToolBatch(tool_names=[_block_name(b) for b in tool_blocks])
+                )
+
             messages.append({"role": "assistant", "content": _content(resp)})
             result_blocks: list[dict[str, Any]] = []
             for block in tool_blocks:
@@ -183,6 +211,7 @@ class AnthropicQueryClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         timeout_s: float,
+        on_event: OnEvent | None = None,
     ) -> Any:
         kwargs: dict[str, Any] = {
             "model": model,
@@ -205,6 +234,12 @@ class AnthropicQueryClient:
             tool_blocks[-1]["cache_control"] = {"type": "ephemeral"}
             kwargs["tools"] = tool_blocks
             kwargs["tool_choice"] = {"type": "auto"}
+        if on_event is not None:
+            # P10.S streaming branch. The request body (model/system/tools/
+            # messages) is IDENTICAL to the create() path — only the transport
+            # `timeout` differs (a per-read stall guard, not part of the request
+            # body, so prompt-cache keys are unaffected).
+            return await self._create_message_streaming(kwargs, on_event)
         try:
             return await self._client.messages.create(**kwargs)
         except AnthropicTimeoutError as e:
@@ -242,6 +277,64 @@ class AnthropicQueryClient:
                 category = ERR_UNKNOWN
             raise QueryLLMClientError(
                 f"query_api_error: {e}", category=category
+            ) from e
+
+    async def _create_message_streaming(
+        self, kwargs: dict[str, Any], on_event: OnEvent
+    ) -> Any:
+        """Stream one model turn, emitting `Delta`s, and return the final
+        Message (same shape `messages.create` returns, so run_query_loop's
+        `_usage`/`_content`/`_text_from_response` consume it unchanged).
+
+        In anthropic 0.39.0 `messages.stream()` is a plain `def` returning an
+        async context manager — `async with` it (no `await` on the call). The
+        error mapping mirrors the create() path exactly, plus raw httpx errors
+        that can surface mid-stream (the SDK wraps them on create(), but a
+        streaming read can raise them directly).
+        """
+        stream_kwargs = dict(kwargs)
+        # A generous per-read stall timeout so a long narration isn't cut; the
+        # non-stream 20s stays on the blocking path.
+        stream_kwargs["timeout"] = _STREAM_SDK_TIMEOUT_S
+        try:
+            async with self._client.messages.stream(**stream_kwargs) as stream:
+                async for text in stream.text_stream:
+                    await on_event(Delta(text=text))
+                return await stream.get_final_message()
+        except (AnthropicTimeoutError, httpx.TimeoutException) as e:
+            raise QueryLLMClientError(
+                f"query_stream_timeout: {e}", category=ERR_TIMEOUT
+            ) from e
+        except AnthropicRateLimitError as e:
+            raise QueryLLMClientError(
+                f"query_stream_rate_limit: {e}", category=ERR_RATE_LIMIT
+            ) from e
+        except (AnthropicAuthError, AnthropicPermissionError) as e:
+            raise QueryLLMClientError(
+                f"query_stream_auth_error: {e}", category=ERR_AUTH_ERROR
+            ) from e
+        except AnthropicInternalError as e:
+            raise QueryLLMClientError(
+                f"query_stream_server_error: {e}", category=ERR_SERVER_ERROR
+            ) from e
+        except (AnthropicBadRequestError, AnthropicNotFoundError) as e:
+            raise QueryLLMClientError(
+                f"query_stream_client_error: {e}", category=ERR_CLIENT_ERROR
+            ) from e
+        except AnthropicAPIError as e:
+            status = getattr(e, "status_code", None)
+            if isinstance(status, int) and 500 <= status < 600:
+                category = ERR_SERVER_ERROR
+            elif isinstance(status, int) and 400 <= status < 500:
+                category = ERR_CLIENT_ERROR
+            else:
+                category = ERR_UNKNOWN
+            raise QueryLLMClientError(
+                f"query_stream_api_error: {e}", category=category
+            ) from e
+        except httpx.HTTPError as e:
+            raise QueryLLMClientError(
+                f"query_stream_http_error: {e}", category=ERR_UNKNOWN
             ) from e
 
     async def _run_tool_block(

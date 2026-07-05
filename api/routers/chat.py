@@ -15,9 +15,14 @@ native chat surface share one source of truth for conversation state.
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import time
+from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
@@ -35,6 +40,8 @@ from ..schemas.chat import (
 )
 
 from app.queries.history import clear_history
+from app.queries.session import AsyncSessionLocal
+from app.queries.stream_events import Delta, StreamEvent, ToolBatch
 from bot.account_creation import clear_account_creation
 from bot.advisory import (
     end_advisory_session,
@@ -53,6 +60,16 @@ log = logging.getLogger("api.routers.chat")
 
 _ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 _MAX_IMAGE_BYTES = 4 * 1024 * 1024  # 4 MB pre-base64
+
+# P10.S streaming (SSE) tunables.
+_HEARTBEAT_S = 10.0  # ': ka' comment cadence while the queue is idle (keeps the
+#                      ingress connection non-idle during the tool phase)
+_TURN_DEADLINE_S = 170.0  # whole-turn hard ceiling inside the runner (< the
+#                           client's ~210s abort cap; > the per-call 90s stream)
+# Strong refs to in-flight runner tasks. A runner is NEVER cancelled on client
+# disconnect (a write turn must finish exactly once), so it can outlive the
+# response generator — hold a ref here so asyncio doesn't GC it mid-flight.
+_RUNNERS: set[asyncio.Task] = set()
 
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
 
@@ -119,6 +136,175 @@ async def post_chat_message(
     except Exception:
         log.exception("chat_message_unhandled user_id=%s", user.id)
         return _chat_error_response()
+
+
+def _chat_transient_response() -> ChatMessageResponse:
+    """Terminal frame for the streaming whole-turn deadline — retryable, so the
+    client shows 'transient' copy (not the generic 'system' banner)."""
+    return ChatMessageResponse(
+        reply_text=messages_es.CHAT_UNEXPECTED_ERROR, error_class="transient"
+    )
+
+
+def _sse(event: str, data: str) -> str:
+    """One SSE frame: an `event:`/`data:` pair terminated by a blank line."""
+    return f"event: {event}\ndata: {data}\n\n"
+
+
+@router.post("/message/stream")
+async def post_chat_message_stream(
+    payload: ChatMessageRequest,
+    user: User = Depends(current_user),
+) -> StreamingResponse:
+    """P10.S — token-streaming variant of POST /chat/message (SSE).
+
+    Streams the QUERY path's LLM text as `event: delta` frames, a neutral
+    `event: status` while tools run, and exactly ONE terminal `event: final`
+    carrying the full ChatMessageResponse (buttons / open_screen / error_class).
+    Deterministic turns (writes, confirmations, commands) emit no deltas — just
+    the terminal `final`. Telegram + the classic /chat/message are untouched.
+
+    Contract (hardened): the pipeline runs in a runner task that owns its OWN DB
+    session (the request-scoped Depends(get_db) session is torn down before this
+    body iterates) and is NEVER cancelled on client disconnect (a write turn
+    must commit exactly once). Behind `chat_streaming_enabled` — 404 when off so
+    the client falls back to the blocking endpoint.
+    """
+    if not settings.chat_streaming_enabled:
+        # Kill switch / staged rollout. A 404 (capability missing) is the ONLY
+        # signal the client silently falls back on — distinct from a 5xx or a
+        # network error, so a disabled flag never risks a double-executed write.
+        raise HTTPException(status_code=404, detail="chat streaming disabled")
+
+    user_id = user.id  # captured now; the runner re-fetches in its own session
+    text = payload.text
+    redis = get_redis()
+    queue: asyncio.Queue = asyncio.Queue()  # unbounded → put_nowait never raises
+    final_future: asyncio.Future = asyncio.get_running_loop().create_future()
+    sentinel = object()
+
+    async def on_event(ev: StreamEvent) -> None:
+        # Best-effort: an emit must NEVER raise back into the LLM loop.
+        try:
+            queue.put_nowait(ev)
+        except Exception:  # pragma: no cover - unbounded queue can't fill
+            log.exception("chat_stream_emit_failed user_id=%s", user_id)
+
+    async def runner() -> None:
+        final: ChatMessageResponse | None = None
+        try:
+            # Own session (blocker #1): Depends(get_db) is closed before the
+            # StreamingResponse body iterates. Re-fetch the user so it's bound
+            # to THIS session, mirroring the non-stream endpoint's contract.
+            async with AsyncSessionLocal() as db:
+                user_row = await db.get(User, user_id)
+                if user_row is None:
+                    final = _chat_error_response()
+                else:
+                    async with asyncio.timeout(_TURN_DEADLINE_S):
+                        reply = await process_message(
+                            user=user_row,
+                            text=text,
+                            db=db,
+                            redis=redis,
+                            llm_client=get_llm_client(),
+                            llm_model=settings.llm_extraction_model,
+                            on_event=on_event,
+                        )
+                    final = _build_response(reply)
+        except (asyncio.TimeoutError, TimeoutError):
+            log.warning("chat_stream_turn_timeout user_id=%s", user_id)
+            final = _chat_transient_response()
+        except Exception:
+            log.exception("chat_stream_unhandled user_id=%s", user_id)
+            final = _chat_error_response()
+        finally:
+            if not final_future.done():
+                final_future.set_result(final or _chat_error_response())
+            # Wake the generator immediately (don't wait a heartbeat tick).
+            queue.put_nowait(sentinel)
+
+    def _runner_done(task: asyncio.Task) -> None:
+        _RUNNERS.discard(task)
+        # Retrieve any exception so asyncio doesn't log 'never retrieved'. The
+        # runner catches Exception internally, so this is defensive only.
+        if not task.cancelled():
+            exc = task.exception()
+            if exc is not None:  # pragma: no cover
+                log.error("chat_stream_runner_crashed user_id=%s: %r", user_id, exc)
+
+    async def event_stream() -> AsyncIterator[str]:
+        started = time.perf_counter()
+        deltas = 0
+        first_token = False
+        # Fast first byte + a 'started' marker. Any bytes reaching the client
+        # mean the server received the request and the turn is running — the
+        # client must NOT auto-retry (would double-execute a write).
+        yield ": connected\n\n"
+        yield _sse("started", "{}")
+        log.info("chat_stream_start user_id=%s", user_id)
+        task = asyncio.create_task(runner())
+        _RUNNERS.add(task)
+        task.add_done_callback(_runner_done)
+        try:
+            while True:
+                try:
+                    ev = await asyncio.wait_for(queue.get(), timeout=_HEARTBEAT_S)
+                except asyncio.TimeoutError:
+                    yield ": ka\n\n"  # heartbeat comment; resets the client stall timer
+                    continue
+                if ev is sentinel:
+                    break
+                if isinstance(ev, Delta):
+                    if not first_token:
+                        first_token = True
+                        log.info(
+                            "chat_stream_first_token user_id=%s ttfb_ms=%d",
+                            user_id,
+                            int((time.perf_counter() - started) * 1000),
+                        )
+                    deltas += 1
+                    yield _sse("delta", json.dumps({"text": ev.text}))
+                elif isinstance(ev, ToolBatch):
+                    log.info(
+                        "chat_stream_tool_phase user_id=%s tools=%s",
+                        user_id,
+                        ",".join(ev.tool_names),
+                    )
+                    yield _sse(
+                        "status",
+                        json.dumps({"label": messages_es.STREAM_STATUS_TOOLS}),
+                    )
+            final = (
+                final_future.result()
+                if final_future.done()
+                else _chat_error_response()
+            )
+            yield _sse("final", final.model_dump_json())
+            log.info(
+                "chat_stream_final user_id=%s duration_ms=%d deltas=%d error_class=%s",
+                user_id,
+                int((time.perf_counter() - started) * 1000),
+                deltas,
+                getattr(final, "error_class", None),
+            )
+        except (asyncio.CancelledError, GeneratorExit):
+            # Client disconnected. Do NOT cancel the runner (blocker #2): a write
+            # turn must finish exactly once. It runs to completion under its own
+            # 170s deadline, closes its own session, and de-registers via the
+            # done-callback.
+            log.info("chat_stream_client_disconnect user_id=%s", user_id)
+            raise
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.post("/reset")

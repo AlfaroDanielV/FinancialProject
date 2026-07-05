@@ -161,6 +161,21 @@ REV_SUFFIX="p8$(date +%H%M%S)"
 # while the gates are open. To launch: flip ADVISORY_PERSONA_ENABLED=true HERE
 # (Option C separately via ADVISORY_OPTION_C_ENABLED). LLM_ADVISORY_ITERATION_CAP
 # stays unpinned on its code default (8), like the other caps.
+#
+# CHAT_STREAMING_ENABLED (P10.S — token-streaming SSE chat, feature/chat-streaming-
+# sse) is set TRUE — streaming is LAUNCHED here so the native app streams the
+# query answer token-by-token as soon as this revision is live. Safe to launch:
+# it's a query-path-only transport change (the deterministic write path never
+# streams), the code default stays FALSE (this env override is the single ON
+# switch — an instant server-side kill is just flipping this back to false + a
+# redeploy, no app release), and an old/blocking client is unaffected (it never
+# calls the /stream route). SSE is compatible with ACA ingress (no body-buffering
+# middleware; StreamingResponse already ships for CSV/exports); the endpoint sets
+# X-Accel-Buffering:no + a 10s heartbeat to stay under the Envoy idle timeout.
+# WORST CASE if ingress ever buffers: the answer still arrives correct, just as
+# one blob instead of incrementally — never broken. After deploy, VERIFY truly
+# incremental delivery with the curl -N recipe in the "Next (manual)" note below.
+# No migration (head stays 0044).
 az containerapp update -g "$RG" -n "$CA_NAME" \
   --image "$API_IMAGE" \
   --revision-suffix "$REV_SUFFIX" \
@@ -193,6 +208,7 @@ az containerapp update -g "$RG" -n "$CA_NAME" \
     NUDGE_SCHEDULER_INITIAL_DELAY_S=60 \
     ADVISORY_PERSONA_ENABLED=false \
     ADVISORY_OPTION_C_ENABLED=false \
+    CHAT_STREAMING_ENABLED=true \
   >/dev/null
 ok "Container App updated → revision suffix '$REV_SUFFIX'."
 
@@ -258,5 +274,16 @@ $(ok "Azure deploy complete.")
     • P10 advisory mode deployed DARK (flags pinned false) — /asesor replies
       "no disponible" and the native Asesor pill stays hidden until the ⛳
       gates close and the flags flip in this script.
+    • P10.S chat streaming is LAUNCHED (CHAT_STREAMING_ENABLED=true) — the
+      native app (build 17 / OTA) streams the query answer token-by-token.
+      VERIFY truly incremental (unbuffered) SSE delivery through ACA ingress:
+        curl -N -H "Authorization: Bearer <jwt>" -H "Content-Type: application/json" \\
+          -d '{"text":"¿cómo salgo de deudas?"}' \\
+          https://${DOMAIN_API}/api/v1/chat/message/stream
+      Expect ': connected' → 'event: started' → incremental 'event: delta'
+      frames (NOT one buffered blob at the end) → one 'event: final'. If the
+      whole body arrives at once, ingress is buffering (answer still correct,
+      just not live) — pin the ingress config then. Instant kill = flip the
+      flag back to false + redeploy (no app release needed).
     • Update [[Deployment-State]] with tag $TAG + head 0044 (D4).
 EOF

@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     # template fallback) instead of the Option A agentic loop. "No invented
     # number" becomes structural. Same per-turn resolver either way.
     advisory_option_c_enabled: bool = False
+    # P10.S: gate on the token-streaming SSE chat endpoint
+    # (POST /chat/message/stream). Off by default → the route 404s and the
+    # native client falls back to the blocking /chat/message. Flip per-cohort
+    # for a staged rollout; an instant server-side kill needs no app release.
+    chat_streaming_enabled: bool = False
     llm_insight_input_usd_per_mtok: Decimal = Decimal("1.00")
     llm_insight_output_usd_per_mtok: Decimal = Decimal("5.00")
     llm_insight_cache_read_usd_per_mtok: Decimal = Decimal("0.10")
