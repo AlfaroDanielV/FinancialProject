@@ -3214,6 +3214,64 @@ user's own confirmed rows**, never a stored map or synonym table.
 
 ---
 
+## Chat Top-Tier: Advisory ON + SMART Goals + Money Personality (2026-07-07)
+
+Operator ask: the in-app chat is the most important input channel and must
+answer factual data-backed queries; goal creation must follow SMART; every user
+must be classified into a money personality from actual data. **On `dev`;
+operator on-device sign-off pending.** Migration `0046`. `committed_outflows`/
+cashflow byte-lock untouched. Canonical vault notes: `Decision - Advisory Persona
+Prod Flip (Operator Override)`, `Decision - SMART Goal Creation`, `Decision -
+Money Personality Classifier (Computed Writer)`, `Decision - Distress Detector
+Precision (Money Idioms)`.
+
+- **Chat reliability (the "Hubo un error" bug).** Root cause was a **stale
+  mobile bundle** (≤ build 16): that copy exists only in pre-B0.5 JS, and the old
+  15s axios timeout aborted legit 20–90s Sonnet turns. The server already routes
+  the compound message to the query dispatcher correctly (prod runs
+  `9c3d711` since 2026-07-05; Log Analytics: zero chat errors, all 200). Fix =
+  **OTA the current JS** + residual client honesty: `ChatStreamError.kind`
+  (`connect`/`http`/`interrupted`) → a stalled/cut stream shows the timeout copy
+  ("Me estoy tardando…"), never the false "No pude conectar…". `X-App-Build`
+  header now logged server-side so stale clients are diagnosable.
+- **Unknown-command guard** (`bot/pipeline.py`, deterministic, zero LLM):
+  unmatched `/comando` → `messages_es.UNKNOWN_COMMAND_TPL` with a
+  `difflib.get_close_matches` suggestion ("/advisor" → "¿Quisiste decir
+  /asesor?"). Telegram-only commands typed in the native chat get a
+  point-at-Telegram reply. `/5000` still falls through to capture. Never clears
+  pending/clarification state.
+- **Advisory ON in prod.** `ADVISORY_PERSONA_ENABLED=true` in `deploy_azure.sh`
+  (Option C stays false), by operator override of the four P10 ⛳ gates. The 5
+  P10 hard rules stay un-relaxed. A pre-flip review caught + I fixed **two
+  confirmed `detect_distress` bugs** (over-broad crisis patterns escalating
+  ordinary CR debt idioms to línea 1322; idiom guard only checking the first
+  occurrence).
+- **SMART goal creation.** Parser word-boundary fix (no more ₡2 goals from "2
+  millones para diciembre"); required deadline with chips + hardened resolver +
+  past-date rejection ("Sin fecha" opt-out via `GOAL_NO_DATE_SENTINEL`);
+  plausibility floor; junk-name re-ask; infeasible → deterministic
+  extend/reduce/create-así chips (rewrites the field, re-proposes — never a veto,
+  supersedes the non-blocking clause of `Decision - Affordability Engine`);
+  personality-matched relevance line; clarification loop escape + 2-attempt cap.
+- **Money personality classifier** (Spender/Avoider/Saver/Investor). Pure
+  `api/services/finance/money_personality.py` (frozen enum, first-match-wins over
+  existing-engine signals, no LLM) → computed-only insight `money_personality`
+  (migration `0046` widens `ck_user_insights_type`; NOT LLM-extractable, NOT
+  user-editable). Emitted in `compute_all` (nightly + `/recalcular_memoria`);
+  consumed by P10 B7 framing (mapped to a Klontz script, preferred over the LLM
+  archetype; modifier never selector), goal relevance, and `/memoria`.
+- **Verification:** `scripts/test_phase_10.sh` (143) + `scripts/test_phase_7b.sh`
+  (141, byte-lock) + `test_smart_goals.py` (32) + `test_money_personality.py`
+  (23) + `test_unknown_command.py` (7) + guardrails (32) + 6c nightly slice (39)
+  green; mobile `tsc --noEmit` clean; migration `0046` up/down/up clean.
+  `alembic → 0046`. **Note:** `INSIGHTS_EXTRACTOR/DISPATCHER_ENABLED` are BOTH
+  `true` in prod (the older "awaiting flip" note elsewhere is stale).
+- **Deferred:** `contribute_goal` chat intent; goal "Editar" field edit;
+  cross-currency goal feasibility; self-report personality override; the 3
+  never-agent-reviewed P10 scopes (robustness/activation/tools).
+
+---
+
 ## Closed phases — hard rules to preserve
 
 These are extracted from the closed-phase notes in `11_Phases/`. **Do not relax without an explicit decision in `05_Decisions/`.**

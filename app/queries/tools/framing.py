@@ -56,12 +56,25 @@ _KNOWN_ARCHETYPES = frozenset(
 
 _RISK_MAP = {"conservative": "low_tolerance", "aggressive": "high_tolerance"}
 
+# The deterministic money_personality label (Workstream E) → the Klontz
+# money-script the library already ranks against. "investor" has no clean Klontz
+# target → not mapped (falls back to the observed LLM archetype, if any). This
+# stays a ranking MODIFIER, never a selector (O1 / P10 hard rule 2).
+_SASI_TO_KLONTZ = {
+    "spender": "money_status",
+    "avoider": "money_avoidance",
+    "saver": "money_vigilance",
+}
+
 
 async def _optional_signals(db, user_id: uuid.UUID) -> tuple[Optional[str], Optional[str]]:
     """Latest valid archetype + risk-posture insights, mapped conservatively.
 
-    Missing rows / unmappable content → (None, None)-ish: the match falls back
-    to centrality + state strength (O1). Never raises — a broken insight row
+    The computed money_personality label is preferred over the LLM archetype:
+    both are ordered by confidence desc, and the computed row caps at 1.00 while
+    the LLM archetype caps at 0.85, so a mapped money_personality is evaluated
+    first. Missing rows / unmappable content → (None, None)-ish: the match falls
+    back to centrality + state strength (O1). Never raises — a broken insight row
     must not break the framing path."""
     archetype: Optional[str] = None
     risk_signal: Optional[str] = None
@@ -73,14 +86,22 @@ async def _optional_signals(db, user_id: uuid.UUID) -> tuple[Optional[str], Opti
                 select(UserInsight.insight_type, UserInsight.content)
                 .where(
                     UserInsight.user_id == user_id,
-                    UserInsight.insight_type.in_(("archetype", "risk_posture")),
+                    UserInsight.insight_type.in_(
+                        ("archetype", "risk_posture", "money_personality")
+                    ),
                     UserInsight.valid_until > datetime.now(timezone.utc),
                 )
                 .order_by(UserInsight.confidence.desc(), UserInsight.updated_at.desc())
             )
         ).all()
         for insight_type, content in rows:
-            if insight_type == "archetype" and archetype is None:
+            if insight_type == "money_personality" and archetype is None:
+                mapped = _SASI_TO_KLONTZ.get(
+                    str((content or {}).get("personality", "")).strip().lower()
+                )
+                if mapped is not None:
+                    archetype = mapped
+            elif insight_type == "archetype" and archetype is None:
                 primary = str((content or {}).get("primary", "")).strip().lower()
                 primary = primary.replace(" ", "_").replace("-", "_")
                 if primary in _KNOWN_ARCHETYPES:

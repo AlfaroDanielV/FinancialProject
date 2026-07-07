@@ -62,6 +62,7 @@ TTL_DAYS_BY_TYPE: dict[str, int] = {
     "risk_posture": 90,
     "decision_style": 90,
     "financial_literacy": 90,
+    "money_personality": 90,
     "stated_observed_gap": 30,
 }
 
@@ -258,6 +259,21 @@ class FinancialLiteracyContent(_InsightBase):
     evidence: str = Field(..., min_length=1, max_length=200)
 
 
+class MoneyPersonalityContent(_InsightBase):
+    """Deterministic money archetype (Workstream E, 2026-07). COMPUTED only —
+    the nightly worker classifies the user's OWN ledger into one of four labels
+    via `api/services/finance/money_personality.py`. NOT LLM-extractable (the
+    two-writers rule: only the computed writer produces it) and NOT user-editable
+    (a data-derived label; `/olvidar` deletes it and it recomputes nightly).
+    Singleton per user (dedup_key='global'). Confidence is attached by the
+    computed writer, not carried in content."""
+
+    type: Literal["money_personality"] = "money_personality"
+    personality: Literal["spender", "avoider", "saver", "investor"]
+    scores: dict[str, Decimal] = Field(default_factory=dict)
+    evidence_summary: str = Field(..., min_length=1, max_length=300)
+
+
 # ── derived ────────────────────────────────────────────────────────────────
 
 
@@ -298,6 +314,7 @@ InsightContent = Annotated[
         RiskPostureContent,
         DecisionStyleContent,
         FinancialLiteracyContent,
+        MoneyPersonalityContent,
         StatedObservedGapContent,
     ],
     Field(discriminator="type"),
@@ -342,6 +359,7 @@ ALL_INSIGHT_TYPES: tuple[str, ...] = (
     "risk_posture",
     "decision_style",
     "financial_literacy",
+    "money_personality",
     "stated_observed_gap",
 )
 

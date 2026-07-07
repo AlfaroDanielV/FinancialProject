@@ -19,7 +19,7 @@ import math
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from statistics import median
 from typing import Iterable
@@ -32,12 +32,14 @@ from api.models.bill_occurrence import BillOccurrence
 from api.models.debt import Debt
 from api.models.recurring_bill import RecurringBill
 from api.models.transaction import Transaction
+from api.services.clock import user_today
 from api.schemas.insights import (
     CRSeasonalPatternContent,
     CashFlowStabilityContent,
     DebtLoadContent,
     EmergencyFundContent,
     InsightContent,
+    MoneyPersonalityContent,
     RecurringDriftContent,
     SpendingPatternContent,
 )
@@ -531,6 +533,50 @@ async def compute_emergency_fund(
     return [content]
 
 
+async def compute_money_personality(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    as_of: date | None = None,
+) -> list[MoneyPersonalityContent]:
+    """Classify the user into a money archetype (spender/avoider/saver/investor)
+    from their OWN ledger. Deterministic — delegates to the pure classifier in
+    `api/services/finance/money_personality.py` (no LLM). Returns [] when there
+    isn't enough signal to classify (the classifier yields None)."""
+    from api.models.user import User
+    from api.services.finance.money_personality import (
+        classify_money_personality,
+        describe_personality_evidence,
+        gather_personality_inputs,
+    )
+
+    user = await session.get(User, user_id)
+    if user is None:
+        return []
+    today = as_of or user_today(user)
+    inputs = await gather_personality_inputs(session, user, today=today)
+    result = classify_money_personality(inputs)
+    if result.personality is None:
+        return []
+    content = MoneyPersonalityContent(
+        personality=result.personality,
+        scores=result.scores,
+        evidence_summary=describe_personality_evidence(result, inputs),
+    )
+    # Behavior sample drives confidence via the shared evidence formula.
+    days_ago = min(inputs.days_since_last_capture, 3650)
+    _attach_confidence(
+        content,
+        _confidence(
+            sample_count=inputs.confirmed_txn_count_90d,
+            full_sample=50,
+            latest_date=today - timedelta(days=days_ago),
+            as_of=today,
+        ),
+    )
+    return [content]
+
+
 async def compute_all(
     session: AsyncSession,
     user_id: uuid.UUID,
@@ -545,6 +591,7 @@ async def compute_all(
     insights.extend(await compute_debt_load(session, user_id, as_of=as_of))
     insights.extend(await compute_emergency_fund(session, user_id, as_of=as_of))
     insights.extend(await compute_cr_seasonal_patterns(session, user_id, as_of=as_of))
+    insights.extend(await compute_money_personality(session, user_id, as_of=as_of))
     return insights
 
 

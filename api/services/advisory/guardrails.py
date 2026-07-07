@@ -39,8 +39,12 @@ def _fold(text: str) -> str:
     )
 
 
-# Tier 2 — explicit hopelessness-about-living / self-harm language. Kept to
-# unambiguous phrasings; the idiom guard below removes the joking CR use.
+# Tier 2 — explicit hopelessness-about-living / self-harm language. The idiom
+# guard below removes the joking CR use; the AMBIGUOUS subset additionally
+# requires the tail NOT to be a money/manner object (else "acabar con todo esto
+# de las deudas" or "no quiero vivir endeudado" would wrongly fire the crisis
+# line and drop the financial answer — a false positive that hits precisely the
+# money-stress user the advisory persona targets).
 _CRISIS_PATTERNS: tuple[str, ...] = (
     "no quiero seguir viviendo",
     "no quiero vivir",
@@ -54,14 +58,41 @@ _CRISIS_PATTERNS: tuple[str, ...] = (
     "mejor desaparecer",
     "hacerme dano",
     "acabar con todo",
+    "acabar con mi vida",
     "ya no aguanto la vida",
     "terminar con mi vida",
 )
 
-# CR idioms that reuse crisis verbs harmlessly («me maté de risa»).
+# Patterns whose crisis reading collapses when a money/manner object follows —
+# "no quiero vivir ENDEUDADO" / "acabar con todo ESTO DE LAS DEUDAS". A bare
+# occurrence ("quiero acabar con todo") still fires.
+_CRISIS_AMBIGUOUS: frozenset[str] = frozenset(
+    {"no quiero vivir", "acabar con todo", "mejor no estar"}
+)
+
+# CR idioms that reuse crisis verbs harmlessly («me maté de risa»). Applied to
+# every pattern occurrence.
 _CRISIS_IDIOM_GUARDS: tuple[str, ...] = (
     "de risa",
     "de la risa",
+)
+
+# Money/manner objects that disqualify an AMBIGUOUS occurrence (accent-folded,
+# matched in the ~30-char tail after the phrase).
+_CRISIS_FINANCIAL_QUALIFIERS: tuple[str, ...] = (
+    "endeudad",
+    "deuda",
+    "deudas",
+    "de las deudas",
+    "esto de",
+    "con esto",
+    "debiendo",
+    "pagando",
+    "credito",
+    "prestamo",
+    "asi",  # "no quiero vivir así" — manner, not self-harm
+    "estresad",
+    "de una vez con esto",
 )
 
 # Tier 1 — despair about the financial situation, no living/self-harm signal.
@@ -93,13 +124,21 @@ def detect_distress(text: str) -> Optional[DistressTier]:
         return None
     folded = _fold(text)
     for pattern in _CRISIS_PATTERNS:
-        idx = folded.find(pattern)
-        if idx == -1:
-            continue
-        tail = folded[idx + len(pattern): idx + len(pattern) + 24]
-        if any(guard in tail for guard in _CRISIS_IDIOM_GUARDS):
-            continue  # «me quiero matar de risa» — the CR idiom, not a signal
-        return "crisis"
+        ambiguous = pattern in _CRISIS_AMBIGUOUS
+        # Check EVERY occurrence, not just the first: a genuine self-harm
+        # statement can follow a joke ("...de risa. ya en serio, me quiero
+        # matar"), so a guarded first hit must not mask an unguarded later one.
+        start = 0
+        while (idx := folded.find(pattern, start)) != -1:
+            tail = folded[idx + len(pattern): idx + len(pattern) + 30]
+            start = idx + len(pattern)
+            if any(guard in tail for guard in _CRISIS_IDIOM_GUARDS):
+                continue  # «me quiero matar de risa» — the CR idiom
+            if ambiguous and any(
+                q in tail for q in _CRISIS_FINANCIAL_QUALIFIERS
+            ):
+                continue  # «acabar con todo esto de las deudas» — money, not self-harm
+            return "crisis"
     if any(p in folded for p in _FINANCIAL_DISTRESS_PATTERNS):
         return "financial"
     return None

@@ -14,6 +14,7 @@ Three concerns:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import uuid
@@ -399,6 +400,77 @@ async def test_stream_endpoint_write_turn_is_lone_final(db_with_user, monkeypatc
         assert events[-1] == "final"
         final = json.loads(next(d for e, d in frames if e == "final"))
         assert len(final["buttons"]) == 3  # Sí / No / Editar
+    finally:
+        _clear_db_override()
+
+
+@pytest.mark.asyncio
+async def test_stream_endpoint_pipeline_exception_yields_system_final(
+    db_with_user, monkeypatch
+):
+    """A pipeline blowup inside the runner is caught → a proper terminal `final`
+    with error_class == "system" (the stream never dies without a final)."""
+    session, user_id = db_with_user
+    monkeypatch.setattr(settings, "chat_streaming_enabled", True)
+
+    async def _boom(**kwargs):
+        raise RuntimeError("pipeline blew up")
+
+    monkeypatch.setattr("api.routers.chat.process_message", _boom)
+    _override_db(session)
+    try:
+        transport = ASGITransport(app=__import__("api.main", fromlist=["app"]).app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            token = await _bearer(ac, session, user_id)
+            resp = await ac.post(
+                "/api/v1/chat/message/stream",
+                json={"text": "hola"},
+                headers={"Authorization": f"Bearer {token}"},
+                cookies={},
+            )
+        assert resp.status_code == 200, resp.text
+        frames = _parse_sse(resp.text)
+        events = [e for e, _ in frames]
+        assert "delta" not in events  # it threw before any token streamed
+        assert events[-1] == "final"
+        final = json.loads(next(d for e, d in frames if e == "final"))
+        assert final["error_class"] == "system"
+    finally:
+        _clear_db_override()
+
+
+@pytest.mark.asyncio
+async def test_stream_endpoint_turn_deadline_yields_transient_final(
+    db_with_user, monkeypatch
+):
+    """The whole-turn deadline expiring produces a terminal `final` with
+    error_class == "transient" (retryable copy), not a dead stream."""
+    session, user_id = db_with_user
+    monkeypatch.setattr(settings, "chat_streaming_enabled", True)
+    # Tiny deadline; make the pipeline hang past it.
+    monkeypatch.setattr("api.routers.chat._TURN_DEADLINE_S", 0.05)
+
+    async def _hang(**kwargs):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr("api.routers.chat.process_message", _hang)
+    _override_db(session)
+    try:
+        transport = ASGITransport(app=__import__("api.main", fromlist=["app"]).app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            token = await _bearer(ac, session, user_id)
+            resp = await ac.post(
+                "/api/v1/chat/message/stream",
+                json={"text": "hola"},
+                headers={"Authorization": f"Bearer {token}"},
+                cookies={},
+            )
+        assert resp.status_code == 200, resp.text
+        frames = _parse_sse(resp.text)
+        events = [e for e, _ in frames]
+        assert events[-1] == "final"
+        final = json.loads(next(d for e, d in frames if e == "final"))
+        assert final["error_class"] == "transient"
     finally:
         _clear_db_override()
 

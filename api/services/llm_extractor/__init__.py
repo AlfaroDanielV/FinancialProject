@@ -9,6 +9,7 @@ branch of this module makes routing, policy, or write decisions.
 """
 from .schema import (
     EXPECTED_QUERY_WINDOW_PREFIX,
+    GOAL_NO_DATE_SENTINEL,
     VALID_QUERY_WINDOWS,
     ExtractionResult,
     Intent,
@@ -28,6 +29,7 @@ from .document import extract_card_terms, extract_debt_terms, extract_statement
 __all__ = [
     "ExtractionResult",
     "Intent",
+    "GOAL_NO_DATE_SENTINEL",
     "VALID_QUERY_WINDOWS",
     "EXPECTED_QUERY_WINDOW_PREFIX",
     "LLMClient",

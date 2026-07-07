@@ -15,6 +15,14 @@ from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
+# SMART goals: sentinel for `goal_target_date` meaning "the user explicitly
+# declined a deadline". Distinct from None (which means "ask") — the dispatcher
+# checks it before re-asking so "Sin fecha" proceeds instead of looping. Lives
+# here (not in bot/) so both the bot clarification merge and the api dispatcher
+# can import it without the bot→api layering being inverted.
+GOAL_NO_DATE_SENTINEL = "__no_date__"
+
+
 class Intent(str, Enum):
     LOG_EXPENSE = "log_expense"
     LOG_INCOME = "log_income"
@@ -93,6 +101,11 @@ class ExtractionResult(BaseModel):
     goal_name: Optional[str] = Field(default=None, max_length=255)
     goal_target_amount: Optional[Decimal] = Field(default=None)
     goal_target_date: Optional[str] = Field(default=None, max_length=64)
+    # SMART goals: set by the deterministic infeasible decision-point (the user
+    # tapped "Crear así"), NOT by the LLM — it tells the dispatcher to skip the
+    # feasibility re-gate and propose the goal as-is. The extractor never emits
+    # this; the system prompt does not mention it.
+    goal_force_create: bool = Field(default=False)
     # Phase 6f — conversational recurring-income creation (intent=create_income).
     # amount + currency are reused for the income amount. income_type defaults
     # to salary server-side; derived CR cycles are NOT creatable here.

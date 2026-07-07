@@ -21,10 +21,10 @@ from api.schemas.insights import (
 )
 
 
-def _load_migration_0013():
+def _load_migration(name: str, alias: str):
     root = Path(__file__).resolve().parent.parent
-    path = root / "migrations" / "versions" / "0013_phase6c_user_insights.py"
-    spec = importlib.util.spec_from_file_location("m0013_phase6c", path)
+    path = root / "migrations" / "versions" / name
+    spec = importlib.util.spec_from_file_location(alias, path)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -32,13 +32,25 @@ def _load_migration_0013():
     return module
 
 
-def test_insight_types_match_migration_check_constraint():
-    migration = _load_migration_0013()
+def _load_migration_0013():
+    return _load_migration("0013_phase6c_user_insights.py", "m0013_phase6c")
 
-    assert ALL_INSIGHT_TYPES == migration._VALID_INSIGHT_TYPES
-    assert len(ALL_INSIGHT_TYPES) == 14
+
+def test_insight_types_match_migration_check_constraint():
+    # Original 14 from migration 0013 …
+    migration = _load_migration_0013()
+    assert set(migration._VALID_INSIGHT_TYPES).issubset(set(ALL_INSIGHT_TYPES))
     assert "emergency_fund" in ALL_INSIGHT_TYPES
     assert "stated_observed_gap" in ALL_INSIGHT_TYPES
+
+    # … plus money_personality, added by migration 0046 (the live CHECK now).
+    m0046 = _load_migration(
+        "0046_money_personality_insight.py", "m0046_money_personality"
+    )
+    # The CHECK is an IN clause — order-independent; compare as sets.
+    assert set(ALL_INSIGHT_TYPES) == set(m0046._NEW_TYPES)
+    assert len(ALL_INSIGHT_TYPES) == 15
+    assert "money_personality" in ALL_INSIGHT_TYPES
 
 
 def test_llm_extractable_and_user_editable_types_exclude_computed_types():
@@ -49,6 +61,7 @@ def test_llm_extractable_and_user_editable_types_exclude_computed_types():
         "debt_load",
         "emergency_fund",
         "cr_seasonal_pattern",
+        "money_personality",
         "stated_observed_gap",
     }
 

@@ -98,9 +98,15 @@ async def test_create_goal_full_flow_commits_goal(db_with_user):
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            propose = await _chat(
+            # SMART-T: a goal with no deadline is now asked for one first.
+            ask_date = await _chat(
                 ac, "creá una meta de fondo de emergencia de 500 mil", token
             )
+            assert ask_date.status_code == 200, ask_date.text
+            date_labels = [b["label"] for b in ask_date.json()["buttons"]]
+            assert "Sin fecha" in date_labels
+
+            propose = await _chat(ac, "Sin fecha", token)
             assert propose.status_code == 200, propose.text
             body = propose.json()
             assert "meta" in body["reply_text"].lower()
@@ -132,7 +138,10 @@ async def test_create_goal_reject_writes_nothing(db_with_user):
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            propose = await _chat(ac, "meta de fondo de emergencia 500 mil", token)
+            ask_date = await _chat(ac, "meta de fondo de emergencia 500 mil", token)
+            assert ask_date.status_code == 200
+            # Answer the SMART-T deadline step, then reject the proposal.
+            propose = await _chat(ac, "en 6 meses", token)
             assert propose.status_code == 200
             cancel = await _chat(ac, "no", token)
             assert cancel.status_code == 200

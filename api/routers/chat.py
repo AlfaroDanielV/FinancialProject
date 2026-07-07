@@ -21,7 +21,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -114,6 +114,7 @@ def _chat_error_response() -> ChatMessageResponse:
 @router.post("/message", response_model=ChatMessageResponse)
 async def post_chat_message(
     payload: ChatMessageRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(current_user),
 ) -> ChatMessageResponse:
@@ -130,7 +131,16 @@ async def post_chat_message(
         # P10 B0.5 (R1): serialization happens INSIDE the guard — a BotReply
         # that fails to serialize must degrade to the handled 200 body, not
         # escape as a 500 the client can only show as a generic banner.
-        return _build_response(reply)
+        response = _build_response(reply)
+        # B2 — one structured per-turn line carrying the client build (so a
+        # stale TestFlight/OTA build is diagnosable from logs); logging only.
+        log.info(
+            "chat_message_done user_id=%s x_app_build=%s error_class=%s",
+            user.id,
+            request.headers.get("X-App-Build", "-"),
+            response.error_class,
+        )
+        return response
     except HTTPException:
         raise
     except Exception:
@@ -154,6 +164,7 @@ def _sse(event: str, data: str) -> str:
 @router.post("/message/stream")
 async def post_chat_message_stream(
     payload: ChatMessageRequest,
+    request: Request,
     user: User = Depends(current_user),
 ) -> StreamingResponse:
     """P10.S — token-streaming variant of POST /chat/message (SSE).
@@ -178,6 +189,8 @@ async def post_chat_message_stream(
 
     user_id = user.id  # captured now; the runner re-fetches in its own session
     text = payload.text
+    # B2 — client build id (logging only); read now while the Request is live.
+    x_app_build = request.headers.get("X-App-Build", "-")
     redis = get_redis()
     queue: asyncio.Queue = asyncio.Queue()  # unbounded → put_nowait never raises
     final_future: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -242,7 +255,7 @@ async def post_chat_message_stream(
         # client must NOT auto-retry (would double-execute a write).
         yield ": connected\n\n"
         yield _sse("started", "{}")
-        log.info("chat_stream_start user_id=%s", user_id)
+        log.info("chat_stream_start user_id=%s x_app_build=%s", user_id, x_app_build)
         task = asyncio.create_task(runner())
         _RUNNERS.add(task)
         task.add_done_callback(_runner_done)
@@ -282,8 +295,10 @@ async def post_chat_message_stream(
             )
             yield _sse("final", final.model_dump_json())
             log.info(
-                "chat_stream_final user_id=%s duration_ms=%d deltas=%d error_class=%s",
+                "chat_stream_final user_id=%s x_app_build=%s duration_ms=%d "
+                "deltas=%d error_class=%s",
                 user_id,
+                x_app_build,
                 int((time.perf_counter() - started) * 1000),
                 deltas,
                 getattr(final, "error_class", None),
@@ -384,6 +399,7 @@ async def set_advisory_session(
 
 @router.post("/image", response_model=ChatImageResponse)
 async def post_chat_image(
+    request: Request,
     file: UploadFile = File(..., description="Receipt photo (JPEG, PNG, WebP, or GIF)"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(current_user),
@@ -423,7 +439,15 @@ async def post_chat_image(
             vision_model=settings.llm_query_model,
         )
         # P10 B0.5 (R1): serialize inside the guard (see post_chat_message).
-        return _build_response(reply)
+        response = _build_response(reply)
+        # B2 — per-turn client-build line (logging only; see post_chat_message).
+        log.info(
+            "chat_image_done user_id=%s x_app_build=%s error_class=%s",
+            user.id,
+            request.headers.get("X-App-Build", "-"),
+            response.error_class,
+        )
+        return response
     except HTTPException:
         raise
     except Exception:

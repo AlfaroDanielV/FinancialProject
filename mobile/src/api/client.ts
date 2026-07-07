@@ -1,7 +1,17 @@
 import axios, { AxiosError, AxiosInstance, InternalAxiosRequestConfig } from "axios";
+import Constants from "expo-constants";
 
 import { env } from "../lib/env";
 import { clearSession, getSessionToken } from "../lib/auth";
+
+/**
+ * B2 — client build diagnosability. Every API call carries the JS bundle's
+ * build identifier (`X-App-Build: "18"`) so server logs can tell client builds
+ * apart (OTA vs store build, stale TestFlight, etc.). Sourced from app.json's
+ * ios.buildNumber via expo-constants (already a dependency — zero new deps);
+ * "-" when unavailable.
+ */
+export const APP_BUILD: string = Constants.expoConfig?.ios?.buildNumber ?? "-";
 
 type UnauthorizedHandler = () => void;
 let unauthorizedHandler: UnauthorizedHandler | null = null;
@@ -41,6 +51,7 @@ function buildClient(): AxiosInstance {
     timeout: 15000,
     headers: {
       Accept: "application/json",
+      "X-App-Build": APP_BUILD,
     },
   });
   instance.interceptors.request.use(attachAuthHeader);

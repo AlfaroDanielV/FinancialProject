@@ -92,6 +92,17 @@ def register_user_context_tool() -> None:
         return "\n".join(bullets)
 
 
+# Spanish (voseo, CR) labels for the money_personality archetype. Mirrors
+# PERSONALITY_LABELS_ES in api/services/finance/money_personality.py (kept
+# inline to avoid pulling that engine's heavy imports into the query tool).
+_PERSONALITY_LABELS_ES: dict[str, str] = {
+    "spender": "Gastador",
+    "avoider": "Evasor",
+    "saver": "Ahorrador",
+    "investor": "Inversionista",
+}
+
+
 def _describe_insight(content: InsightContent) -> str:
     match content.type:
         case "spending_pattern":
@@ -187,6 +198,12 @@ def _describe_insight(content: InsightContent) -> str:
             return (
                 f"Tu nivel de alfabetización financiera parece {content.level}; "
                 f"evidencia: {_truncate(content.evidence, 180)}."
+            )
+        case "money_personality":
+            return (
+                f"Tu personalidad financiera parece ser "
+                f"{_PERSONALITY_LABELS_ES.get(content.personality, content.personality)}: "
+                f"{_truncate(content.evidence_summary, 220)}"
             )
         case "stated_observed_gap":
             return _truncate(content.description, 220)

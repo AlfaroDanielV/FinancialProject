@@ -75,6 +75,36 @@ def test_crisis_wins_over_financial():
     )
 
 
+# ── false positives: money/manner objects must NOT trigger the crisis line ────
+# (2026-07 review: ordinary CR debt phrasing was being routed to línea 1322 and
+# the financial answer dropped.)
+@pytest.mark.parametrize(
+    "text",
+    [
+        "quiero acabar con todo esto de las deudas de una vez",
+        "no quiero vivir endeudado toda la vida, ¿cómo salgo de esto?",
+        "sería mejor no estar debiendo tanto",
+        "no quiero vivir así de apretado con los pagos",
+    ],
+)
+def test_financial_idioms_not_escalated_to_crisis(text):
+    assert detect_distress(text) != "crisis"
+
+
+# ── genuine crisis still fires even bare / after a joke (finding 2) ───────────
+@pytest.mark.parametrize(
+    "text",
+    [
+        "quiero acabar con todo",
+        "no quiero vivir, ya no doy más",
+        # A real disclosure AFTER a joke — the guarded first hit must not mask it.
+        "me quiero matar de risa con el meme jaja... ya en serio, me quiero matar",
+    ],
+)
+def test_genuine_crisis_still_detected(text):
+    assert detect_distress(text) == "crisis"
+
+
 # ── the copy contract (O3) ────────────────────────────────────────────────────
 
 

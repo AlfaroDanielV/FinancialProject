@@ -87,6 +87,30 @@ HELP_TEXT = (
 WHO_AM_I = "Usuario: {email}\nCuenta por defecto: {default_account}"
 
 
+# ── unknown-command guard ─────────────────────────────────────────────────────
+# Deterministic replies for slash tokens no short-circuit matched — a typo must
+# never reach the LLM ni degradar en silencio al menú de ayuda.
+
+UNKNOWN_COMMAND_TPL = (
+    "No reconozco el comando «{cmd}».{suggestion} "
+    "Mandá /menu para ver lo que puedo hacer."
+)
+UNKNOWN_COMMAND_SUGGESTION_TPL = " ¿Quisiste decir {match}?"
+COMMAND_NO_ARGS_TPL = "Ese comando va solo, sin texto extra. Probá {cmd}."
+TELEGRAM_ONLY_COMMAND_TPL = (
+    "El comando «{cmd}» funciona en el bot de Telegram.{hint} "
+    "Acá mandá /menu para ver lo que puedo hacer."
+)
+TELEGRAM_COMMAND_APP_HINT_TPL = " En la app te sirve {launcher}."
+
+# SMART goals F1: bail copy when a clarification couldn't be answered after the
+# re-ask cap — end the flow cleanly instead of looping.
+CLARIFY_GAVE_UP = (
+    "Mejor dejémoslo por ahora. Cuando querés, escribime de nuevo con el dato "
+    "y seguimos. Mandá /menu si necesitás ayuda."
+)
+
+
 # ── confirmation flow ─────────────────────────────────────────────────────────
 
 CONFIRM_BUTTONS_YES = "Sí ✅"
@@ -561,9 +585,12 @@ STREAM_STATUS_TOOLS = "Analizando tus datos…"
 
 
 # ── P10 B10: distress hand-off (D7/O3 — dos niveles) ─────────────────────────
-# Tier 2 — genuine crisis. Draft copy per plan §6; ⛳ pending clinical review
-# before shipping user-visible (the advisory feature flag holds it dark).
-# The bot never assesses, diagnoses, or promises confidentiality.
+# Tier 2 — genuine crisis. The distress net is a SAFETY net that runs on both
+# channels regardless of the advisory persona flag (self-harm detection must not
+# depend on advisory mode being on). It ships now under the 2026-07 operator
+# override of the clinical-review gate; the patterns were tightened the same day
+# so ordinary CR money-stress phrasing ("acabar con todo esto de las deudas") is
+# never escalated. The bot never assesses, diagnoses, or promises confidentiality.
 DISTRESS_CRISIS = (
     "Lo que me estás contando suena muy pesado, y no tenés que cargarlo solo. "
     "Yo te acompaño con lo financiero, pero para esto hay gente preparada "

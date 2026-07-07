@@ -68,6 +68,7 @@ _TYPE_TO_GROUP: dict[str, str] = {
     # Cómo te conozco — preferences and style profile.
     "stated_preference": GROUP_CONOZCO,
     "archetype": GROUP_CONOZCO,
+    "money_personality": GROUP_CONOZCO,
     "risk_posture": GROUP_CONOZCO,
     "decision_style": GROUP_CONOZCO,
     "financial_literacy": GROUP_CONOZCO,

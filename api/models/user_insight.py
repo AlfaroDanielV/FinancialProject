@@ -33,6 +33,7 @@ _VALID_INSIGHT_TYPES = (
     "risk_posture",
     "decision_style",
     "financial_literacy",
+    "money_personality",
     "stated_observed_gap",
 )
 _VALID_SOURCES = ("computed", "llm_extracted", "user_override")

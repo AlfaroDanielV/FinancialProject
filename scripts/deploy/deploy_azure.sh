@@ -82,7 +82,7 @@ cat <<EOF
   Container App: $CA_NAME
   Migrate job  : $JOB_MIGRATE
   Gmail worker : $JOB_GMAIL
-  Cargo worker : ledger-cr-loan-cargo-daily-r5mo1tf
+  Cargo worker : ${JOB_LOAN_CARGO:-<unset — see A7>}
   API FQDN     : https://$DOMAIN_API
   Image tag    : $TAG
   api image    : $API_IMAGE
@@ -129,14 +129,14 @@ if [[ $SKIP_MIGRATE -eq 0 ]]; then
   [[ "${STATUS:-}" == "Succeeded" ]] || die "Migrate job did not finish in time; verify manually before continuing."
 
   # Verify the alembic head chain via Log Analytics (NOT 'containerapp exec' — needs a TTY, L2)
-  log "A2 · verifying alembic head in Log Analytics (expect '… -> 0045')"
+  log "A2 · verifying alembic head in Log Analytics (expect '… -> 0046')"
   LA_WS=$(az containerapp env show -g "$RG" -n "$ENV_CAE" \
     --query "properties.appLogsConfiguration.logAnalyticsConfiguration.customerId" -o tsv 2>/dev/null || true)
   if [[ -n "$LA_WS" ]]; then
     az monitor log-analytics query -w "$LA_WS" \
       --analytics-query "ContainerAppConsoleLogs_CL | where ContainerGroupName_s contains 'migrate' | order by TimeGenerated desc | take 15 | project TimeGenerated, Log_s" \
       -o table 2>/dev/null || log "  (Log Analytics query failed; check the portal — ingestion can lag ~1–2 min)"
-    echo "  ↑ confirm the 'Running upgrade … -> 0045' chain above before trusting the redeploy."
+    echo "  ↑ confirm the 'Running upgrade … -> 0046' chain above before trusting the redeploy."
   else
     log "  (could not resolve Log Analytics workspace; verify head manually)"
   fi
@@ -153,14 +153,19 @@ REV_SUFFIX="p8$(date +%H%M%S)"
 # left an opposing LLM_STATEMENT_MODEL override on the app. The per-transaction
 # extractor / query models stay unpinned on their code defaults, as before.
 #
-# ADVISORY_PERSONA_ENABLED / ADVISORY_OPTION_C_ENABLED (P10, 2026-07-04) are
-# pinned FALSE — the advisory mode ships dark until the operator ⛳ gates close
-# (B1 financial_state enum, B6 pension constants vs the primary Reglamento IVM,
-# Tier-2 crisis copy clinical review, B8 principle sign-off; see the CLAUDE.md
-# P10 section). Pinning means a manual portal flip cannot survive a redeploy
-# while the gates are open. To launch: flip ADVISORY_PERSONA_ENABLED=true HERE
-# (Option C separately via ADVISORY_OPTION_C_ENABLED). LLM_ADVISORY_ITERATION_CAP
-# stays unpinned on its code default (8), like the other caps.
+# ADVISORY_PERSONA_ENABLED is set TRUE (2026-07-07) — advisory mode is LAUNCHED
+# by explicit operator override of the four P10 ⛳ gates (B1 financial_state
+# enum, B6 pension constants vs the primary Reglamento IVM, Tier-2 crisis copy
+# clinical review, B8 principle sign-off). See the vault note "Decision -
+# Advisory Persona Prod Flip (Operator Override)" + the CLAUDE.md P10 section
+# for what each waiver accepts and the pre-flip adversarial review that ran
+# first. The P10 hard rules stay un-relaxed: retirement is always 3 SUPEN
+# bands + disclaimer, distress tiering is deterministic pre-LLM, and advisory
+# Option C never streams. ADVISORY_OPTION_C_ENABLED stays FALSE — the Option A
+# agentic loop is the live advisory path; Option C (the no-invented-number
+# narrator) is a separate later flip. A server-side kill of advisory is just
+# flipping ADVISORY_PERSONA_ENABLED back to false + a redeploy, no app release.
+# LLM_ADVISORY_ITERATION_CAP stays unpinned on its code default (8).
 #
 # CHAT_STREAMING_ENABLED (P10.S — token-streaming SSE chat, feature/chat-streaming-
 # sse) is set TRUE — streaming is LAUNCHED here so the native app streams the
@@ -176,10 +181,12 @@ REV_SUFFIX="p8$(date +%H%M%S)"
 # one blob instead of incrementally — never broken. After deploy, VERIFY truly
 # incremental delivery with the curl -N recipe in the "Next (manual)" note below.
 #
-# Migration 0045 (auto-classification flags — feature/auto-classification,
-# 2026-07-06) lands via the A2 migrate job that ran BEFORE this redeploy; head
-# → 0045. Two additive boolean columns (server default false), no env var, no
-# behavior flag — the classifier is on by default at capture.
+# Migrations 0045 (auto-classification flags, 2026-07-06) + 0046 (money-
+# personality computed insight — widens ck_user_insights_type, 2026-07-07) land
+# via the A2 migrate job that ran BEFORE this redeploy; head → 0046. Both are
+# additive (booleans w/ server default false; a CHECK widen) — no env var, no
+# behavior flag beyond the classifier being on by default at capture and the
+# nightly worker now emitting the money_personality insight.
 az containerapp update -g "$RG" -n "$CA_NAME" \
   --image "$API_IMAGE" \
   --revision-suffix "$REV_SUFFIX" \
@@ -210,7 +217,7 @@ az containerapp update -g "$RG" -n "$CA_NAME" \
     NUDGE_SCHEDULER_ENABLED=true \
     NUDGE_SCHEDULER_INTERVAL_S=21600 \
     NUDGE_SCHEDULER_INITIAL_DELAY_S=60 \
-    ADVISORY_PERSONA_ENABLED=false \
+    ADVISORY_PERSONA_ENABLED=true \
     ADVISORY_OPTION_C_ENABLED=false \
     CHAT_STREAMING_ENABLED=true \
   >/dev/null
@@ -272,7 +279,7 @@ $(ok "Azure deploy complete.")
   Image tag            : $TAG
 
   Next (manual, per runbook):
-    • Confirm alembic head = 0045 in the A2 Log Analytics output above.
+    • Confirm alembic head = 0046 in the A2 Log Analytics output above.
     • If demo reviewer login is needed, set APPLE_REVIEW_DEMO_CODE / _EMAIL (B7).
     • Smoke /login → device-code exchange end to end.
     • P10 advisory mode deployed DARK (flags pinned false) — /asesor replies
@@ -289,5 +296,5 @@ $(ok "Azure deploy complete.")
       whole body arrives at once, ingress is buffering (answer still correct,
       just not live) — pin the ingress config then. Instant kill = flip the
       flag back to false + redeploy (no app release needed).
-    • Update [[Deployment-State]] with tag $TAG + head 0045 (D4).
+    • Update [[Deployment-State]] with tag $TAG + head 0046 (D4).
 EOF

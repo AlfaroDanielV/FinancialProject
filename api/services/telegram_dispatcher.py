@@ -48,7 +48,7 @@ from .finance.affordability import (
     gather_financial_context,
 )
 from .finance.cashflow import compute_monthly_cashflow
-from .llm_extractor import ExtractionResult, Intent
+from .llm_extractor import GOAL_NO_DATE_SENTINEL, ExtractionResult, Intent
 from .transactions import window_bounds
 
 from app.domain.payroll import UnconfiguredYearError, compute_net_salary
@@ -98,6 +98,12 @@ class AskClarification:
     # channels; a tap posts the label back through the same merge path a typed
     # reply takes. Empty = free-text question, no buttons.
     options: list[str] = field(default_factory=list)
+    # SMART goals infeasible decision-point: the engine-computed alternatives
+    # (extended deadline ISO / reduced target) the pipeline stashes on the
+    # clarification state so the chosen chip rewrites the right field without
+    # re-running the affordability engine in the stateless merge step.
+    goal_alt_date: str = ""
+    goal_alt_amount: str = ""
 
 
 @dataclass(frozen=True)
@@ -1046,14 +1052,32 @@ def _months_between(start: date, end: date) -> int:
     return max(1, months)
 
 
+# Spelled cardinals 1–12 for "en/dentro de <N> meses|años". Kept small on
+# purpose (past a year users almost always write a digit or a date).
+_SPELLED_NUM_ES: dict[str, int] = {
+    "un": 1, "uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4,
+    "cinco": 5, "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10,
+    "once": 11, "doce": 12,
+}
+_SPELLED_ALT = "|".join(_SPELLED_NUM_ES)
+
+
+def _num_token(tok: str) -> Optional[int]:
+    if tok.isdigit():
+        return int(tok)
+    return _SPELLED_NUM_ES.get(tok)
+
+
 def _resolve_goal_target_date(hint: Optional[str], today: date) -> Optional[date]:
     """Resolve a natural-language goal target-date hint to a concrete date.
 
     Mirrors the LLM-extracts/server-resolves split used for occurred_at: the
     model passes the user's words, this resolves them. Handles ISO dates,
-    YYYY-MM, "en N meses/años", "fin de año", and Spanish month names
-    (optionally with a year). Anything else → None (goal created without a
-    deadline; user can set one later)."""
+    YYYY-MM, "en/dentro de N meses/años" (digit OR spelled un–doce), "el
+    próximo mes/año", a bare/"para" year, "fin de año", "N de <mes>", and
+    Spanish month names (optionally with a year). Returns None when it can't
+    parse — the SMART dispatcher then RE-ASKS (it no longer silently drops the
+    deadline). Past dates are returned as parsed; the dispatcher rejects them."""
     if not hint:
         return None
     h = hint.strip().lower()
@@ -1069,26 +1093,46 @@ def _resolve_goal_target_date(hint: Optional[str], today: date) -> Optional[date
         if 1 <= month <= 12:
             return date(year, month, 1)
 
-    m = re.search(r"en\s+(\d{1,3})\s+mes", h)
-    if m:
-        return _add_months(today, int(m.group(1)))
-    m = re.search(r"en\s+(\d{1,2})\s+a[nñ]o", h)
-    if m:
-        return _add_months(today, int(m.group(1)) * 12)
+    # "en 6 meses" / "dentro de tres meses" / "en un año"
+    m = re.search(rf"(?:en|dentro de)\s+(\d{{1,3}}|{_SPELLED_ALT})\s+mes", h)
+    if m and (n := _num_token(m.group(1))) is not None:
+        return _add_months(today, n)
+    m = re.search(rf"(?:en|dentro de)\s+(\d{{1,2}}|{_SPELLED_ALT})\s+a[nñ]o", h)
+    if m and (n := _num_token(m.group(1))) is not None:
+        return _add_months(today, n * 12)
+
+    # "el próximo mes" / "el mes que viene" / "el próximo año"
+    if re.search(r"pr[oó]ximo\s+a[nñ]o|a[nñ]o que viene", h):
+        return _add_months(today, 12)
+    if re.search(r"pr[oó]ximo\s+mes|mes que viene", h):
+        return _add_months(today, 1)
 
     if "fin de a" in h:  # "fin de año" / "fin de ano"
         eoy = date(today.year, 12, 1)
         return eoy if eoy > today else date(today.year + 1, 12, 1)
 
+    # "N de <mes>" day capture ("15 de diciembre"), else bare month name.
     for name, month in _MONTHS_ES.items():
         if name in h:
             year_match = re.search(r"(20\d{2})", h)
-            if year_match:
-                return date(int(year_match.group(1)), month, 1)
-            cand = date(today.year, month, 1)
+            year = int(year_match.group(1)) if year_match else None
+            day_match = re.search(r"(\d{1,2})\s+de\s+" + name, h)
+            day = 1
+            if day_match:
+                d = int(day_match.group(1))
+                if 1 <= d <= calendar.monthrange(year or today.year, month)[1]:
+                    day = d
+            if year is not None:
+                return date(year, month, day)
+            cand = date(today.year, month, day)
             if cand <= today:
-                cand = date(today.year + 1, month, 1)
+                cand = date(today.year + 1, month, day)
             return cand
+
+    # A bare / "para" 4-digit year → end of that year (deadline semantics).
+    m = re.search(r"(20\d{2})", h)
+    if m:
+        return date(int(m.group(1)), 12, 1)
 
     return None
 
@@ -1180,6 +1224,36 @@ def _goal_context_note(context: Optional[FinancialContext]) -> str:
     return ""
 
 
+# SMART-R relevance: a deterministic, personality-matched line of encouragement
+# on the goal proposal. Keyed by the computed money_personality label (never an
+# LLM sentence). Missing/insufficient data → no line (generic proposal).
+_GOAL_PERSONALITY_NOTE: dict[str, str] = {
+    "spender": (
+        " Cuando llegués a la meta, date el gusto sin culpa — te lo vas a haber "
+        "ganado."
+    ),
+    "avoider": (
+        " Con la meta clara es más fácil no perderle el rastro; yo te la recuerdo."
+    ),
+    "saver": " Va con tu estilo: paso a paso y sin apuro.",
+    "investor": " Buena jugada: la plata con rumbo rinde más.",
+}
+
+
+async def _goal_personality_note(db: AsyncSession, user: User) -> str:
+    """SMART-R: read the user's computed money_personality (a deterministic DB
+    read, mirroring `_goal_context_note`; the insight never inlines into an LLM
+    prompt) and return the matching voseo line, or "" when unknown. Best-effort
+    — a memory miss must never break goal creation."""
+    try:
+        from .finance.money_personality import stored_personality
+
+        label = await stored_personality(db, user.id)
+    except Exception:  # noqa: BLE001 — optional flourish, never blocks the goal
+        return ""
+    return _GOAL_PERSONALITY_NOTE.get(label or "", "")
+
+
 def _build_goal_summary(
     *,
     name: str,
@@ -1190,6 +1264,7 @@ def _build_goal_summary(
     today: date,
     assessment: Optional[AffordabilityResult] = None,
     context_note: str = "",
+    personality_note: str = "",
 ) -> str:
     amt = _format_amount(target, currency)
     parts = [f"Nueva meta: {name} — ahorrar {amt}"]
@@ -1205,12 +1280,73 @@ def _build_goal_summary(
         lead += context_note
     if currency_defaulted:
         lead += f" (Usé {currency} por defecto.)"
+    lead += personality_note
     return lead + " ¿Confirmo?"
 
 
 def _opt_str(value: object) -> Optional[str]:
     """JSON-safe str() that preserves None (for trace payloads)."""
     return str(value) if value is not None else None
+
+
+# SMART-M plausibility floor: a "goal" below this is almost always a parse slip
+# (the ₡2 bug) or a typo, not a real target. Below it we re-ask the amount.
+_MIN_GOAL_TARGET: dict[str, Decimal] = {"CRC": Decimal("1000"), "USD": Decimal("2")}
+
+
+def _is_junk_goal_name(name: str) -> bool:
+    """SMART-S: reject a name that's actually a bare amount ("2 millones") or a
+    confirm/cancel word — those slip in when the user answers the wrong prompt."""
+    t = name.strip().lower()
+    if t in {"si", "sí", "no", "ok", "dale", "listo", "cancelar", "cancela"}:
+        return True
+    # Pure amount ("500000", "2 millones", "₡5.000") with no other words.
+    stripped = re.sub(r"[₡$.,\s]|mill[oó]n(?:es)?|mil|colones|d[oó]lares|k", "", t)
+    return stripped.isdigit()
+
+
+def _has_concrete_alternatives(assessment: Optional[AffordabilityResult]) -> bool:
+    """SMART-A: the engine says infeasible AND handed us both levers to offer."""
+    return (
+        assessment is not None
+        and assessment.feasible is False
+        and assessment.min_timeline_months_feasible is not None
+        and assessment.max_amount_feasible_in_timeline is not None
+    )
+
+
+def _goal_infeasible_clarification(
+    *,
+    extraction: ExtractionResult,
+    assessment: AffordabilityResult,
+    currency: str,
+    today: date,
+) -> AskClarification:
+    """SMART-A decision-point: the engine computed the goal is unaffordable AND
+    has concrete alternatives. Offer them as tappable chips — extend the plazo,
+    lower the meta, or create anyway — never a veto. The chosen chip rewrites the
+    field deterministically (merge_reply reads the stashed alt values) and the
+    goal re-proposes; "Crear así" sets goal_force_create so it proposes as-is."""
+    ext_months = assessment.min_timeline_months_feasible
+    lower_amount = assessment.max_amount_feasible_in_timeline
+    short = _whole(assessment.shortfall or Decimal("0"), currency)
+    alt_date = _add_months(today, ext_months)
+    question = (
+        f"Con ese plazo te faltarían ~{short}/mes. ¿Qué querés hacer? "
+        "Tocá una opción."
+    )
+    return AskClarification(
+        question_es=question,
+        awaiting_field="goal_infeasible",
+        partial=extraction.model_dump(mode="json"),
+        options=[
+            f"Extender el plazo (~{ext_months} meses)",
+            f"Bajar la meta a {_whole(lower_amount, currency)}",
+            "Crear así",
+        ],
+        goal_alt_date=alt_date.isoformat(),
+        goal_alt_amount=str(lower_amount),
+    )
 
 
 async def _dispatch_create_goal(
@@ -1220,25 +1356,84 @@ async def _dispatch_create_goal(
     today: date,
     db: AsyncSession,
 ) -> DispatcherResult:
-    # Target amount is non-negotiable — it's what "the goal" means.
+    currency = extraction.currency or user.currency
+    currency_defaulted = extraction.currency is None
+
+    # SMART-M: target amount is non-negotiable — it's what "the goal" means.
     if extraction.goal_target_amount is None:
         return AskClarification(
             question_es="¿Cuánto querés ahorrar? Decime el monto de la meta (ej: '2 millones').",
             awaiting_field="goal_target_amount",
             partial=extraction.model_dump(mode="json"),
         )
-    # A goal needs a name so it's identifiable in the list.
+    target: Decimal = extraction.goal_target_amount
+    # Plausibility backstop (the ₡2 goal): a sub-floor target is a parse slip.
+    floor = _MIN_GOAL_TARGET.get(currency, Decimal("1000"))
+    if target < floor:
+        return AskClarification(
+            question_es=(
+                f"{_format_amount(target, currency)} es muy poco para una meta "
+                "— ¿seguro? Confirmá el monto (ej: '2 millones', '500 mil')."
+            ),
+            awaiting_field="goal_target_amount",
+            partial=extraction.model_dump(mode="json"),
+        )
+
+    # SMART-S: a goal needs a real name (not a bare amount / confirm word).
     if not extraction.goal_name:
         return AskClarification(
             question_es="¿Cómo querés llamar la meta? (ej: 'vacaciones', 'fondo de emergencia').",
             awaiting_field="goal_name",
             partial=extraction.model_dump(mode="json"),
         )
+    if _is_junk_goal_name(extraction.goal_name):
+        return AskClarification(
+            question_es=(
+                "Necesito un nombre para la meta (no un monto). "
+                "¿Cómo la llamamos? (ej: 'vacaciones', 'fondo de emergencia')."
+            ),
+            awaiting_field="goal_name",
+            partial={**extraction.model_dump(mode="json"), "goal_name": None},
+        )
 
-    currency = extraction.currency or user.currency
-    currency_defaulted = extraction.currency is None
-    target: Decimal = extraction.goal_target_amount
-    target_date = _resolve_goal_target_date(extraction.goal_target_date, today)
+    # SMART-T: a deadline is required. Ask when none was given (never silently
+    # drop it), re-ask when the hint didn't parse, reject a past date. "Sin
+    # fecha" is an explicit opt-out (sentinel) → proceed dateless.
+    raw_date = extraction.goal_target_date
+    declined_date = raw_date == GOAL_NO_DATE_SENTINEL
+    target_date: Optional[date] = None
+    if not declined_date:
+        if raw_date is None:
+            return AskClarification(
+                question_es=(
+                    "¿Para cuándo querés lograrla? Una fecha le da fuerza a la "
+                    "meta. Tocá una opción o escribime otra (ej: 'en 8 meses')."
+                ),
+                awaiting_field="goal_target_date",
+                partial=extraction.model_dump(mode="json"),
+                options=["En 6 meses", "Fin de año", "En 1 año", "Sin fecha"],
+            )
+        target_date = _resolve_goal_target_date(raw_date, today)
+        if target_date is None:
+            return AskClarification(
+                question_es=(
+                    "No entendí la fecha. Probá con algo como 'en 8 meses', "
+                    "'fin de año', 'diciembre 2027' o una fecha (AAAA-MM-DD)."
+                ),
+                awaiting_field="goal_target_date",
+                partial={**extraction.model_dump(mode="json"), "goal_target_date": None},
+                options=["En 6 meses", "Fin de año", "En 1 año", "Sin fecha"],
+            )
+        if target_date <= today:
+            return AskClarification(
+                question_es=(
+                    "Esa fecha ya pasó. Decime una fecha futura para la meta "
+                    "(ej: 'en 8 meses', 'fin de año')."
+                ),
+                awaiting_field="goal_target_date",
+                partial={**extraction.model_dump(mode="json"), "goal_target_date": None},
+                options=["En 6 meses", "Fin de año", "En 1 año", "Sin fecha"],
+            )
 
     # Phase 7 feasibility gate: deterministic affordability check, run only when
     # there's a horizon to spread the target over AND the goal is in the user's
@@ -1291,6 +1486,20 @@ async def _dispatch_create_goal(
             surface="write_dispatcher",
         )
 
+        # SMART-A decision-point: when the goal is unaffordable AND the engine
+        # gave concrete levers, surface them as a choice BEFORE proposing —
+        # unless the user already chose "Crear así" (goal_force_create). Never a
+        # veto; the engine computes, the user decides.
+        if not extraction.goal_force_create and _has_concrete_alternatives(
+            assessment
+        ):
+            return _goal_infeasible_clarification(
+                extraction=extraction,
+                assessment=assessment,
+                currency=currency,
+                today=today,
+            )
+
     payload = {
         "action_type": "create_goal",
         "name": extraction.goal_name,
@@ -1307,6 +1516,7 @@ async def _dispatch_create_goal(
         today=today,
         assessment=assessment,
         context_note=context_note,
+        personality_note=await _goal_personality_note(db, user),
     )
     return ProposeAction(
         action_type="create_goal", payload=payload, summary_es=summary

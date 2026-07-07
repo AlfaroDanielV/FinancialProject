@@ -49,6 +49,15 @@ function stripHtml(text: string): string {
   return text.replace(/<[^>]+>/g, "");
 }
 
+// Shared client-side failure copy (blocking + streaming paths). TIMEOUT is the
+// honest message when the server ACCEPTED the turn and is likely still working
+// (axios ECONNABORTED on the blocking path; a stalled/cut stream on the SSE
+// path); NETWORK is for a request that never got an answer back.
+const TIMEOUT_COPY =
+  "Me estoy tardando más de la cuenta con esa consulta. Esperá un momento y probá de nuevo.";
+const NETWORK_COPY =
+  "No pude conectar con el servidor. Revisá tu conexión e intentá de nuevo.";
+
 type Message = {
   id: string;
   role: "user" | "bot";
@@ -413,9 +422,7 @@ export function ChatScreen() {
       {
         id: nextId(),
         role: "bot",
-        text: isTimeout
-          ? "Me estoy tardando más de la cuenta con esa consulta. Esperá un momento y probá de nuevo."
-          : "No pude conectar con el servidor. Revisá tu conexión e intentá de nuevo.",
+        text: isTimeout ? TIMEOUT_COPY : NETWORK_COPY,
         errorClass: isTimeout ? "timeout" : "network",
       },
     ]);
@@ -539,7 +546,15 @@ export function ChatScreen() {
         mutation.mutate(trimmed);
       } else {
         // A post-response failure — NEVER auto-resend (the turn may have
-        // committed). Keep any partial text; surface a soft error.
+        // committed). An "interrupted" cause means the request WAS accepted
+        // (2xx) and the stream stalled/cut mid-turn: the server is likely still
+        // working, so this reads as a TIMEOUT (same honest copy as the blocking
+        // path), never a connectivity failure. "connect"/"http" (and any
+        // non-ChatStreamError) mean no answer ever came back → NETWORK copy.
+        // Partial text only ever exists on an interruption (deltas require a
+        // 2xx body), so the "(Se cortó la respuesta.)" suffix stays honest.
+        const interrupted =
+          e instanceof ChatStreamError && e.kind === "interrupted";
         setMessages((prev) =>
           prev.map((m) =>
             m.id === draftId
@@ -549,8 +564,10 @@ export function ChatScreen() {
                   statusLabel: undefined,
                   text: m.text
                     ? m.text + "\n\n(Se cortó la respuesta.)"
-                    : "No pude conectar con el servidor. Revisá tu conexión e intentá de nuevo.",
-                  errorClass: "network",
+                    : interrupted
+                      ? TIMEOUT_COPY
+                      : NETWORK_COPY,
+                  errorClass: interrupted ? "timeout" : "network",
                 }
               : m,
           ),

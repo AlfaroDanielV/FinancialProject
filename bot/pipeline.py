@@ -9,6 +9,7 @@ JSON response.
 """
 from __future__ import annotations
 
+import difflib
 import hashlib
 import logging
 import re
@@ -177,6 +178,58 @@ _COMMAND_MENU = {"/menu", "/menú"}
 _COMMAND_ADVISORY = {"/asesor", "/asesoria", "/asesoría"}
 _COMMAND_ADVISORY_BY_LENGTH = tuple(sorted(_COMMAND_ADVISORY, key=len, reverse=True))
 _COMMAND_ADVISORY_END = {"/normal", "/salir_asesor"}
+
+# SMART goals F1: re-ask a clarification at most this many times after an
+# uninterpretable reply, then bail to help copy so a digit-free answer can't
+# trap the user in a loop.
+_CLARIFY_MAX_ATTEMPTS = 2
+
+# ── unknown-command guard ──
+# Everything the pipeline's short-circuits above handle. A slash token that
+# matches nothing must never fall through to the LLM extractor: it burns
+# tokens and the model degrades a typo like "/advisor" into the generic help
+# menu with zero "unknown command" signal (dogfood report 2026-07-07).
+_CHAT_COMMANDS = frozenset(
+    _COMMAND_HELP
+    | _COMMAND_UNDO
+    | _COMMAND_CANCEL
+    | _COMMAND_MENU
+    | _COMMAND_ADVISORY
+    | _COMMAND_ADVISORY_END
+    | {"/resumen", "/resumen_mes", "/resumen_semana", "/resumen_hoy"}
+)
+# Registered ONLY with aiogram (bot/{handlers,gmail_handlers,memory_handlers,
+# onboarding_handlers}.py). In Telegram those never reach process_message —
+# aiogram routes them first — so seeing one here means the NATIVE chat: point
+# at Telegram (and at the app screen when a launcher covers the same feature)
+# instead of claiming the command doesn't exist.
+_TELEGRAM_ONLY_COMMANDS = frozenset(
+    {
+        "/start", "/setup", "/login", "/iniciar", "/whoami", "/clear",
+        "/conectar_gmail", "/con_mail", "/desconectar_gmail", "/desc_mail",
+        "/estado_gmail", "/est_mail", "/revisar_correos", "/rev_mail",
+        "/aprobar_shadow", "/ok_shadow", "/rechazar_shadow", "/no_shadow",
+        "/agregar_banco", "/quitar_banco", "/agregar_muestra", "/discovery",
+        "/correos", "/correo",
+        "/olvidar", "/editar_memoria", "/edit_mem",
+        "/recalcular_memoria", "/recalc_mem",
+    }
+)
+_TG_COMMAND_APP_EQUIV = {
+    "/conectar_gmail": "/gmail", "/con_mail": "/gmail",
+    "/desconectar_gmail": "/gmail", "/desc_mail": "/gmail",
+    "/estado_gmail": "/gmail", "/est_mail": "/gmail",
+    "/revisar_correos": "/gmail", "/rev_mail": "/gmail",
+    "/aprobar_shadow": "/gmail", "/ok_shadow": "/gmail",
+    "/rechazar_shadow": "/gmail", "/no_shadow": "/gmail",
+    "/correos": "/gmail", "/correo": "/gmail",
+    "/olvidar": "/memoria", "/editar_memoria": "/memoria",
+    "/edit_mem": "/memoria",
+    "/recalcular_memoria": "/memoria", "/recalc_mem": "/memoria",
+}
+# Letters/underscore only: "/5000" or "/2x" is NOT treated as a command — it
+# still falls through to the extractor as a capture attempt.
+_COMMAND_TOKEN_RE = re.compile(r"/[a-záéíóúñü_]+")
 
 
 def _message_hash(text: str) -> str:
@@ -477,6 +530,46 @@ async def _process_message_inner(
         if lowered in LAUNCHER_COMMANDS:
             return build_launcher_reply(lowered)
 
+        # Unknown-command guard — deterministic, zero LLM. Pending state
+        # (proposal, clarification, account flow) is deliberately untouched:
+        # a stray typo must not abort an in-flight flow.
+        cmd = lowered.split()[0].split("@", 1)[0]
+        if _COMMAND_TOKEN_RE.fullmatch(cmd):
+            if cmd in _CHAT_COMMANDS or cmd in LAUNCHER_COMMANDS:
+                # Known command + unexpected trailing text ("/help me").
+                return BotReply(
+                    text=messages_es.COMMAND_NO_ARGS_TPL.format(cmd=cmd)
+                )
+            if cmd in _TELEGRAM_ONLY_COMMANDS:
+                equiv = _TG_COMMAND_APP_EQUIV.get(cmd)
+                hint = (
+                    messages_es.TELEGRAM_COMMAND_APP_HINT_TPL.format(
+                        launcher=equiv
+                    )
+                    if equiv
+                    else ""
+                )
+                return BotReply(
+                    text=messages_es.TELEGRAM_ONLY_COMMAND_TPL.format(
+                        cmd=cmd, hint=hint
+                    )
+                )
+            # Suggest only commands usable right here (chat + launchers).
+            # Telegram-only commands have their own branch above, and pointing
+            # a native user at an obscure Telegram debug command is noise.
+            corpus = sorted(_CHAT_COMMANDS | LAUNCHER_COMMANDS)
+            close = difflib.get_close_matches(cmd, corpus, n=1, cutoff=0.6)
+            suggestion = (
+                messages_es.UNKNOWN_COMMAND_SUGGESTION_TPL.format(match=close[0])
+                if close
+                else ""
+            )
+            return BotReply(
+                text=messages_es.UNKNOWN_COMMAND_TPL.format(
+                    cmd=cmd, suggestion=suggestion
+                )
+            )
+
     # ── account-creation round-trip ──
     # Phase 6d B9: this conversational flow owns its replies while active,
     # including "sí" in the confirmation step. That must beat the generic
@@ -547,8 +640,20 @@ async def _process_message_inner(
     if pending_clarify is not None:
         merged = merge_reply(pending_clarify, text, user)
         if merged is None:
-            # Reply couldn't be interpreted — keep state, re-ask (with the
-            # same option buttons, if the question carried any).
+            # An explicit cancel word ends the flow cleanly — never trap the
+            # user in a clarification they want out of (SMART goals F1).
+            if _text_is_confirmation(text) is False:
+                await clear_clarification(user_id=user.id, redis=redis)
+                return BotReply(text=messages_es.CANCELLED)
+            # Uninterpretable reply — re-ask, but bail to help after a cap so a
+            # digit-free answer ("no sé") can't loop forever.
+            if pending_clarify.attempts + 1 >= _CLARIFY_MAX_ATTEMPTS:
+                await clear_clarification(user_id=user.id, redis=redis)
+                return BotReply(text=messages_es.CLARIFY_GAVE_UP)
+            pending_clarify.attempts += 1
+            await save_clarification(
+                user_id=user.id, state=pending_clarify, redis=redis
+            )
             return BotReply(
                 text=pending_clarify.question_es,
                 buttons=_clarify_buttons(pending_clarify),
@@ -1344,6 +1449,11 @@ async def _apply_decision(
             question_es=decision.question_es,
             options=list(decision.options),
             nonce=new_short_id() if decision.options else "",
+            # attempts resets to 0 for each fresh question. SMART goals: the
+            # infeasible decision-point stashes the engine's alternatives so the
+            # chosen chip rewrites the right field without re-running the engine.
+            goal_alt_date=getattr(decision, "goal_alt_date", ""),
+            goal_alt_amount=getattr(decision, "goal_alt_amount", ""),
         )
         await save_clarification(user_id=user.id, state=state, redis=redis)
         if telemetry_persisted:

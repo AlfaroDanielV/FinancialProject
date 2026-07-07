@@ -26,7 +26,11 @@ from typing import Any, Optional
 from redis.asyncio import Redis
 
 from api.models.user import User
-from api.services.llm_extractor import ExtractionResult, Intent
+from api.services.llm_extractor import (
+    GOAL_NO_DATE_SENTINEL,
+    ExtractionResult,
+    Intent,
+)
 
 from .redis_keys import CLARIFICATION_TTL_S, clarification_key
 
@@ -50,6 +54,16 @@ class ClarificationState:
     question_es: str
     options: list[str] = dataclass_field(default_factory=list)
     nonce: str = ""
+    # SMART goals: how many times we've re-asked THIS question after an
+    # uninterpretable reply. Bails to help copy after a cap so a digit-free
+    # answer can't trap the user in an endless loop. Defaulted → pre-existing
+    # states stay valid (same precedent as `options`/`nonce`).
+    attempts: int = 0
+    # SMART goals infeasible decision-point: the two deterministic alternatives
+    # the affordability engine computed, stashed so the chosen chip rewrites the
+    # right field WITHOUT the merge step re-running the engine. Empty otherwise.
+    goal_alt_date: str = ""
+    goal_alt_amount: str = ""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -142,8 +156,34 @@ def merge_reply(
             return None
         merged["goal_target_amount"] = str(amount)
     elif field == "goal_name":
-        # Raw pass-through; the goal name is whatever the user typed.
+        # Raw pass-through; the goal name is whatever the user typed. The
+        # dispatcher re-asks if it's junk (a bare amount / a confirm word).
         merged["goal_name"] = reply
+    elif field == "goal_target_date":
+        # SMART-T: the deadline the user picked or typed. "Sin fecha" (or a bare
+        # no) is an explicit opt-out → a sentinel the dispatcher treats as
+        # "proceed without a deadline"; anything else is a raw hint the
+        # dispatcher re-resolves (and re-asks on if unparseable / in the past).
+        if _is_no_date(reply):
+            merged["goal_target_date"] = GOAL_NO_DATE_SENTINEL
+        else:
+            merged["goal_target_date"] = reply
+    elif field == "goal_infeasible":
+        # SMART-A decision-point: the user chose how to make an unaffordable
+        # goal affordable (or to create it anyway). The alternatives were
+        # computed by the engine and stashed on the state — this only routes
+        # the choice onto the right field; the re-dispatch re-checks feasibility.
+        choice = _parse_goal_infeasible_choice(reply)
+        if choice is None:
+            return None
+        if choice == "extend" and state.goal_alt_date:
+            merged["goal_target_date"] = state.goal_alt_date
+        elif choice == "reduce" and state.goal_alt_amount:
+            merged["goal_target_amount"] = state.goal_alt_amount
+        elif choice == "force":
+            merged["goal_force_create"] = True
+        else:
+            return None
     elif field == "income_frequency":
         # Phase 6f conversational income creation.
         freq = _parse_frequency_es(reply)
@@ -198,10 +238,14 @@ def merge_reply(
 
 
 _AMOUNT_RE = re.compile(r"(-?\d+(?:[.,]\d+)*)")
-_MIL_RE = re.compile(r"^\s*(\d+(?:[.,]\d+)?)\s*(mil|k)\s*$", re.IGNORECASE)
-# "2 millones", "1,5 millón" → ×1_000_000. Disjoint from _MIL_RE ("mil"/"k").
+# Word-boundary SEARCH (not fullmatch): a clarification reply is often a phrase,
+# not a bare number — "2 millones para diciembre" must still parse to 2 000 000,
+# not silently fall to _AMOUNT_RE and create a ₡2 goal (the 2026-07 goal bug).
+# `\b` after "mil" won't match inside "millones" (both sides word chars), and
+# _MILLON_RE is checked first, so "mil"/"k" and "millón/millones" stay disjoint.
+_MIL_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(mil|k)\b", re.IGNORECASE)
 _MILLON_RE = re.compile(
-    r"^\s*(\d+(?:[.,]\d+)?)\s*(mill[oó]n|millones)\s*$", re.IGNORECASE
+    r"(\d+(?:[.,]\d+)?)\s*(mill[oó]n(?:es)?)\b", re.IGNORECASE
 )
 
 
@@ -211,7 +255,7 @@ def _parse_amount_es(text: str) -> Optional[Decimal]:
         t = t.replace(sym, "")
     t = t.strip()
 
-    millon = _MILLON_RE.match(t)
+    millon = _MILLON_RE.search(t)
     if millon:
         base = millon.group(1).replace(",", ".")
         try:
@@ -219,7 +263,7 @@ def _parse_amount_es(text: str) -> Optional[Decimal]:
         except InvalidOperation:
             return None
 
-    mil = _MIL_RE.match(t)
+    mil = _MIL_RE.search(t)
     if mil:
         base = mil.group(1).replace(",", ".")
         try:
@@ -251,6 +295,31 @@ def _parse_amount_es(text: str) -> Optional[Decimal]:
     if v <= 0:
         return None
     return v
+
+
+# GOAL_NO_DATE_SENTINEL is imported from the extractor package (shared with the
+# api dispatcher; see its definition there). "Sin fecha" / a bare no maps to it.
+_NO_DATE_WORDS = frozenset(
+    {"sin fecha", "sin plazo", "ninguna", "ninguno", "no", "no sé", "no se"}
+)
+
+
+def _is_no_date(text: str) -> bool:
+    return text.strip().lower() in _NO_DATE_WORDS
+
+
+# The three infeasible-goal chips → a stable choice token. Order matters: the
+# "reduce" keyword ("bajar la meta") and "extend" ("extender el plazo") are
+# checked before the catch-all "force" so a longer phrase can't be misread.
+def _parse_goal_infeasible_choice(text: str) -> Optional[str]:
+    t = text.strip().lower()
+    if any(kw in t for kw in ("extend", "plazo", "más tiempo", "mas tiempo")):
+        return "extend"
+    if any(kw in t for kw in ("bajar", "baja", "reducir", "menos", "meta más")):
+        return "reduce"
+    if any(kw in t for kw in ("igual", "así", "asi", "tal cual", "crear", "crea")):
+        return "force"
+    return None
 
 
 _INTENT_KEYWORDS: dict[Intent, tuple[str, ...]] = {

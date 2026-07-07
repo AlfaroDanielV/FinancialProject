@@ -2,7 +2,7 @@ import { fetch } from "expo/fetch";
 
 import { getSessionToken } from "../lib/auth";
 import { env } from "../lib/env";
-import { notifyUnauthorized } from "./client";
+import { APP_BUILD, notifyUnauthorized } from "./client";
 import type { ChatMessageResponse } from "./chat";
 
 /**
@@ -25,7 +25,22 @@ import type { ChatMessageResponse } from "./chat";
 const STALL_MS = 25_000; // abort if no bytes (incl. heartbeats) for this long
 const HARD_CAP_MS = 210_000; // absolute ceiling, above the server's 170s deadline
 
+/**
+ * Structured cause of a ChatStreamError — drives honest client copy:
+ * - "connect": pre-response fetch/connect failure (the POST may or may not
+ *   have reached the server — no bytes ever came back).
+ * - "http": the server answered with a non-2xx HTTP response (including the
+ *   capability-missing 404/405/501 and the 401 path).
+ * - "interrupted": the request WAS accepted (2xx) and the stream died mid-turn
+ *   — stall timer, hard-cap abort, a mid-read network error, or a stream that
+ *   ended without `final`. The server is likely still working on the turn, so
+ *   this reads as a timeout, never a connectivity failure.
+ */
+export type ChatStreamErrorKind = "connect" | "http" | "interrupted";
+
 export class ChatStreamError extends Error {
+  /** Structured cause — see ChatStreamErrorKind. */
+  kind: ChatStreamErrorKind;
   /** HTTP 404/405/501 — the stream route is missing/disabled; safe to fall back. */
   capabilityMissing: boolean;
   /** Whether any stream bytes arrived before the failure (diagnostic only). */
@@ -33,10 +48,15 @@ export class ChatStreamError extends Error {
 
   constructor(
     message: string,
-    opts: { capabilityMissing?: boolean; receivedAny?: boolean } = {},
+    opts: {
+      kind: ChatStreamErrorKind;
+      capabilityMissing?: boolean;
+      receivedAny?: boolean;
+    },
   ) {
     super(message);
     this.name = "ChatStreamError";
+    this.kind = opts.kind;
     this.capabilityMissing = opts.capabilityMissing ?? false;
     this.receivedAny = opts.receivedAny ?? false;
   }
@@ -99,6 +119,7 @@ export async function streamChatMessage(
       headers: {
         "Content-Type": "application/json",
         Accept: "text/event-stream",
+        "X-App-Build": APP_BUILD,
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({ text }),
@@ -108,21 +129,24 @@ export async function streamChatMessage(
     clearTimers();
     // Pre-response failure (connect/DNS/abort). NOT capability-missing — the
     // POST may have reached the server, so do NOT auto-fall-back.
-    throw new ChatStreamError("stream_connect_failed");
+    throw new ChatStreamError("stream_connect_failed", { kind: "connect" });
   }
 
   if (response.status === 404 || response.status === 405 || response.status === 501) {
     clearTimers();
-    throw new ChatStreamError("stream_unsupported", { capabilityMissing: true });
+    throw new ChatStreamError("stream_unsupported", {
+      kind: "http",
+      capabilityMissing: true,
+    });
   }
   if (response.status === 401) {
     clearTimers();
     await notifyUnauthorized();
-    throw new ChatStreamError("stream_unauthorized");
+    throw new ChatStreamError("stream_unauthorized", { kind: "http" });
   }
   if (!response.ok || !response.body) {
     clearTimers();
-    throw new ChatStreamError(`stream_http_${response.status}`);
+    throw new ChatStreamError(`stream_http_${response.status}`, { kind: "http" });
   }
 
   const reader = response.body.getReader();
@@ -161,13 +185,19 @@ export async function streamChatMessage(
     // Abort (stall / hard cap) or a mid-stream read error. If we already have
     // the final frame, honor it; otherwise it's a non-retryable interruption.
     if (final != null) return final;
-    throw new ChatStreamError("stream_interrupted", { receivedAny });
+    throw new ChatStreamError("stream_interrupted", {
+      kind: "interrupted",
+      receivedAny,
+    });
   } finally {
     clearTimers();
   }
 
   if (final == null) {
-    throw new ChatStreamError("stream_ended_without_final", { receivedAny });
+    throw new ChatStreamError("stream_ended_without_final", {
+      kind: "interrupted",
+      receivedAny,
+    });
   }
   return final;
 }
