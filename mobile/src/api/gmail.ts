@@ -50,6 +50,11 @@ export interface ShadowConfirmItem {
   // the row's current (guessed) account. Backend validates owner/active/currency.
   account_id?: string | null;
   transaction_date?: string;
+  // Envelope choice at review time. The scan pre-fills an auto-suggested
+  // envelope on the shadow row; `envelope_id` overrides it, `clear_envelope`
+  // removes it. Backend validates assignability (owner or shared member).
+  envelope_id?: string | null;
+  clear_envelope?: boolean;
 }
 
 export interface GmailRunInfo {

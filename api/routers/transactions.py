@@ -33,6 +33,7 @@ from ..schemas.transaction import (
     TransactionUpdate,
 )
 from ..schemas.transfers import TransferResponse
+from ..services.classification import apply_classification
 from ..services.clock import user_today
 from ..services.dedup import clear_duplicate_nudges_for_txn, flag_and_notify
 from ..services.dispatch.lazy_detection import match_account_hint
@@ -115,6 +116,10 @@ async def shortcut_transaction(
         transaction_date=payload.transaction_date or user_today(user),
         source="shortcut",
     )
+    # Auto-classification (best-effort, never blocks the capture): link the
+    # Shortcut's free-text category to an existing user category and/or fill
+    # category + envelope from the user's own merchant history.
+    await apply_classification(db, user_id=user.id, txn=txn)
     db.add(txn)
     await db.commit()
     await db.refresh(txn)
@@ -209,6 +214,9 @@ async def apple_pay_capture(
         status="confirmed",
         source_ref=source_ref,
     )
+    # Auto-classification from merchant history (no LLM on this path — the
+    # hard rule holds; history lookup is deterministic). Best-effort.
+    await apply_classification(db, user_id=user.id, txn=txn)
     db.add(txn)
     try:
         await db.commit()
@@ -275,6 +283,9 @@ async def create_transaction(
         transaction_date=payload.transaction_date,
         source=payload.source,
     )
+    # Auto-classification (best-effort): only fills what the client omitted —
+    # an explicit category_id/envelope choice is never overwritten.
+    await apply_classification(db, user_id=user.id, txn=txn)
     db.add(txn)
     await db.commit()
     await db.refresh(txn)
@@ -859,6 +870,14 @@ async def update_transaction(
     resulting_amount = update_data.get("amount", txn.amount)
     if resulting_amount is not None and Decimal(str(resulting_amount)) > 0:
         update_data["envelope_id"] = None
+
+    # A user correction clears the auto-classification flag: an explicit
+    # category/envelope pick (or clear) is user-set from now on, and only
+    # user-set rows feed future history suggestions.
+    if "category_id" in update_data or "category" in update_data:
+        update_data["category_auto_assigned"] = False
+    if "envelope_id" in update_data:
+        update_data["envelope_auto_assigned"] = False
 
     for field, value in update_data.items():
         setattr(txn, field, value)

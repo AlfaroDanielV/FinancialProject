@@ -84,6 +84,13 @@ class ShadowConfirmItem(BaseModel):
     # (guessed) account.
     account_id: Optional[uuid.UUID] = None
     transaction_date: Optional[date] = None
+    # Envelope choice at review time. The scan pre-fills an auto-suggested
+    # envelope on the shadow row; `envelope_id` overrides it and
+    # `clear_envelope=true` removes it. Both mark the envelope user-set.
+    # Validated in the router (assignable by the caller — owner or shared
+    # member), mirroring PATCH /transactions.
+    envelope_id: Optional[uuid.UUID] = None
+    clear_envelope: bool = False
 
 
 class ShadowConfirmRequest(BaseModel):

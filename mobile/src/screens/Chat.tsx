@@ -59,6 +59,9 @@ type Message = {
   // Envelope budgeting: set when the bot reply carried an `assign_envelope`
   // hint — renders an "Asignar a un sobre" chip for this transaction.
   assignTxId?: string;
+  // Auto-classification: the backend already assigned this envelope from the
+  // user's history — the chip reads "Sobre «X» (auto) — cambiar" instead.
+  assignAutoName?: string;
   // Duplicate detection: set when the bot reply carried a `duplicate_warning`
   // hint — renders Eliminar / Conservar chips for the likely-duplicate row.
   duplicate?: { txId: string; nudgeId: string | null; merchant: string | null };
@@ -149,6 +152,14 @@ export function ChatScreen() {
       screen === "assign_envelope"
         ? (data.open_screen!.prefill as AssignEnvelopePrefill).transaction_id
         : undefined;
+    const assignPrefill =
+      screen === "assign_envelope"
+        ? (data.open_screen!.prefill as AssignEnvelopePrefill)
+        : undefined;
+    const assignAutoName =
+      assignPrefill?.auto_assigned && assignPrefill.envelope_name
+        ? assignPrefill.envelope_name
+        : undefined;
     let duplicate: Message["duplicate"];
     if (screen === "duplicate_warning") {
       const p = data.open_screen!.prefill as DuplicateWarningPrefill;
@@ -178,6 +189,7 @@ export function ChatScreen() {
       buttons: data.buttons.length > 0 ? data.buttons : undefined,
       urlButtons: data.url_buttons.length > 0 ? data.url_buttons : undefined,
       assignTxId,
+      assignAutoName,
       duplicate,
       reclassify,
       menu: screen === "menu",
@@ -874,7 +886,9 @@ const MessageBubble = memo(function MessageBubble({
             ]}
           >
             <Text style={[styles.chipLabel, chipsUsed && styles.chipLabelUsed]}>
-              Asignar a un sobre
+              {message.assignAutoName
+                ? `Sobre «${message.assignAutoName}» (auto) — cambiar`
+                : "Asignar a un sobre"}
             </Text>
           </Pressable>
         </View>

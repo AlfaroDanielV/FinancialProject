@@ -82,7 +82,7 @@ cat <<EOF
   Container App: $CA_NAME
   Migrate job  : $JOB_MIGRATE
   Gmail worker : $JOB_GMAIL
-  Cargo worker : ${JOB_LOAN_CARGO:-<unset — see A7>}
+  Cargo worker : ledger-cr-loan-cargo-daily-r5mo1tf
   API FQDN     : https://$DOMAIN_API
   Image tag    : $TAG
   api image    : $API_IMAGE
@@ -129,14 +129,14 @@ if [[ $SKIP_MIGRATE -eq 0 ]]; then
   [[ "${STATUS:-}" == "Succeeded" ]] || die "Migrate job did not finish in time; verify manually before continuing."
 
   # Verify the alembic head chain via Log Analytics (NOT 'containerapp exec' — needs a TTY, L2)
-  log "A2 · verifying alembic head in Log Analytics (expect '… -> 0044')"
+  log "A2 · verifying alembic head in Log Analytics (expect '… -> 0045')"
   LA_WS=$(az containerapp env show -g "$RG" -n "$ENV_CAE" \
     --query "properties.appLogsConfiguration.logAnalyticsConfiguration.customerId" -o tsv 2>/dev/null || true)
   if [[ -n "$LA_WS" ]]; then
     az monitor log-analytics query -w "$LA_WS" \
       --analytics-query "ContainerAppConsoleLogs_CL | where ContainerGroupName_s contains 'migrate' | order by TimeGenerated desc | take 15 | project TimeGenerated, Log_s" \
       -o table 2>/dev/null || log "  (Log Analytics query failed; check the portal — ingestion can lag ~1–2 min)"
-    echo "  ↑ confirm the 'Running upgrade … -> 0044' chain above before trusting the redeploy."
+    echo "  ↑ confirm the 'Running upgrade … -> 0045' chain above before trusting the redeploy."
   else
     log "  (could not resolve Log Analytics workspace; verify head manually)"
   fi
@@ -175,7 +175,11 @@ REV_SUFFIX="p8$(date +%H%M%S)"
 # WORST CASE if ingress ever buffers: the answer still arrives correct, just as
 # one blob instead of incrementally — never broken. After deploy, VERIFY truly
 # incremental delivery with the curl -N recipe in the "Next (manual)" note below.
-# No migration (head stays 0044).
+#
+# Migration 0045 (auto-classification flags — feature/auto-classification,
+# 2026-07-06) lands via the A2 migrate job that ran BEFORE this redeploy; head
+# → 0045. Two additive boolean columns (server default false), no env var, no
+# behavior flag — the classifier is on by default at capture.
 az containerapp update -g "$RG" -n "$CA_NAME" \
   --image "$API_IMAGE" \
   --revision-suffix "$REV_SUFFIX" \
@@ -268,7 +272,7 @@ $(ok "Azure deploy complete.")
   Image tag            : $TAG
 
   Next (manual, per runbook):
-    • Confirm alembic head = 0044 in the A2 Log Analytics output above.
+    • Confirm alembic head = 0045 in the A2 Log Analytics output above.
     • If demo reviewer login is needed, set APPLE_REVIEW_DEMO_CODE / _EMAIL (B7).
     • Smoke /login → device-code exchange end to end.
     • P10 advisory mode deployed DARK (flags pinned false) — /asesor replies
@@ -285,5 +289,5 @@ $(ok "Azure deploy complete.")
       whole body arrives at once, ingress is buffering (answer still correct,
       just not live) — pin the ingress config then. Instant kill = flip the
       flag back to false + redeploy (no app release needed).
-    • Update [[Deployment-State]] with tag $TAG + head 0044 (D4).
+    • Update [[Deployment-State]] with tag $TAG + head 0045 (D4).
 EOF

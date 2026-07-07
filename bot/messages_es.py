@@ -746,3 +746,13 @@ DUPLICATE_WARNING = (
     "\n\n⚠️ Ojo: este gasto se parece a uno que ya tenés ({merchant} del "
     "{date}). ¿Lo elimino o lo dejo?"
 )
+
+# ── auto-classification ───────────────────────────────────────────────────────
+
+# Appended to the commit reply when the expense was auto-assigned to an
+# envelope from the user's own history. Both channels see the text; the
+# native chat additionally gets a one-tap "cambiar" chip via open_screen.
+AUTO_ENVELOPE_NOTE = (
+    "\n\n🏷️ Lo asigné al sobre «{name}» (así lo clasificaste antes). "
+    "Si no va ahí, cambialo con un toque."
+)

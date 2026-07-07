@@ -440,6 +440,12 @@ async def create_transaction(
         transaction_date=transaction_date,
         source=source,
     )
+    # Auto-classification (best-effort, never raises): fill category FK /
+    # envelope from the user's own history + the free-text category hint,
+    # so the row is born classified. See services/classification.py.
+    from .classification import apply_classification
+
+    await apply_classification(db, user_id=user.id, txn=txn)
     db.add(txn)
     await db.commit()
     await db.refresh(txn)

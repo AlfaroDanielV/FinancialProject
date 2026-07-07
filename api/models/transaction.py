@@ -75,6 +75,16 @@ class Transaction(Base):
         String(20), nullable=False, default="confirmed"
     )
     is_duplicate: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Auto-classification at capture (migration 0045): True when the system
+    # filled category/envelope from the user's own history. A user correction
+    # clears the flag; history suggestions only ever read user-set rows
+    # (flag = False), so a wrong auto-assign can't self-reinforce.
+    category_auto_assigned: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    envelope_auto_assigned: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     archived: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )

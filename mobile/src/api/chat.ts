@@ -49,6 +49,12 @@ export interface AssignEnvelopePrefill {
   amount: string;
   currency: string;
   merchant: string | null;
+  // Auto-classification: when the backend auto-assigned an envelope from the
+  // user's own history, the hint carries it so the chip reads
+  // "Sobre «X» (auto) — cambiar" instead of "Asignar a un sobre".
+  envelope_id?: string | null;
+  envelope_name?: string | null;
+  auto_assigned?: boolean;
 }
 
 /**

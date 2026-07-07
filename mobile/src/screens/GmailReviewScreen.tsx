@@ -31,10 +31,12 @@ import {
   type ShadowConfirmItem,
 } from "../api/gmail";
 import { fetchAccounts, type AccountResponse } from "../api/accounts";
+import { fetchEnvelopes, type EnvelopeResponse } from "../api/envelopes";
 import type { TransactionResponse } from "../api/transactions";
 import { Colors, FontSize, Radius, Spacing } from "../theme";
 import { AccountPickerModal } from "../components/AccountPickerModal";
 import { CategoryPickerModal } from "../components/CategoryPickerModal";
+import { EnvelopePickerModal } from "../components/EnvelopePickerModal";
 
 type Decision = "keep" | "discard";
 type Draft = {
@@ -65,6 +67,15 @@ export function GmailReviewScreen() {
     (accountsQ.data ?? []).map((a) => [a.id, a]),
   );
 
+  // Envelope names for the auto-classification suggestion chips.
+  const envelopesQ = useQuery({
+    queryKey: ["envelopes", "active"],
+    queryFn: () => fetchEnvelopes(false),
+  });
+  const envelopeById = new Map<string, EnvelopeResponse>(
+    (envelopesQ.data ?? []).map((e) => [e.id, e]),
+  );
+
   // Refetch every time the screen gains focus — so returning here after a scan
   // (or after fixing the Gmail connection) shows fresh results instead of a
   // stale cache.
@@ -78,6 +89,7 @@ export function GmailReviewScreen() {
   const [drafts, setDrafts] = useState<Record<string, Partial<ShadowConfirmItem>>>({});
   const [editing, setEditing] = useState<TransactionResponse | null>(null);
   const [accountPickerFor, setAccountPickerFor] = useState<TransactionResponse | null>(null);
+  const [envelopePickerFor, setEnvelopePickerFor] = useState<TransactionResponse | null>(null);
 
   const decisionFor = (id: string): Decision => decisions[id] ?? "keep";
 
@@ -85,6 +97,14 @@ export function GmailReviewScreen() {
   // wins. The picker runs with allowClear off, so a draft account_id is real.
   const effectiveAccountId = (r: TransactionResponse): string | null =>
     drafts[r.id]?.account_id ?? r.account_id ?? null;
+
+  // The scan pre-fills r.envelope_id with the auto-classification suggestion;
+  // a draft override or clear wins.
+  const effectiveEnvelopeId = (r: TransactionResponse): string | null => {
+    const d = drafts[r.id];
+    if (d?.clear_envelope) return null;
+    return d?.envelope_id ?? r.envelope_id ?? null;
+  };
   const guessedCount = rows.filter((r) => r.account_id).length;
   const keepIds = rows.filter((r) => decisionFor(r.id) === "keep").map((r) => r.id);
   const discardIds = rows.filter((r) => decisionFor(r.id) === "discard").map((r) => r.id);
@@ -177,6 +197,17 @@ export function GmailReviewScreen() {
           const acct = effId ? accountById.get(effId) : undefined;
           const acctOverridden = drafts[item.id]?.account_id != null;
           const acctGuessed = !acctOverridden && Boolean(item.account_id);
+          const catSuggested =
+            item.category_auto_assigned &&
+            drafts[item.id]?.category == null &&
+            drafts[item.id]?.category_id == null;
+          const envId = effectiveEnvelopeId(item);
+          const env = envId ? envelopeById.get(envId) : undefined;
+          const envOverridden =
+            drafts[item.id]?.envelope_id != null || drafts[item.id]?.clear_envelope;
+          const envSuggested =
+            !envOverridden && item.envelope_auto_assigned && Boolean(item.envelope_id);
+          const isExpense = item.amount < 0;
           return (
             <View style={[styles.row, dec === "discard" && styles.rowDiscard]}>
               <Pressable onPress={() => toggle(item.id)} hitSlop={6} style={styles.check}>
@@ -193,6 +224,7 @@ export function GmailReviewScreen() {
                 <Text style={styles.rowMeta} numberOfLines={1}>
                   {v.merchant || "—"}
                   {v.category ? ` · ${v.category}` : ""}
+                  {catSuggested && v.category ? " (sugerida)" : ""}
                   {edited ? "  ·  editado" : ""}
                 </Text>
                 <Text style={styles.rowDate}>{item.transaction_date}</Text>
@@ -217,6 +249,19 @@ export function GmailReviewScreen() {
                   </Text>
                   {acctGuessed && acct && <Text style={styles.acctTag}>adivinada</Text>}
                 </Pressable>
+                {isExpense && (env || envSuggested) && (
+                  <Pressable
+                    onPress={() => setEnvelopePickerFor(item)}
+                    hitSlop={4}
+                    style={styles.acctChip}
+                  >
+                    <Feather name="inbox" size={12} color={Colors.textSecondary} />
+                    <Text style={styles.acctText} numberOfLines={1}>
+                      {env ? `Sobre «${env.name}»` : "Sin sobre"}
+                    </Text>
+                    {envSuggested && <Text style={styles.acctTag}>sugerido</Text>}
+                  </Pressable>
+                )}
               </View>
               <Pressable onPress={() => setEditing(item)} hitSlop={6}>
                 <Feather name="edit-2" size={16} color={Colors.accent} />
@@ -302,6 +347,27 @@ export function GmailReviewScreen() {
             }));
           }
           setAccountPickerFor(null);
+        }}
+      />
+
+      <EnvelopePickerModal
+        visible={envelopePickerFor !== null}
+        currentEnvelopeId={
+          envelopePickerFor ? effectiveEnvelopeId(envelopePickerFor) : null
+        }
+        onClose={() => setEnvelopePickerFor(null)}
+        onSelect={(envelopeId) => {
+          if (envelopePickerFor) {
+            const rowId = envelopePickerFor.id;
+            setDrafts((prev) => ({
+              ...prev,
+              [rowId]:
+                envelopeId === null
+                  ? { ...prev[rowId], envelope_id: undefined, clear_envelope: true }
+                  : { ...prev[rowId], envelope_id: envelopeId, clear_envelope: false },
+            }));
+          }
+          setEnvelopePickerFor(null);
         }}
       />
     </SafeAreaView>

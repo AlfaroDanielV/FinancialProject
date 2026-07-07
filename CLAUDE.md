@@ -3161,6 +3161,59 @@ change only; the dispatcher, tools, and write path are unmodified.
 
 ---
 
+## Auto-Classification At Capture (History + Hint) (2026-07-06)
+
+Operator ask: **every** transaction capture (chat, REST, iPhone Shortcut, Apple
+Pay, Gmail shadow) best-effort classifies the row into one of the user's
+**existing** categories and, for expenses, auto-assigns an **existing** envelope
+(category only when no envelopes exist). **Branch `feature/auto-classification`;
+operator on-device sign-off pending.** Migration `0045` (two boolean flags).
+`committed_outflows`/cashflow byte-lock untouched. Canonical: vault `Decision -
+Auto-Classification At Capture (History + Hint)`.
+
+Deterministic — the LLM never decides ([[Decision - LLM Extracts Rules Decide]]);
+this is the sanctioned "merchant→sobre memory" as a **per-capture lookup of the
+user's own confirmed rows**, never a stored map or synonym table.
+
+- **Service** `api/services/classification.py::apply_classification` (best-effort,
+  NEVER raises, mutates the un-committed row only — mirrors `flag_and_notify`).
+  Two ordered sources: **(1) History** — most recent same-normalized-merchant row
+  whose category/envelope was **user-set** (envelope = expense rows only). **(2)
+  Hint** — exact normalized-name match of a free-text `category` against active
+  `user_categories`, kind-filtered by sign (category only; no fuzzy/synonyms).
+  Provided text that maps to a category links the FK **without** the auto flag
+  (dual-field reconciliation); history never overrides provided text.
+- **Flags (migration `0045`)** `transactions.category_auto_assigned` /
+  `envelope_auto_assigned` (server default false): the UI renders an "auto"/
+  "(auto)" tag; a user correction (`PATCH /transactions/{id}`) clears the flag;
+  history suggestions read **only user-set rows**, so a wrong auto-assign can't
+  self-reinforce. `TransactionResponse` carries both.
+- **Excluded (not classifiable):** transfer legs, goal flows, reconciliation
+  ajustes (`AJUSTE_CATEGORY`), loan cargos, archived rows, and bill/debt payment
+  rows (they inherit the obligation's category/envelope). An explicit client
+  `category_id`/`envelope_id` is never overwritten.
+- **Wiring:** `POST /transactions`, `/transactions/shortcut`,
+  `/transactions/apple-pay`; `services/transactions.py::create_transaction`
+  (chat/bot) — the commit reply notes an auto-assigned envelope
+  (`AUTO_ENVELOPE_NOTE`) + carries it in the `assign_envelope` open_screen prefill
+  so the native chip reads "Sobre «X» (auto) — cambiar"; Gmail `reconciler` prefills
+  the **shadow** row (safe — envelope spend counts `status='confirmed'` only), and
+  `POST /gmail/shadow/confirm` accepts an `envelope_id`/`clear_envelope` override
+  (validated assignable) since shadow rows can't be PATCHed. Mobile
+  `GmailReviewScreen` shows "sugerida"/"sugerido" chips + an `EnvelopePickerModal`;
+  `TransactionDetailScreen` shows the "auto" tags.
+- **Backfill:** opt-in `scripts/backfill_auto_classify.py` (dry-run default) runs
+  the classifier over existing unclassified confirmed rows in chronological order
+  (early user-set rows seed later ones, like live capture). Idempotent.
+- **Verification:** `tests/test_auto_classification.py` (16) + accounts/
+  transactions/envelopes/apple-pay/gmail-native/gmail-reconciler/duplicate/
+  chat-assign-envelope regression (99) + cashflow byte-lock (2) green; mobile
+  `tsc --noEmit` clean; migration `0045` up/down/up clean. `alembic → 0045 (head)`.
+- **Deferred:** fuzzy/token-overlap merchant matching (exact normalized equality
+  only); a "why did you assign this?" UI surface.
+
+---
+
 ## Closed phases — hard rules to preserve
 
 These are extracted from the closed-phase notes in `11_Phases/`. **Do not relax without an explicit decision in `05_Decisions/`.**

@@ -32,6 +32,11 @@ export interface TransactionResponse {
   // Cross-email/at-capture duplicate flag — shown as "posible duplicado" in
   // Gmail shadow review so the user can discard one of a notified-twice pair.
   is_duplicate: boolean;
+  // Auto-classification at capture: the system filled the field from the
+  // user's own history. Rendered as an "auto" tag; a manual pick clears it
+  // server-side.
+  category_auto_assigned: boolean;
+  envelope_auto_assigned: boolean;
 }
 
 export interface TransactionListResponse {

@@ -267,6 +267,7 @@ export function TransactionDetailScreen({ route }: Props) {
                 ]}
               >
                 Sobre «{envelope.name}»
+                {tx.envelope_auto_assigned ? " · auto" : ""}
               </Text>
             </View>
           )}
@@ -297,7 +298,9 @@ export function TransactionDetailScreen({ route }: Props) {
             <DetailRow
               icon="grid"
               label="Categoría"
-              value={tx.category}
+              value={
+                tx.category_auto_assigned ? `${tx.category} (auto)` : tx.category
+              }
             />
           )}
           {accountName != null && (

@@ -65,6 +65,7 @@ from ..schemas.gmail import (
     ShadowDiscardResponse,
 )
 from ..schemas.transaction import TransactionResponse
+from ..services.envelopes import can_assign_transaction_to_envelope
 from ..services.gmail import oauth as oauth_svc
 from ..services.gmail import shadow_review, whitelist
 from ..services.gmail.backfill import enqueue_backfill
@@ -569,6 +570,17 @@ async def confirm_shadow_transactions(
                     detail="La moneda de la cuenta no coincide con el movimiento.",
                 )
 
+    # Any envelope_id override must be assignable by the caller (owner or a
+    # member of a shared root) — mirrors the PATCH /transactions "Sobre
+    # inválido." guard. Suggestions land as prefills at scan time; this is
+    # the user's explicit review-time choice.
+    for i in payload.items:
+        if i.envelope_id is not None:
+            if not await can_assign_transaction_to_envelope(
+                db, user_id=user.id, envelope_id=i.envelope_id
+            ):
+                raise HTTPException(status_code=400, detail="Sobre inválido.")
+
     items = [
         shadow_review.ShadowEdit(
             id=i.id,
@@ -579,6 +591,8 @@ async def confirm_shadow_transactions(
             category_id=i.category_id,
             account_id=i.account_id,
             transaction_date=i.transaction_date,
+            envelope_id=i.envelope_id,
+            clear_envelope=i.clear_envelope,
         )
         for i in payload.items
     ]

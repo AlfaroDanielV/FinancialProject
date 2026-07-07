@@ -41,6 +41,11 @@ class ShadowEdit:
     category_id: Optional[uuid.UUID] = None
     account_id: Optional[uuid.UUID] = None
     transaction_date: Optional[date] = None
+    # Envelope override for the auto-classification prefill. None keeps the
+    # row's (possibly auto-suggested) envelope; `clear_envelope=True` removes
+    # it. Either explicit choice marks the envelope user-set.
+    envelope_id: Optional[uuid.UUID] = None
+    clear_envelope: bool = False
 
 
 def _shadow_where(stmt, user_id: uuid.UUID):
@@ -96,10 +101,18 @@ async def confirm_shadow(
                 row.category = edit.category
             if edit.category_id is not None:
                 row.category_id = edit.category_id
+                # Explicit pick at review → user-set from now on.
+                row.category_auto_assigned = False
             if edit.account_id is not None:
                 row.account_id = edit.account_id
             if edit.transaction_date is not None:
                 row.transaction_date = edit.transaction_date
+            if edit.clear_envelope:
+                row.envelope_id = None
+                row.envelope_auto_assigned = False
+            elif edit.envelope_id is not None:
+                row.envelope_id = edit.envelope_id
+                row.envelope_auto_assigned = False
         row.status = "confirmed"
 
     await db.commit()

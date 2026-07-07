@@ -77,6 +77,11 @@ class TransactionResponse(BaseModel):
     parse_status: str
     status: str
     is_duplicate: bool
+    # Auto-classification at capture: True when the system filled the field
+    # from the user's own history; a user correction clears it. Drives the
+    # native "auto" tag.
+    category_auto_assigned: bool = False
+    envelope_auto_assigned: bool = False
     archived: bool = False
     created_at: datetime
 

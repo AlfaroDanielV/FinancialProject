@@ -475,6 +475,19 @@ async def reconcile(
         account_id=guessed_account_id,
         is_duplicate=is_dup,
     )
+    # Auto-classification prefill (best-effort, swallow-on-fail like the
+    # account guess): suggested category + envelope from the user's own
+    # merchant history. Safe on a shadow row — envelope spend only counts
+    # status='confirmed', so a prefilled envelope can't drain a bar until the
+    # user confirms in review, where both suggestions are visible + editable.
+    try:
+        from ..classification import apply_classification
+
+        await apply_classification(db, user_id=user_id, txn=txn)
+    except Exception:  # noqa: BLE001 — classification must never break a scan
+        log.exception(
+            "reconcile_classify_failed user=%s msg=%s", user_id, gmail_message_id
+        )
     db.add(txn)
     await db.flush()
     log.info(

@@ -981,6 +981,23 @@ async def _handle_confirm(
             # transaction id so it can offer an in-chat "Asignar a un sobre"
             # affordance. Telegram ignores open_screen (envelopes are
             # native-only). Income never gets the hint — caps are for spending.
+            #
+            # Auto-classification: when create_transaction auto-assigned an
+            # envelope from the user's own history, say so (both channels)
+            # and carry the assignment in the prefill so the native chip
+            # reads "cambiar" instead of "asignar".
+            auto_envelope_id = None
+            auto_envelope_name = None
+            if txn is not None and txn.envelope_id and txn.envelope_auto_assigned:
+                from api.models.envelope import Envelope as _Envelope
+
+                env = await db.get(_Envelope, txn.envelope_id)
+                if env is not None:
+                    auto_envelope_id = str(env.id)
+                    auto_envelope_name = env.name
+                    text = text + messages_es.AUTO_ENVELOPE_NOTE.format(
+                        name=env.name
+                    )
             open_screen = OpenScreen(
                 screen="assign_envelope",
                 prefill={
@@ -988,6 +1005,9 @@ async def _handle_confirm(
                     "amount": str(amt_decimal),
                     "currency": currency,
                     "merchant": pending.payload.get("merchant"),
+                    "envelope_id": auto_envelope_id,
+                    "envelope_name": auto_envelope_name,
+                    "auto_assigned": auto_envelope_id is not None,
                 },
             )
     elif pending.action_type == "log_income":
