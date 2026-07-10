@@ -82,7 +82,7 @@ cat <<EOF
   Container App: $CA_NAME
   Migrate job  : $JOB_MIGRATE
   Gmail worker : $JOB_GMAIL
-  Cargo worker : ${JOB_LOAN_CARGO:-<unset — see A7>}
+  Cargo worker : $JOB_LOAN_CARGO
   API FQDN     : https://$DOMAIN_API
   Image tag    : $TAG
   api image    : $API_IMAGE

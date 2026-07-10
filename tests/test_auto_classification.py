@@ -353,6 +353,110 @@ async def test_suggest_is_read_only(db_with_user):
     assert new.envelope_id is None
 
 
+# ── category_hint param (machine-produced, e.g. Gmail extractor) ────────────
+
+
+async def test_category_hint_param_matches_flagged_auto(db_with_user):
+    session, user_id = db_with_user
+    cat = await _category(session, user_id, name="servicios")
+    # No user text, no history — only a machine hint (as the Gmail path
+    # supplies). It must link the FK AND flag it auto (unlike user-provided
+    # text, which links without the flag).
+    new = await _txn(session, user_id, merchant="AyA Acueductos", days_ago=0)
+
+    applied = await apply_classification(
+        session, user_id=user_id, txn=new, category_hint="servicios"
+    )
+
+    assert new.category_id == cat.id
+    assert new.category == "servicios"
+    assert new.category_auto_assigned is True
+    assert applied.category_source == "hint"
+
+
+async def test_category_hint_no_matching_category_is_noop(db_with_user):
+    session, user_id = db_with_user
+    await _category(session, user_id, name="servicios")
+    new = await _txn(session, user_id, merchant="Comercio X", days_ago=0)
+
+    # A hint that names no existing category links nothing (no synonym map).
+    await apply_classification(
+        session, user_id=user_id, txn=new, category_hint="entretenimiento"
+    )
+
+    assert new.category_id is None
+    assert new.category_auto_assigned is False
+
+
+async def test_user_text_beats_hint_param(db_with_user):
+    session, user_id = db_with_user
+    text_cat = await _category(session, user_id, name="Comida")
+    await _category(session, user_id, name="servicios")
+    # Row carries user text "comida" AND a machine hint "servicios": the
+    # user-provided text wins and stays non-auto.
+    new = await _txn(session, user_id, category="comida", days_ago=0)
+
+    await apply_classification(
+        session, user_id=user_id, txn=new, category_hint="servicios"
+    )
+
+    assert new.category_id == text_cat.id
+    assert new.category_auto_assigned is False
+
+
+# ── fuzzy merchant history (cross-source carry-over) ─────────────────────────
+
+
+async def test_fuzzy_merchant_carries_category_and_envelope(db_with_user):
+    session, user_id = db_with_user
+    cat = await _category(session, user_id)
+    env = await _envelope(session, user_id)
+    # Prior manual row with a short, clean merchant.
+    await _txn(
+        session,
+        user_id,
+        merchant="Amazon",
+        category="Comida",
+        category_id=cat.id,
+        envelope_id=env.id,
+        days_ago=5,
+    )
+    # New capture (as a bank email would produce) with noisier merchant text
+    # that does NOT normalize-equal "amazon" but contains it.
+    new = await _txn(
+        session, user_id, merchant="AMAZON MKTPL*1A2B3", days_ago=0
+    )
+
+    await apply_classification(session, user_id=user_id, txn=new)
+
+    assert new.category_id == cat.id
+    assert new.category_auto_assigned is True
+    assert new.envelope_id == env.id
+    assert new.envelope_auto_assigned is True
+
+
+async def test_fuzzy_ignores_short_merchant_over_match(db_with_user):
+    session, user_id = db_with_user
+    cat = await _category(session, user_id)
+    # A 3-char merchant is below the fuzzy length guard — it must not be
+    # carried into an unrelated longer merchant that happens to contain it.
+    await _txn(
+        session,
+        user_id,
+        merchant="BAC",
+        category="Comida",
+        category_id=cat.id,
+        days_ago=5,
+    )
+    new = await _txn(
+        session, user_id, merchant="Tienda BACalao del Puerto", days_ago=0
+    )
+
+    await apply_classification(session, user_id=user_id, txn=new)
+
+    assert new.category_id is None
+
+
 async def test_archived_envelope_suggestion_dropped(db_with_user):
     session, user_id = db_with_user
     cat = await _category(session, user_id)

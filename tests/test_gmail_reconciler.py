@@ -449,6 +449,39 @@ async def test_created_shadow_when_in_window(db_with_user):
     assert txn.amount == Decimal("-7000")
 
 
+async def test_shadow_row_picks_up_category_hint(db_with_user):
+    """A Gmail shadow row is auto-classified from the extractor's
+    category_hint when it names one of the user's existing categories (the
+    match is flagged auto — it's a machine guess, correctable in review)."""
+    from api.models.user_category import UserCategory
+
+    db, user_id = db_with_user
+    await _activate_with_window(db, user_id, days_ago=0)
+    cat = UserCategory(
+        user_id=user_id, name="servicios", kind="expense", color="#abcdef"
+    )
+    db.add(cat)
+    await db.commit()
+
+    candidate = ExtractedEmailTransaction(
+        transaction_type="charge",
+        confidence=0.95,
+        amount=Decimal("12000"),
+        currency="CRC",
+        merchant="AyA",
+        transaction_date=date.today(),
+        category_hint="servicios",
+    )
+    outcome, txn = await reconcile(
+        db=db, user_id=user_id, candidate=candidate, gmail_message_id="msg-cat"
+    )
+    assert outcome == ReconcileOutcome.CREATED_SHADOW
+    assert txn is not None
+    assert txn.category_id == cat.id
+    assert txn.category == "servicios"
+    assert txn.category_auto_assigned is True
+
+
 async def test_created_shadow_even_outside_old_window(db_with_user):
     """The 7-day auto-trust window was retired (operator decision
     2026-06-08). Even a long-activated user gets shadow rows now, so

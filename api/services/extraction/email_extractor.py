@@ -71,6 +71,12 @@ class ExtractedEmailTransaction(BaseModel):
     last4: Optional[str] = Field(default=None, max_length=8)
     description: Optional[str] = Field(default=None, max_length=500)
     transaction_type: str = Field(default="unknown")
+    # Free-text category label (same "LLM extracts, rules decide" contract as
+    # the chat extractor's category_hint). The reconciler feeds it to the
+    # deterministic classifier, which only links it when it EXACTLY matches an
+    # existing user category — never a synonym map. Envelopes are never
+    # assigned from this hint (history only).
+    category_hint: Optional[str] = Field(default=None, max_length=100)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
     @field_validator("amount")
@@ -177,6 +183,11 @@ Reglas:
   ("****1234", "tarjeta 5678", "cuenta-CR05-0152..."). Si no, null.
 - merchant: el comercio o destinatario (Walmart, Uber, AyA, "transferencia
   a Juan Pérez"). Para deposits, el origen.
+- category_hint: una de las categorías CR (alimentación / transporte /
+  servicios / salud / ocio / vivienda / deudas / otros) que mejor describa
+  el gasto según el comercio. Recibos de servicios (agua, luz, internet) →
+  "servicios", supermercado → "alimentación", gasolina/bus/Uber →
+  "transporte". Si no podés inferirla con confianza, null. NO la inventes.
 - description: una oración corta neutral. NO inventes detalles.
 - confidence: tu certeza de que extrajiste bien (0.0–1.0).
   - <0.6 si el correo no es una transacción (marketing, estados de
@@ -211,6 +222,10 @@ EMAIL_TOOL_DEFINITION = {
             "last4": {
                 "type": ["string", "null"],
                 "description": "3-6 digits, no asterisks.",
+            },
+            "category_hint": {
+                "type": ["string", "null"],
+                "description": "Categoría CR (alimentación/transporte/servicios/salud/ocio/vivienda/deudas/otros) o null.",
             },
             "description": {"type": ["string", "null"]},
             "transaction_type": {

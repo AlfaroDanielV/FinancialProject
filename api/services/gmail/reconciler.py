@@ -477,13 +477,21 @@ async def reconcile(
     )
     # Auto-classification prefill (best-effort, swallow-on-fail like the
     # account guess): suggested category + envelope from the user's own
-    # merchant history. Safe on a shadow row — envelope spend only counts
-    # status='confirmed', so a prefilled envelope can't drain a bar until the
-    # user confirms in review, where both suggestions are visible + editable.
+    # merchant history, plus the email extractor's category_hint matched
+    # against the user's existing categories (the hint is a machine guess, so
+    # a match is flagged auto — never treated as user-provided text). Safe on
+    # a shadow row — envelope spend only counts status='confirmed', so a
+    # prefilled envelope can't drain a bar until the user confirms in review,
+    # where both suggestions are visible + editable.
     try:
         from ..classification import apply_classification
 
-        await apply_classification(db, user_id=user_id, txn=txn)
+        await apply_classification(
+            db,
+            user_id=user_id,
+            txn=txn,
+            category_hint=candidate.category_hint,
+        )
     except Exception:  # noqa: BLE001 — classification must never break a scan
         log.exception(
             "reconcile_classify_failed user=%s msg=%s", user_id, gmail_message_id

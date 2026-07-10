@@ -50,6 +50,15 @@ log = logging.getLogger("services.classification")
 # a user-set category / envelope wins (most recent = the user's latest word).
 _HISTORY_LIMIT = 10
 
+# Fuzzy fallback: how many recent user rows to scan in Python when the exact
+# normalized-merchant match came up empty. Bounded so the hot capture path
+# stays cheap; ordered date-desc so the first similar hit is the most recent.
+_FUZZY_HISTORY_LIMIT = 200
+
+# A merchant string this short can't safely drive a containment match (it would
+# over-match — e.g. "bac" inside unrelated names).
+_MIN_FUZZY_LEN = 4
+
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9 ]")
 
 
@@ -57,6 +66,23 @@ def _norm_merchant(raw: Optional[str]) -> str:
     """Same normalization as dedup's merchant matcher: lowercase, strip
     non-alphanumerics, collapse to a comparable token string."""
     return _NON_ALNUM_RE.sub("", (raw or "").lower()).strip()
+
+
+def _merchant_close(a: str, b: str) -> bool:
+    """Fuzzy equivalence of two ALREADY-normalized merchant strings, for
+    carrying a category/envelope across capture sources whose merchant text
+    differs (a bank email's "AMAZON MKTPL*1A2B" vs a manual "amazon").
+
+    Deliberately STRICTER than dedup's booster (`_merchant_similar`): equality
+    or containment only, never any-shared-token — a false match here silently
+    mis-categorizes, whereas dedup's is only a tiebreaker. A length guard stops
+    a tiny token from over-matching."""
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    return len(shorter) >= _MIN_FUZZY_LEN and shorter in longer
 
 
 def _as_decimal(value: Any) -> Optional[Decimal]:
@@ -102,60 +128,91 @@ async def _history_match(
     exclude_id: Optional[uuid.UUID],
 ) -> tuple[Optional[Transaction], Optional[Transaction]]:
     """Most recent same-merchant rows carrying a USER-SET category and a
-    USER-SET envelope, respectively. Merchant equality is on the normalized
-    text, computed in SQL so the query stays bounded."""
+    USER-SET envelope, respectively. An exact normalized-merchant equality
+    pass runs first in SQL (cheap, precise); if either side is still empty, a
+    bounded fuzzy pass (equality/containment on the normalized text) fills the
+    gap so history carries across capture sources whose merchant strings differ
+    (a bank email's noisy merchant vs a manually-typed one)."""
     norm = _norm_merchant(merchant)
     if not norm:
         return (None, None)
 
+    from .anchors import AJUSTE_CATEGORY  # local import — avoids a cycle
+
+    sign_filter = Transaction.amount < 0 if is_expense else Transaction.amount > 0
+    # Shared filters for both the exact and the fuzzy pass. Only USER-SET
+    # (non-auto) category/envelope rows are ever a source, so a prior auto
+    # guess can't self-reinforce.
+    base_filters = [
+        Transaction.user_id == user_id,
+        Transaction.status == "confirmed",
+        Transaction.archived.is_(False),
+        Transaction.is_duplicate.is_(False),
+        Transaction.transfer_id.is_(None),
+        Transaction.goal_id.is_(None),
+        Transaction.source != "loan_cargo",
+        Transaction.category.is_distinct_from(AJUSTE_CATEGORY),
+        Transaction.merchant.isnot(None),
+        sign_filter,
+    ]
+
+    def _pick(rows: list[Transaction], predicate) -> Optional[Transaction]:
+        return next((r for r in rows if predicate(r)), None)
+
+    def _has_category(r: Transaction) -> bool:
+        return r.category_id is not None and not r.category_auto_assigned
+
+    def _has_envelope(r: Transaction) -> bool:
+        return r.envelope_id is not None and not r.envelope_auto_assigned
+
+    # ── exact pass: normalized-merchant equality in SQL (cheap, precise) ──
     norm_expr = func.btrim(
         func.regexp_replace(
             func.lower(Transaction.merchant), r"[^a-z0-9 ]", "", "g"
         )
     )
-    from .anchors import AJUSTE_CATEGORY  # local import — avoids a cycle
-
-    sign_filter = Transaction.amount < 0 if is_expense else Transaction.amount > 0
-    stmt = (
+    exact_stmt = (
         select(Transaction)
-        .where(
-            Transaction.user_id == user_id,
-            Transaction.status == "confirmed",
-            Transaction.archived.is_(False),
-            Transaction.is_duplicate.is_(False),
-            Transaction.transfer_id.is_(None),
-            Transaction.goal_id.is_(None),
-            Transaction.source != "loan_cargo",
-            Transaction.category.is_distinct_from(AJUSTE_CATEGORY),
-            Transaction.merchant.isnot(None),
-            sign_filter,
-            norm_expr == norm,
-        )
+        .where(*base_filters, norm_expr == norm)
         .order_by(
             Transaction.transaction_date.desc(), Transaction.created_at.desc()
         )
         .limit(_HISTORY_LIMIT)
     )
     if exclude_id is not None:
-        stmt = stmt.where(Transaction.id != exclude_id)
+        exact_stmt = exact_stmt.where(Transaction.id != exclude_id)
 
-    rows = list((await db.execute(stmt)).scalars().all())
-    category_row = next(
-        (
-            r
-            for r in rows
-            if r.category_id is not None and not r.category_auto_assigned
-        ),
-        None,
-    )
-    envelope_row = next(
-        (
-            r
-            for r in rows
-            if r.envelope_id is not None and not r.envelope_auto_assigned
-        ),
-        None,
-    )
+    rows = list((await db.execute(exact_stmt)).scalars().all())
+    category_row = _pick(rows, _has_category)
+    envelope_row = _pick(rows, _has_envelope)
+
+    # ── fuzzy fallback: only for the sides the exact pass left empty ──
+    # Bank-email merchant text rarely normalizes to the same token as a
+    # manually-typed merchant, so exact equality misses cross-source history.
+    # Scan the most recent user-set rows and carry over the closest one.
+    if category_row is None or envelope_row is None:
+        fuzzy_stmt = (
+            select(Transaction)
+            .where(*base_filters)
+            .order_by(
+                Transaction.transaction_date.desc(),
+                Transaction.created_at.desc(),
+            )
+            .limit(_FUZZY_HISTORY_LIMIT)
+        )
+        if exclude_id is not None:
+            fuzzy_stmt = fuzzy_stmt.where(Transaction.id != exclude_id)
+
+        for r in (await db.execute(fuzzy_stmt)).scalars().all():
+            if not _merchant_close(_norm_merchant(r.merchant), norm):
+                continue
+            if category_row is None and _has_category(r):
+                category_row = r
+            if envelope_row is None and _has_envelope(r):
+                envelope_row = r
+            if category_row is not None and envelope_row is not None:
+                break
+
     return (category_row, envelope_row)
 
 
@@ -282,6 +339,7 @@ async def apply_classification(
     *,
     user_id: uuid.UUID,
     txn: Transaction,
+    category_hint: Optional[str] = None,
 ) -> ClassificationSuggestion:
     """Fill NULL classification fields on an un-flushed/un-committed row.
 
@@ -289,11 +347,19 @@ async def apply_classification(
     the in-session object only — the caller owns flush/commit. Values the
     client explicitly set are never overwritten:
       - `category_id` already set → category untouched, no flag.
-      - free-text `category` present → treated as the hint; if it resolves to
-        an existing category the FK is linked WITHOUT the auto flag (pure
-        dual-field reconciliation, the visible name doesn't change); history
-        never overrides provided text.
+      - free-text `category` present → treated as user-provided text; if it
+        resolves to an existing category the FK is linked WITHOUT the auto
+        flag (pure dual-field reconciliation, the visible name doesn't
+        change); history never overrides provided text.
       - `envelope_id` already set → envelope untouched.
+
+    `category_hint` is a MACHINE-produced label (e.g. the Gmail email
+    extractor's `category_hint`) as opposed to the user-confirmed `txn.category`
+    text. It is used only when the row has no user-provided category text and
+    no history match; a match against an existing category is flagged auto (so
+    it shows a "sugerida" tag, is one-tap correctable, and does not seed future
+    history). Envelopes are never assigned from it — history only.
+
     Returns what was applied (for the chat hint / logging)."""
     try:
         if not is_classifiable(txn):
@@ -336,15 +402,16 @@ async def apply_classification(
                 user_id=user_id,
                 merchant=txn.merchant,
                 amount=amt,
-                category_hint=None,
+                category_hint=category_hint if want_category else None,
                 exclude_id=txn.id,
             )
 
         if want_category and suggestion.category_id is not None:
-            # History classification. When the caller's free text didn't map
-            # to any category, the user's own precedent for this merchant is
-            # the better signal — set both name + FK and flag it auto so the
-            # UI tags it and one tap corrects it.
+            # History (or machine `category_hint`) classification. When the
+            # caller's free text didn't map to any category, the user's own
+            # precedent for this merchant — else the extractor's hint — is the
+            # better signal. Set both name + FK and flag it auto so the UI tags
+            # it, one tap corrects it, and it doesn't seed future history.
             txn.category_id = suggestion.category_id
             txn.category = suggestion.category_name
             txn.category_auto_assigned = True
